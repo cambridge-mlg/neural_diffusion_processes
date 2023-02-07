@@ -5,14 +5,14 @@ import jax
 import jax.numpy as jnp
 from check_shapes import check_shapes
 
-from .types import Array, Scalar
+from .types import Array
 
 
 @dataclasses.dataclass(frozen=True)
 class SquaredExpontialKernel:
     """Radial basis functions (RBF) kernel."""
-    variance: Scalar = 1.0
-    lengthscale: Scalar = 1.0
+    variance: float = 1.0
+    lengthscale: float = 1.0
 
     @partial(jax.jit, static_argnums=0)
     @check_shapes("x: [num_points, input_dim]", "return: [num_points, num_points]")
@@ -27,7 +27,7 @@ class SquaredExpontialKernel:
 
 @dataclasses.dataclass(frozen=True)
 class WhiteKernel:
-    variance: Scalar = 1.0
+    variance: float = 1.0
 
     @partial(jax.jit, static_argnums=0)
     @check_shapes("x: [num_points, input_dim]", "return: [num_points, num_points]")

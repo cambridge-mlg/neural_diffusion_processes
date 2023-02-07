@@ -1,5 +1,8 @@
 diffrax==0.1.2
 jax==0.4.1
 check_shapes==1.0.0
+dm-haiku
+einops
+optax
 
 matplotlib

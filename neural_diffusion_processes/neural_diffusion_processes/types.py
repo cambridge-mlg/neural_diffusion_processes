@@ -1,1 +1,1 @@
-from diffrax.custom_types import Array, Scalar, Int, Bool
+from jaxtyping import Array, Bool, PyTree
