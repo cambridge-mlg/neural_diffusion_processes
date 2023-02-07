@@ -11,6 +11,10 @@ from typeguard import typechecked as typechecker
 from .types import Array, Scalar, Optional, Union, Tuple
 
 
+def check_shape(func):
+    return typechecker(jaxtyped(func))
+
+
 @dataclasses.dataclass(frozen=True)
 class SquaredExpontialKernel:
     """Radial basis functions (RBF) kernel."""
@@ -41,8 +45,7 @@ class WhiteKernel:
         return jnp.eye(jnp.shape(x)[0]) * self.variance
 
 
-@jaxtyped
-@typechecker
+# @check_shape
 def gram(
     kernel, x: f[jax.Array, "n d"], y: Optional[f[jax.Array, "m d"]] = None
 ) -> Union[f[jax.Array, "n m d d"], f[jax.Array, "n m"]]:
@@ -73,8 +76,7 @@ class RBFVec:
     variance: Scalar = 1.0
     lengthscale: Scalar = 1.0
 
-    @jaxtyped
-    @typechecker
+    # @check_shape
     @partial(jax.jit, static_argnums=0)
     def __call__(
         self, x: f[jax.Array, "D"], y: f[jax.Array, "D"]
@@ -103,8 +105,7 @@ class RBFDivFree:
     variance: Scalar = 1.0
     lengthscale: Scalar = 1.0
 
-    @jaxtyped
-    @typechecker
+    # @check_shape
     @partial(jax.jit, static_argnums=0)
     def __call__(
         self, x: f[jax.Array, "D"], y: f[jax.Array, "D"]
@@ -134,8 +135,7 @@ class RBFCurlFree:
     variance: Scalar = 1.0
     lengthscale: Scalar = 1.0
 
-    @jaxtyped
-    @typechecker
+    # @check_shape
     @partial(jax.jit, static_argnums=0)
     def __call__(
         self, x: f[jax.Array, "D"], y: f[jax.Array, "D"]
