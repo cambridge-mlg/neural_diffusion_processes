@@ -8,7 +8,7 @@ from check_shapes import check_shapes
 from jaxtyping import Float as f, jaxtyped
 from typeguard import typechecked as typechecker
 
-from .types import Array, Scalar, Optional, Union, Tuple
+from .types import Array, Scalar, Optional, Union, Tuple, Int
 
 
 def check_shape(func):
@@ -51,6 +51,18 @@ def gram(
 ) -> Union[f[jax.Array, "n m d d"], f[jax.Array, "n m"]]:
     y = x if y is None else y
     return jax.vmap(lambda x1: jax.vmap(lambda y1: kernel(x1, y1))(y))(x)
+
+
+@dataclasses.dataclass(frozen=True)
+class WhiteVecKernel:
+    variance: Scalar = 1.0
+    output_dim: Int = 1
+
+    @partial(jax.jit, static_argnums=0)
+    def __call__(
+        self, x: f[jax.Array, "1 D"], y: f[jax.Array, "1 D"]
+    ) -> f[jax.Array, "D D"]:
+        return jnp.eye(self.output_dim) * self.variance
 
 
 @dataclasses.dataclass(frozen=True)
