@@ -8,19 +8,22 @@ from check_shapes import check_shapes
 from jaxtyping import Float as f, jaxtyped
 from typeguard import typechecked as typechecker
 
-from .types import Array, Scalar, Optional, Union, Tuple, Int
+from .types import Array, Optional, Union, Tuple, Int
 
 
 def check_shape(func):
     return typechecker(jaxtyped(func))
 
 
+from .types import Array
+
+
 @dataclasses.dataclass(frozen=True)
 class SquaredExpontialKernel:
     """Radial basis functions (RBF) kernel."""
 
-    variance: Scalar = 1.0
-    lengthscale: Scalar = 1.0
+    variance: float = 1.0
+    lengthscale: float = 1.0
 
     @partial(jax.jit, static_argnums=0)
     @check_shapes("x: [num_points, input_dim]", "return: [num_points, num_points]")
@@ -37,7 +40,7 @@ class SquaredExpontialKernel:
 
 @dataclasses.dataclass(frozen=True)
 class WhiteKernel:
-    variance: Scalar = 1.0
+    variance: float = 1.0
 
     @partial(jax.jit, static_argnums=0)
     @check_shapes("x: [num_points, input_dim]", "return: [num_points, num_points]")
@@ -55,7 +58,7 @@ def gram(
 
 # @dataclasses.dataclass(frozen=True)
 # class WhiteVecKernel:
-#     variance: Scalar = 1.0
+#     variance: float = 1.0
 #     output_dim: Int = 1
 
 #     @partial(jax.jit, static_argnums=0)
@@ -69,8 +72,8 @@ def gram(
 class RBFKernel:
     """Radial basis functions (RBF) kernel."""
 
-    variance: Scalar = 1.0
-    lengthscale: Scalar = 1.0
+    variance: float = 1.0
+    lengthscale: float = 1.0
 
     @partial(jax.jit, static_argnums=0)
     def __call__(
@@ -85,8 +88,8 @@ class RBFKernel:
 
 @dataclasses.dataclass(frozen=True)
 class RBFVec:
-    variance: Scalar = 1.0
-    lengthscale: Scalar = 1.0
+    variance: float = 1.0
+    lengthscale: float = 1.0
 
     # @check_shape
     @partial(jax.jit, static_argnums=0)
@@ -114,8 +117,8 @@ class RBFDivFree:
     "Kernels for Vector-Valued Functions: a Review" by Alvarez et al
     """
 
-    variance: Scalar = 1.0
-    lengthscale: Scalar = 1.0
+    variance: float = 1.0
+    lengthscale: float = 1.0
 
     # @check_shape
     @partial(jax.jit, static_argnums=0)
@@ -144,8 +147,8 @@ class RBFCurlFree:
     "Kernels for Vector-Valued Functions: a Review" by Alvarez et al
     """
 
-    variance: Scalar = 1.0
-    lengthscale: Scalar = 1.0
+    variance: float = 1.0
+    lengthscale: float = 1.0
 
     # @check_shape
     @partial(jax.jit, static_argnums=0)
@@ -176,7 +179,7 @@ class RBFCurlFree:
 
 @dataclasses.dataclass(frozen=True)
 class Constant:
-    value: Scalar = 0.0
+    value: float = 0.0
     output_dim: Optional[Tuple] = None
 
     def __call__(self, x):
@@ -186,15 +189,15 @@ class Constant:
 
 @dataclasses.dataclass(frozen=True)
 class Zero(Constant):
-    value: Scalar = 0.0
+    value: float = 0.0
     output_dim: Optional[Tuple] = None
 
 
 @dataclasses.dataclass(frozen=True)
 class Quadratic:
     output_dim: Optional[Tuple] = None
-    a: Scalar = 1.0
-    b: Scalar = 0.0
+    a: float = 1.0
+    b: float = 0.0
 
     def __call__(self, x):
         # output_dim = x.shape[-1] if self.output_dim is None else self.output_dim

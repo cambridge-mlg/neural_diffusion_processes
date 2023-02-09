@@ -16,12 +16,14 @@ class LinearBetaSchedule:
     beta0: float = 0.0
     beta1: float = 20.0
 
-    def __call__(self, t):
+    @check_shapes("t: [batch...]", "return: [batch...]")
+    def __call__(self, t: jnp.ndarray) -> jnp.ndarray:
         interval = self.t1 - self.t0
         normed_t = (t - self.t0) / interval
         return self.beta0 + normed_t * (self.beta1 - self.beta0)
     
-    def B(self, t):
+    @check_shapes("t: [batch...]", "return: [batch...]")
+    def B(self, t: jnp.ndarray) -> jnp.ndarray:
         r"""
         integrates \int_{s=0}^t beta(s) ds
         """
