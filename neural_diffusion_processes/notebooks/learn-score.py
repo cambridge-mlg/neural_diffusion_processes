@@ -369,3 +369,14 @@ out = reverse_solve(subkeys[1], x_test, yT)
 plt.plot(x_test, out.ys[-1])
 # %%
 plt.plot(x_test, out.ys[..., 0].T)
+
+# %%
+
+def approx_logp_wrapper(t, y, args):
+    y, _ = y
+    *args, eps, func = args
+    fn = lambda y: func(t, y, args)
+    f, vjp_fn = jax.vjp(fn, y)
+    (eps_dfdy,) = vjp_fn(eps)
+    logp = jnp.sum(eps_dfdy * eps)
+    return f, logp
