@@ -25,14 +25,11 @@ config.update("jax_enable_x64", True)
 JITTER = 1e-12
 
 #%%
-# def get_2d_grid(num, min_=-1, max_=1):
-#     x = jnp.linspace(min_, max_, num)
-#     x1, x2 = jnp.meshgrid(x, x)
-#     x = jnp.stack([x1.flatten(), x2.flatten()], axis=-1)
-#     return x
-
-# x = get_2d_grid(25)
-# print(x.shape)
+def get_2d_grid(num, min_=-1, max_=1):
+    x = jnp.linspace(min_, max_, num)
+    x1, x2 = jnp.meshgrid(x, x)
+    x = jnp.stack([x1.flatten(), x2.flatten()], axis=-1)
+    return x
 
 # %%
 
@@ -54,8 +51,6 @@ class MultiOutputKernel:
 
 
 class DiagMultiOutputKernel(MultiOutputKernel):
-    # def __init__(self, kernel, output_dim):
-    #     super().__init__(kernel, output_dim)
 
     @check_shapes(
         "x: [input_dim]",
@@ -69,15 +64,14 @@ class DiagMultiOutputKernel(MultiOutputKernel):
 
 output_dim = 2
 beta_schedule = ndp.sde.LinearBetaSchedule()
-x = jnp.linspace(-1, 1, 21)[:, None]
-x2 = jnp.linspace(-1, 1, 23)[:, None]
+x = get_2d_grid(25)
 k0 = ndp.kernels.SquaredExpontialKernel(lengthscale=0.25)
-# k0 = DiagMultiOutputKernel(k0, output_dim=output_dim)
-# k0 = ndp.kernels.RBFDivFree()
+k0 = DiagMultiOutputKernel(k0, output_dim=output_dim)
+k0 = ndp.kernels.RBFDivFree(lengthscale=.25)
 
 k1 = ndp.kernels.WhiteKernel()
-# k1 = ndp.kernels.SquaredExpontialKernel(lengthscale=1.0)
 k1 = DiagMultiOutputKernel(k1, output_dim=output_dim)
+
 
 class MultiOutputMeanFunction:
     def __init__(self, output_dim: int):
@@ -125,11 +119,9 @@ def gram(kernel, x: Array, y: Optional[Array] = None) -> Array:
     return G(x, y)
     
 
-kxx = gram(k1, x, x)
-kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (n1 p1) (n2 p2)') 
+kxx = gram(k0, x)
+kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (p1 n1) (p2 n2)') 
 plt.matshow(kxx)
-print(jnp.min(kxx))
-print(jnp.max(kxx))
 
 print(eval_meanfunction(mean_function, x).shape)
 
@@ -189,19 +181,20 @@ def sample_gp(key, kernel: MultiOutputKernel, mean_function: MultiOutputMeanFunc
     kxx = gram(kernel, x, x)  # [N, N, P, P]
     kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (n1 p1) (n2 p2)')
     mu = eval_meanfunction(mean_function, x)  # [N, P]
+    p = mu.shape[-1]
     mu = rearrange(mu, "n p -> (n p) 1")
     samples = ndp.misc.sample_mvn(key, mu, kxx, num_samples)
     if num_samples is not None:
-        return rearrange(samples, "s (n p) 1 -> s n p", p=kernel.output_dim)
+        return rearrange(samples, "s (n p) 1 -> s n p", p=p)
     else:
-        return rearrange(samples, "(n p) 1 -> n p", p=kernel.output_dim)
+        return rearrange(samples, "(n p) 1 -> n p", p=p)
     
 # %%
 seed = 1
 key = jax.random.PRNGKey(seed)
 
 # Solves forward SDE for multiple initia states using vmap.
-num_samples = 3
+num_samples = 2
 key, subkey = jax.random.split(key)
 y0s= sample_gp(subkey, k0, mean_function, x, num_samples=num_samples)
 print(y0s.shape)
@@ -211,14 +204,36 @@ print(out[0].shape)
 print(out[1].shape)
 
 #%%
+import seaborn as sns
+import matplotlib
+
+norm = matplotlib.colors.Normalize()
+cm = sns.cubehelix_palette(start=0.5, rot=-0.75, as_cmap=True, reverse=True)
+
 ts, ys = out
 plot_num_timesteps = ys.shape[1]
-fig, axes = plt.subplots(plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 7))
+fig, axes = plt.subplots(
+    plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 16)
+)
 for j in range(plot_num_timesteps):
     for i in range(num_samples):
-        for o in range(output_dim):
-            axes[j, i].plot(x, ys[i, j, :, o], '-', ms=2)
+        if x.shape[-1] == 1:
+            for o in range(output_dim):
+                axes[j, i].plot(x, ys[i, j, :, o], '-', ms=2)
+        elif x.shape[-1] == 2:
+            y_norm = jnp.linalg.norm(ys[i, j], axis=-1)
+            axes[j, i].quiver(
+                x[:, 0],
+                x[:, 1],
+                ys[i, j, :, 0],
+                ys[i, j, :, 1],
+                color=cm(norm(y_norm)),
+                scale=50,
+                width=0.005,
+            )  
+
         axes[j, 0].set_ylabel(f"t = {ts[0, j]:.2f}")
+
 plt.tight_layout()
 
 
@@ -271,23 +286,24 @@ def sample_pt(key, x, t, y0=None):
     return rearrange(s, '(n p) 1 -> n p', n=n, p=p)
 #%%
 
-fig, axes = plt.subplots(plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 7))
+if x.shape[-1] == 1:
+    fig, axes = plt.subplots(plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 7))
 
-for t_index in range(plot_num_timesteps):
-    for sample_index in range(num_samples):
-        t = ts[0, t_index]
-        mean, cov = pt(x, t, ys[sample_index, 0])
-        for o in range(output_dim):
-            covd = cov[..., o, o]
-            std = jnp.diag(covd).reshape(-1,1)**0.5
-            axes[t_index, sample_index].plot(x, ys[sample_index, t_index, :, o], 'o-', ms=2)
-            axes[t_index, sample_index].plot(x, mean[..., o:o+1], 'k--', alpha=.5)
-            lo, up = (v.flatten() for v in (mean[..., o:o+1] - 2 * std, mean[..., o:o+1] + 2 * std))
-            axes[t_index, sample_index].fill_between(x.flatten(), lo, up, alpha=.1, color='k')
-        axes[t_index, 0].set_ylabel(f"t = {t:.2f}")
-        axes[t_index, sample_index].set_ylim(-2.5, 2.5)
+    for t_index in range(plot_num_timesteps):
+        for sample_index in range(num_samples):
+            t = ts[0, t_index]
+            mean, cov = pt(x, t, ys[sample_index, 0])
+            for o in range(output_dim):
+                covd = cov[..., o, o]
+                std = jnp.diag(covd).reshape(-1,1)**0.5
+                axes[t_index, sample_index].plot(x, ys[sample_index, t_index, :, o], 'o-', ms=2)
+                axes[t_index, sample_index].plot(x, mean[..., o:o+1], 'k--', alpha=.5)
+                lo, up = (v.flatten() for v in (mean[..., o:o+1] - 2 * std, mean[..., o:o+1] + 2 * std))
+                axes[t_index, sample_index].fill_between(x.flatten(), lo, up, alpha=.1, color='k')
+            axes[t_index, 0].set_ylabel(f"t = {t:.2f}")
+            axes[t_index, sample_index].set_ylim(-2.5, 2.5)
 
-plt.tight_layout()
+    plt.tight_layout()
 
 
 #%%
@@ -351,14 +367,29 @@ rev_out = jax.vmap(reverse_solve)(jnp.stack(subkeys), ys[:, -1])
 key, *subkeys = jax.random.split(key, 1+num_samples)
 rev_out2 = jax.vmap(reverse_solve)(jnp.stack(subkeys), ys[:, -1])
 # %%
-fig, axes = plt.subplots(plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 7))
+fig, axes = plt.subplots(plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 16))
 for t in range(plot_num_timesteps):
     for i in range(num_samples):
-        for o in range(output_dim):
-            axes[t, i].plot(x, rev_out[1][i, t, :, o], '-', ms=2)
-            axes[t, i].plot(x, rev_out2[1][i, t, :, o], ':', ms=2)
+        if x.shape[-1] == 1:
+            for o in range(output_dim):
+                axes[t, i].plot(x, rev_out[1][i, t, :, o], '-', ms=2)
+                axes[t, i].plot(x, rev_out2[1][i, t, :, o], ':', ms=2)
+            axes[t, i].set_ylim(-2.5, 2.5)
+        elif x.shape[-1] == 2 and output_dim == 2:
+            y_norm = jnp.linalg.norm(rev_out[1][i, t], axis=-1)
+            axes[t, i].quiver(
+                x[:, 0],
+                x[:, 1],
+                rev_out[1][i, t, :, 0],
+                rev_out[1][i, t, :, 1],
+                color=cm(norm(y_norm)),
+                scale=50,
+                width=0.005,
+            )  
+            axes[t, i].set_ylim(-1, 1)
+            axes[t, i].set_xlim(-1, 1)
+
         axes[t, 0].set_ylabel(f"t = {rev_out[0][0, t]:.2f}")
-        axes[t, i].set_ylim(-2.5, 2.5)
 plt.tight_layout()
 
 #%%
@@ -430,21 +461,68 @@ def conditional_sample(key, x_context, y_context, x_target, num_steps: int, num_
     return rearrange(y0, "(n p) 1 -> n p", n=num_target, p=p)
 
 
-x_known = jnp.reshape(jnp.asarray([[-0.2, 0.2, 0.6]]), (-1, 1))
-# y_known = jnp.reshape(jnp.asarray([[0.0, -1.0, 0.0]]), (len(x_known), output_dim))
-y_known = jnp.reshape(jnp.asarray([[0.0, -1.0, 3.0, .2, 1.1, 0.]]), (len(x_known), output_dim))
+if x.shape[-1] == 1:
+    x_known = jnp.reshape(jnp.asarray([[-0.2, 0.2, 0.6]]), (-1, 1))
+elif x.shape[-1] == 2:
+    x_known = jnp.zeros((1, 2)) + 1.e-2
+
+if x.shape[-1] == 1 and output_dim == 1:
+    y_known = jnp.reshape(jnp.asarray([[0.0, -1.0, 0.0]]), (len(x_known), output_dim))
+elif x.shape[-1] == 1 and output_dim == 2:
+    y_known = jnp.reshape(jnp.asarray([[0.0, -1.0, 3.0, .2, 1.1, 0.]]), (len(x_known), output_dim))
+elif x.shape[-1] == 2 and output_dim == 2:
+    y_known = jnp.reshape(jnp.asarray([[8., 0]]), (1, 2))
+
+
 print(x_known.shape)
 print(y_known.shape)
-x_test = jnp.linspace(-1, 1, 101)[:, None]
+
+if x.shape[-1] == 1:
+    x_test = jnp.linspace(-1, 1, 101)[:, None]
+elif x.shape[-1] == 2:
+    x_test = get_2d_grid(21)
+
 key = jax.random.PRNGKey(0)
-samples = jax.vmap(lambda key: conditional_sample(key, x_known, y_known, x_test, 100, 10))(jax.random.split(key, 100))
+num_samples = 100 if x.shape[-1] == 1 else 9
+samples = jax.vmap(lambda key: conditional_sample(key, x_known, y_known, x_test, 100, 1))(jax.random.split(key, num_samples))
 
 # %%
-plt.figure()
-for o in range(output_dim):
-    plt.plot(x_test, samples[..., o].T, f"C{o}-", alpha=.2)
-    plt.plot(x_known, y_known[:, o], f"kx")
-plt.show()
+if x.shape[-1] == 1:
+    plt.figure()
+    for o in range(output_dim):
+        plt.plot(x_test, samples[..., o].T, f"C{o}-", alpha=.2)
+        plt.plot(x_known, y_known[:, o], f"kx")
+
+
+elif x.shape[-1] == 2 and output_dim == 2:
+    fig, axes = plt.subplots(3, 3, figsize=(20, 20), sharex=True, sharey=True)
+
+    for i, ax in enumerate(np.array(axes).ravel()):
+        s_norm = jnp.linalg.norm(samples[i], axis=-1)
+        ax.quiver(
+            x_test[:, 0],
+            x_test[:, 1],
+            samples[i, :, 0],
+            samples[i, :, 1],
+            color=cm(norm(s_norm)),
+            scale=50,
+            width=0.005,
+        )  
+        ax.quiver(
+            x_known[:, 0],
+            x_known[:, 1],
+            y_known[:, 0],
+            y_known[:, 1],
+            color='r',
+            scale=50,
+            width=0.005,
+        )  
+        ax.set_ylim(-1, 1)
+        ax.set_xlim(-1, 1)
+
+
+plt.tight_layout()
+plt.savefig('conditional_divfree.png', dpi=300, facecolor='white', edgecolor='none')
 
 # %%
 
