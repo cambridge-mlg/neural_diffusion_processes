@@ -324,14 +324,19 @@ def preconditioned_score(yt, x, t):
     Lt = jnp.linalg.cholesky(Sigma_t + JITTER * jnp.eye(len(Sigma_t)))
     b = yt - mu_t
     A = solve_upper_triangular(jnp.transpose(Lt), solve_lower_triangular(Lt, b))
-    k1xx = cs(gram(k1, x), "[N, N, P, P]")
-    k1xx = rearrange(k1xx, 'n1 n2 p1 p2 -> (n1 p1) (n2 p2)', n1=n, n2=n, p1=p, p2=p)
-    return cs(- k1xx @ A, "[NP, 1]")
+    return - cs(A, "[NP, 1]")
+    # k1xx = cs(gram(k1, x), "[N, N, P, P]")
+    # k1xx = rearrange(k1xx, 'n1 n2 p1 p2 -> (n1 p1) (n2 p2)', n1=n, n2=n, p1=p, p2=p)
+    # return cs(- k1xx @ A, "[NP, 1]")
 
 
 @check_shapes("t: []", "yt: [NP, 1]", "x: [N, D]", "return: [NP, 1]",)
 def reverse_drift_ode(t, yt, x):
-    return  drift(t, yt, x) - 0.5 * beta_schedule(t) * preconditioned_score(yt, x, t) # [N, 1]
+    mu = cs(drift(t, yt, x), "[NP, 1]")
+    sigma = cs(diffusion(t, yt, x), "[NP, NP]")
+    sigma2 = cs(sigma @ sigma, "[NP, NP]")
+    return mu - 0.5 * sigma2 @ preconditioned_score(yt, x, t)
+    return  drift(t, yt, x) - 0.5 * beta_schedule(t) * preconditioned_score(yt, x, t) # [NP, 1]
 
 # def reverse_drift_sde(t, yt, x):
 #     return  drift(t, yt, x) - beta_schedule(t) * preconditioned_score(yt, x, t) # [N, 1]
@@ -484,7 +489,7 @@ elif x.shape[-1] == 2:
 
 key = jax.random.PRNGKey(0)
 num_samples = 100 if x.shape[-1] == 1 else 9
-samples = jax.vmap(lambda key: conditional_sample(key, x_known, y_known, x_test, 100, 1))(jax.random.split(key, num_samples))
+samples = jax.vmap(lambda key: conditional_sample(key, x_known, y_known, x_test, 100, 10))(jax.random.split(key, num_samples))
 
 # %%
 if x.shape[-1] == 1:
@@ -522,7 +527,7 @@ elif x.shape[-1] == 2 and output_dim == 2:
 
 
 plt.tight_layout()
-plt.savefig('conditional_divfree.png', dpi=300, facecolor='white', edgecolor='none')
+# plt.savefig('conditional_divfree.png', dpi=300, facecolor='white', edgecolor='none')
 
 # %%
 
