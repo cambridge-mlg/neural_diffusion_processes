@@ -65,9 +65,9 @@ class DiagMultiOutputKernel(MultiOutputKernel):
 output_dim = 2
 beta_schedule = ndp.sde.LinearBetaSchedule()
 x = get_2d_grid(25)
-k0 = ndp.kernels.SquaredExpontialKernel(lengthscale=0.25)
-k0 = DiagMultiOutputKernel(k0, output_dim=output_dim)
-k0 = ndp.kernels.RBFDivFree(lengthscale=.25)
+# k0 = ndp.kernels.SquaredExpontialKernel(lengthscale=0.25)
+# k0 = DiagMultiOutputKernel(k0, output_dim=output_dim)
+k0 = ndp.kernels.RBFVec(lengthscale=.25)
 
 k1 = ndp.kernels.WhiteKernel()
 k1 = DiagMultiOutputKernel(k1, output_dim=output_dim)
@@ -336,7 +336,7 @@ def reverse_drift_ode(t, yt, x):
     sigma = cs(diffusion(t, yt, x), "[NP, NP]")
     sigma2 = cs(sigma @ sigma, "[NP, NP]")
     return mu - 0.5 * sigma2 @ preconditioned_score(yt, x, t)
-    return  drift(t, yt, x) - 0.5 * beta_schedule(t) * preconditioned_score(yt, x, t) # [NP, 1]
+    # return  drift(t, yt, x) - 0.5 * beta_schedule(t) * preconditioned_score(yt, x, t) # [NP, 1]
 
 # def reverse_drift_sde(t, yt, x):
 #     return  drift(t, yt, x) - beta_schedule(t) * preconditioned_score(yt, x, t) # [N, 1]
@@ -476,8 +476,8 @@ if x.shape[-1] == 1 and output_dim == 1:
 elif x.shape[-1] == 1 and output_dim == 2:
     y_known = jnp.reshape(jnp.asarray([[0.0, -1.0, 3.0, .2, 1.1, 0.]]), (len(x_known), output_dim))
 elif x.shape[-1] == 2 and output_dim == 2:
-    y_known = jnp.reshape(jnp.asarray([[8., 0]]), (1, 2))
-
+    x_known = jnp.array([[0.25, 0.5], [0.5, 0.25], [-0.25, -0.25]]).astype(float)
+    y_known = jnp.array([[1, 1], [1, -2], [-4, 3]]).astype(float)
 
 print(x_known.shape)
 print(y_known.shape)
@@ -488,8 +488,10 @@ elif x.shape[-1] == 2:
     x_test = get_2d_grid(21)
 
 key = jax.random.PRNGKey(0)
-num_samples = 100 if x.shape[-1] == 1 else 9
+# num_samples = 100 if x.shape[-1] == 1 else 9
+num_samples = 100
 samples = jax.vmap(lambda key: conditional_sample(key, x_known, y_known, x_test, 100, 10))(jax.random.split(key, num_samples))
+
 
 # %%
 if x.shape[-1] == 1:
@@ -500,34 +502,70 @@ if x.shape[-1] == 1:
 
 
 elif x.shape[-1] == 2 and output_dim == 2:
-    fig, axes = plt.subplots(3, 3, figsize=(20, 20), sharex=True, sharey=True)
-
-    for i, ax in enumerate(np.array(axes).ravel()):
-        s_norm = jnp.linalg.norm(samples[i], axis=-1)
-        ax.quiver(
-            x_test[:, 0],
-            x_test[:, 1],
-            samples[i, :, 0],
-            samples[i, :, 1],
-            color=cm(norm(s_norm)),
-            scale=50,
-            width=0.005,
-        )  
-        ax.quiver(
-            x_known[:, 0],
-            x_known[:, 1],
-            y_known[:, 0],
-            y_known[:, 1],
-            color='r',
-            scale=50,
-            width=0.005,
-        )  
-        ax.set_ylim(-1, 1)
-        ax.set_xlim(-1, 1)
+    fig, ax = plt.subplots(figsize=(5, 5))
+    samples_mean = jnp.mean(samples, 0)
+    s_norm = jnp.linalg.norm(samples_mean, axis=-1)
+    ax.quiver(
+        x_test[:, 0],
+        x_test[:, 1],
+        samples_mean[:, 0],
+        samples_mean[:, 1],
+        color=cm(norm(s_norm)),
+        scale=50,
+        width=0.005,
+    )  
+    ax.quiver(
+        x_known[:, 0],
+        x_known[:, 1],
+        y_known[:, 0],
+        y_known[:, 1],
+        color='r',
+        scale=50,
+        width=0.005,
+    )  
+    ax.set_ylim(-1, 1)
+    ax.set_xlim(-1, 1)
 
 
 plt.tight_layout()
-# plt.savefig('conditional_divfree.png', dpi=300, facecolor='white', edgecolor='none')
+plt.savefig('conditional_ndp.png', dpi=300, facecolor='white', edgecolor='none')
 
 # %%
 
+#%%
+key, subkey = jax.random.split(key)
+theta = jax.random.uniform(subkey) * jnp.pi
+print(f"theta = {theta*360/2/jnp.pi:.2f} degrees")
+R = jnp.array([[jnp.cos(theta), -jnp.sin(theta)], [jnp.sin(theta), jnp.cos(theta)]])
+I = jnp.eye(2)
+# %%
+fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
+
+
+for k, rot in enumerate([I, R]):
+    # posterior = gp_posterior(mean_function, kernel, x_context @ rot.T, y_context @ rot.T, x)
+    samples = jax.vmap(lambda key: conditional_sample(key, x_known @ rot.T, y_known @ rot.T, x_test, 100, 10))(jax.random.split(key, num_samples))
+    y = jnp.mean(samples, axis=0)
+    y_norm = jnp.linalg.norm(y, axis=-1)
+
+    axes[k].quiver(
+        x_test[:, 0],
+        x_test[:, 1],
+        y[:, 0],
+        y[:, 1],
+        color=cm(norm(y_norm)),
+        scale=50,
+        width=0.005,
+    )
+
+    axes[k].quiver(
+        (x_known @ rot.T)[:, 0],
+        (x_known @ rot.T)[:, 1],
+        (y_known @ rot.T)[:, 0],
+        (y_known @ rot.T)[:, 1],
+        color="r",
+        scale=50,
+        width=0.005,
+    )
+plt.savefig('conditional_ndp_rot.png', dpi=300, facecolor='white', edgecolor='none')
+# %%
