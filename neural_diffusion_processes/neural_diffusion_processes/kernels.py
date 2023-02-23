@@ -27,8 +27,8 @@ class SquaredExpontialKernel:
 
     @partial(jax.jit, static_argnums=0)
     @check_shapes(
-        "x1: [1, input_dim]",
-        "x2: [1, input_dim]",
+        "x1: [input_dim]",
+        "x2: [input_dim]",
         "return: []"
     )
     def __call__(self, x1: Array, x2: Array) -> Array:
@@ -44,8 +44,8 @@ class WhiteKernel:
 
     @partial(jax.jit, static_argnums=0)
     @check_shapes(
-        "x1: [1, input_dim]",
-        "x2: [1, input_dim]",
+        "x1: [input_dim]",
+        "x2: [input_dim]",
         "return: []"
     )
     def __call__(self, x1: Array, x2: Array) -> Array:

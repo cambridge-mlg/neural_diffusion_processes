@@ -45,8 +45,8 @@ class MultiOutputKernel:
         self.output_dim = output_dim
 
     @check_shapes(
-        "x: [1, input_dim]",
-        "y: [1, input_dim]",
+        "x: [input_dim]",
+        "y: [input_dim]",
         "return: [output_dim, output_dim]",
     )
     def __call__(self, x, y):
@@ -54,12 +54,12 @@ class MultiOutputKernel:
 
 
 class DiagMultiOutputKernel(MultiOutputKernel):
-    def __init__(self, kernel):
-        super().__init__(kernel, 1)
+    # def __init__(self, kernel, output_dim):
+    #     super().__init__(kernel, output_dim)
 
     @check_shapes(
-        "x: [1, input_dim]",
-        "y: [1, input_dim]",
+        "x: [input_dim]",
+        "y: [input_dim]",
         "return: [output_dim, output_dim]",
     )
     def __call__(self, x, y):
@@ -67,23 +67,25 @@ class DiagMultiOutputKernel(MultiOutputKernel):
 
 
 
+output_dim = 2
 beta_schedule = ndp.sde.LinearBetaSchedule()
 x = jnp.linspace(-1, 1, 21)[:, None]
 x2 = jnp.linspace(-1, 1, 23)[:, None]
 k0 = ndp.kernels.SquaredExpontialKernel(lengthscale=0.25)
-k0 = DiagMultiOutputKernel(k0)
+# k0 = DiagMultiOutputKernel(k0, output_dim=output_dim)
+# k0 = ndp.kernels.RBFDivFree()
 
 k1 = ndp.kernels.WhiteKernel()
 # k1 = ndp.kernels.SquaredExpontialKernel(lengthscale=1.0)
-k1 = DiagMultiOutputKernel(k1)
+k1 = DiagMultiOutputKernel(k1, output_dim=output_dim)
 
 class MultiOutputMeanFunction:
     def __init__(self, output_dim: int):
         self.output_dim = output_dim
 
     @check_shapes(
-        "x: [1, input_dim]",
-        "return: [1, output_dim]"
+        "x: [input_dim]",
+        "return: [output_dim]"
     )
     def __call__(self, x):
         ...
@@ -91,18 +93,18 @@ class MultiOutputMeanFunction:
 class ZeroMultiOutputMeanFunction(MultiOutputMeanFunction):
 
     @check_shapes(
-        "x: [1, input_dim]",
+        "x: [input_dim]",
         "return: [output_dim]"
     )
     def __call__(self, x):
         return jnp.zeros((self.output_dim,))
     
     
-mean_function = ZeroMultiOutputMeanFunction(1)
+mean_function = ZeroMultiOutputMeanFunction(output_dim)
 
 @check_shapes("x: [N, input_dim]", "return: [N, output_dim]")
 def eval_meanfunction(mf: MultiOutputMeanFunction, x):
-    return jax.vmap(lambda x_: mf.__call__(x_[None]))(x)
+    return jax.vmap(lambda x_: mf.__call__(x_))(x)
 
 from typing import Optional
 
@@ -118,7 +120,7 @@ def gram(kernel, x: Array, y: Optional[Array] = None) -> Array:
     @partial(jax.vmap, in_axes=[0, None])
     @partial(jax.vmap, in_axes=[None, 0])
     def G(x_, y_):
-        return kernel(x_[None], y_[None])
+        return kernel(x_, y_)
     
     return G(x, y)
     
@@ -205,7 +207,8 @@ y0s= sample_gp(subkey, k0, mean_function, x, num_samples=num_samples)
 print(y0s.shape)
 subkeys = jax.random.split(key, num=num_samples)
 out = jax.vmap(solve, in_axes=[0, 0])(subkeys, y0s)
-# print(out.ys.shape)
+print(out[0].shape)
+print(out[1].shape)
 
 #%%
 ts, ys = out
@@ -213,7 +216,8 @@ plot_num_timesteps = ys.shape[1]
 fig, axes = plt.subplots(plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 7))
 for j in range(plot_num_timesteps):
     for i in range(num_samples):
-        axes[j, i].plot(x, ys[i, j], '-', ms=2)
+        for o in range(output_dim):
+            axes[j, i].plot(x, ys[i, j, :, o], '-', ms=2)
         axes[j, 0].set_ylabel(f"t = {ts[0, j]:.2f}")
 plt.tight_layout()
 
@@ -273,12 +277,13 @@ for t_index in range(plot_num_timesteps):
     for sample_index in range(num_samples):
         t = ts[0, t_index]
         mean, cov = pt(x, t, ys[sample_index, 0])
-        cov = cov.squeeze(axis=(2, 3))
-        std = jnp.diag(cov).reshape(-1,1)**0.5
-        axes[t_index, sample_index].plot(x, ys[sample_index, t_index], 'o-', ms=2)
-        axes[t_index, sample_index].plot(x, mean, 'k--', alpha=.5)
-        lo, up = (v.flatten() for v in (mean - 2 * std, mean + 2 * std))
-        axes[t_index, sample_index].fill_between(x.flatten(), lo, up, alpha=.1, color='k')
+        for o in range(output_dim):
+            covd = cov[..., o, o]
+            std = jnp.diag(covd).reshape(-1,1)**0.5
+            axes[t_index, sample_index].plot(x, ys[sample_index, t_index, :, o], 'o-', ms=2)
+            axes[t_index, sample_index].plot(x, mean[..., o:o+1], 'k--', alpha=.5)
+            lo, up = (v.flatten() for v in (mean[..., o:o+1] - 2 * std, mean[..., o:o+1] + 2 * std))
+            axes[t_index, sample_index].fill_between(x.flatten(), lo, up, alpha=.1, color='k')
         axes[t_index, 0].set_ylabel(f"t = {t:.2f}")
         axes[t_index, sample_index].set_ylim(-2.5, 2.5)
 
@@ -349,8 +354,9 @@ rev_out2 = jax.vmap(reverse_solve)(jnp.stack(subkeys), ys[:, -1])
 fig, axes = plt.subplots(plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 7))
 for t in range(plot_num_timesteps):
     for i in range(num_samples):
-        axes[t, i].plot(x, rev_out[1][i, t], '-', ms=2)
-        axes[t, i].plot(x, rev_out2[1][i, t], ':', ms=2)
+        for o in range(output_dim):
+            axes[t, i].plot(x, rev_out[1][i, t, :, o], '-', ms=2)
+            axes[t, i].plot(x, rev_out2[1][i, t, :, o], ':', ms=2)
         axes[t, 0].set_ylabel(f"t = {rev_out[0][0, t]:.2f}")
         axes[t, i].set_ylim(-2.5, 2.5)
 plt.tight_layout()
@@ -366,9 +372,9 @@ plt.tight_layout()
 def conditional_sample(key, x_context, y_context, x_target, num_steps: int, num_inner_steps: int):
     num_context = len(x_context)
     num_target = len(x_target)
-    p = x_target.shape[1]
+    p = y_context.shape[1]
 
-    y_context = rearrange(y_context, "n p -> (n p) 1", n=num_context, p=p)
+    # y_context = rearrange(y_context, "n p -> (n p) 1", n=num_context, p=p)
 
     shape_augmented_state = [(num_context + num_target) * p, 1]
 
@@ -395,6 +401,7 @@ def conditional_sample(key, x_context, y_context, x_target, num_steps: int, num_
 
     def inner_loop(key, yt, t):
         yt_context = sample_pt(key, x_context, t, y_context)
+        yt_context = rearrange(yt_context, "n p -> (n p) 1", n=num_context, p=p)
         yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
         x_augmented = jnp.concatenate([x_context, x_target], axis=0)
 
@@ -405,7 +412,7 @@ def conditional_sample(key, x_context, y_context, x_target, num_steps: int, num_
         yt, *_ = solver.step(sde_terms_forward, t - dt, t, yt_m_dt, x_augmented, None, made_jump=False)
 
         # strip context from augmented state
-        return yt[num_context:], yt_m_dt[num_context:]
+        return yt[num_context * p:], yt_m_dt[num_context * p:]
 
     def outer_loop(key, yt, t):
         _, yt_m_dt = jax.lax.scan(lambda yt, key: inner_loop(key, yt, t), yt, jax.random.split(key, num_inner_steps))
@@ -424,15 +431,19 @@ def conditional_sample(key, x_context, y_context, x_target, num_steps: int, num_
 
 
 x_known = jnp.reshape(jnp.asarray([[-0.2, 0.2, 0.6]]), (-1, 1))
-y_known = jnp.reshape(jnp.asarray([[0.0, -1.0, 0.0]]), (-1, 1))
+# y_known = jnp.reshape(jnp.asarray([[0.0, -1.0, 0.0]]), (len(x_known), output_dim))
+y_known = jnp.reshape(jnp.asarray([[0.0, -1.0, 3.0, .2, 1.1, 0.]]), (len(x_known), output_dim))
+print(x_known.shape)
+print(y_known.shape)
 x_test = jnp.linspace(-1, 1, 101)[:, None]
 key = jax.random.PRNGKey(0)
 samples = jax.vmap(lambda key: conditional_sample(key, x_known, y_known, x_test, 100, 10))(jax.random.split(key, 100))
 
 # %%
 plt.figure()
-plt.plot(x_test, samples[..., 0].T, "C0", alpha=.2)
-plt.plot(x_known, y_known, "ko")
+for o in range(output_dim):
+    plt.plot(x_test, samples[..., o].T, f"C{o}-", alpha=.2)
+    plt.plot(x_known, y_known[:, o], f"kx")
 plt.show()
 
 # %%
