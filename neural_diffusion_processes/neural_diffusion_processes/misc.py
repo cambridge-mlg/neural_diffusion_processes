@@ -17,12 +17,13 @@ from .constants import JITTER
 )
 def sample_mvn(key, mean: Array, cov: Array, num_samples: Optional[int] = None):
     """Returns samples from a GP(mean, kernel) at x."""
+    num_samples_was_none = num_samples is None
     num_samples = num_samples or 1
     L = jnp.linalg.cholesky(cov + JITTER * jnp.eye(len(mean)))
     eps = jax.random.normal(key, (len(mean), num_samples), dtype=mean.dtype)
     s = mean + L @ eps
     s = jnp.transpose(s)[..., None]
-    if num_samples == 1:
+    if num_samples_was_none:
         return s[0]
     else:
         return s
