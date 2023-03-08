@@ -13,7 +13,7 @@ from .constants import JITTER
     "mean: [num_points, 1]",
     "cov: [num_points, num_points]",
     "return: [num_samples, num_points, 1] if num_samples",
-    "return: [num_points, 1] if not num_samples"
+    "return: [num_points, 1] if not num_samples",
 )
 def sample_mvn(key, mean: Array, cov: Array, num_samples: Optional[int] = None):
     """Returns samples from a GP(mean, kernel) at x."""

@@ -4,5 +4,8 @@ check_shapes==1.0.0
 dm-haiku
 einops
 optax
+jaxkern
+gpjax==0.5.9
 
+fsspec[http]>=2021.05.0, !=2021.06.0
 matplotlib

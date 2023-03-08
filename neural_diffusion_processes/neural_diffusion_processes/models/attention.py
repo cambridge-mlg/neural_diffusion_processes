@@ -27,7 +27,9 @@ def scaled_dot_product_attention(
       output, attention_weights
     """
 
-    matmul_qk = cs(jnp.einsum("...qd,...kd->...qk", q, k), "[batch..., seq_len_q, seq_len_k]")
+    matmul_qk = cs(
+        jnp.einsum("...qd,...kd->...qk", q, k), "[batch..., seq_len_q, seq_len_k]"
+    )
 
     # scale matmul_qk
     depth = jnp.shape(k)[-1] * 1.0
@@ -44,7 +46,8 @@ def scaled_dot_product_attention(
     )  # (..., seq_len_q, seq_len_k)
 
     output = cs(
-        jnp.einsum("...qk,...kd->...qd", attention_weights, v), "[batch..., seq_len_q, depth_v]"
+        jnp.einsum("...qk,...kd->...qd", attention_weights, v),
+        "[batch..., seq_len_q, depth_v]",
     )
 
     return output, attention_weights
@@ -78,7 +81,9 @@ class MultiHeadAttention(hk.Module):
         k = rearrange(k, rearrange_arg, num_heads=self.num_heads, depth=self.depth)
         v = rearrange(v, rearrange_arg, num_heads=self.num_heads, depth=self.depth)
 
-        scaled_attention, attention_weights = scaled_dot_product_attention(q, k, v, mask)
+        scaled_attention, attention_weights = scaled_dot_product_attention(
+            q, k, v, mask
+        )
 
         scaled_attention = rearrange(
             scaled_attention,
@@ -122,21 +127,29 @@ class BiDimensionalAttentionBlock(hk.Module):
         "return[0]: [batch_size, num_points, input_dim, hidden_dim]",
         "return[1]: [batch_size, num_points, input_dim, hidden_dim]",
     )
-    def __call__(self, s: jnp.ndarray, t: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def __call__(
+        self, s: jnp.ndarray, t: jnp.ndarray
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
         Bi-dimensional attention block. Main computation block in the NDP noise model.
         """
-        t = cs(hk.Linear(self.hidden_dim)(t)[:, None, None, :], "[batch_size, 1, 1, hidden_dim]")
+        t = cs(
+            hk.Linear(self.hidden_dim)(t)[:, None, None, :],
+            "[batch_size, 1, 1, hidden_dim]",
+        )
         y = cs(s + t, "[batch_size, num_points, input_dim, hidden_dim]")
 
         y_att_d = MultiHeadAttention(2 * self.hidden_dim, self.num_heads)(y, y, y)
         y_att_d = cs(y_att_d, "[batch_size, num_points, input_dim, hidden_dim_x2]")
 
-        y_r = cs(jnp.swapaxes(y, 1, 2), "[batch_size, input_dim, num_points, hidden_dim]")
+        y_r = cs(
+            jnp.swapaxes(y, 1, 2), "[batch_size, input_dim, num_points, hidden_dim]"
+        )
         y_att_n = MultiHeadAttention(2 * self.hidden_dim, self.num_heads)(y_r, y_r, y_r)
         y_att_n = cs(y_att_n, "[batch_size, input_dim, num_points, hidden_dim_x2]")
         y_att_n = cs(
-            jnp.swapaxes(y_att_n, 1, 2), "[batch_size, num_points, input_dim, hidden_dim_x2]"
+            jnp.swapaxes(y_att_n, 1, 2),
+            "[batch_size, num_points, input_dim, hidden_dim_x2]",
         )
 
         y = y_att_n + y_att_d
@@ -181,7 +194,10 @@ class BiDimensionalAttentionModel(hk.Module):
         """
         x = cs(self.process_inputs(x, y), "[batch_size, num_points, input_dim, 2]")
 
-        x = cs(hk.Linear(self.hidden_dim)(x), "[batch_size, num_points, input_dim, hidden_dim]")
+        x = cs(
+            hk.Linear(self.hidden_dim)(x),
+            "[batch_size, num_points, input_dim, hidden_dim]",
+        )
         x = jax.nn.gelu(x)
 
         t_embedding = timestep_embedding(t, self.hidden_dim)
@@ -195,9 +211,95 @@ class BiDimensionalAttentionModel(hk.Module):
         x = cs(x, "[batch_size, num_points, input_dim, hidden_dim]")
         skip = cs(skip, "[batch_size, num_points, input_dim, hidden_dim]")
 
-        skip = cs(reduce(skip, "b n d h -> b n h", "mean"), "[batch, num_points, hidden_dim]")
+        skip = cs(
+            reduce(skip, "b n d h -> b n h", "mean"), "[batch, num_points, hidden_dim]"
+        )
 
         eps = skip / math.sqrt(self.num_bidim_attention_layers * 1.0)
         eps = jax.nn.gelu(hk.Linear(self.hidden_dim)(eps))
         eps = hk.Linear(1, w_init=jnp.zeros)(eps)
+        return eps
+
+
+@dataclass
+class MultiOutputAttentionModel(hk.Module):
+    def __init__(
+        self,
+        num_bidim_attention_layers: int,  # Number of bi-dimensional attention blocks
+        hidden_dim: int,
+        num_heads: int,
+        **kwargs,
+    ):
+        super().__init__()
+        self.num_layers = num_bidim_attention_layers
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+
+    def __post_init__(self):
+        print(">>>>>>>>>> AttentionModel")
+
+    @check_shapes(
+        "x: [batch_size, seq_len, x_dim]",
+        "y: [batch_size, seq_len, y_dim]",
+        "return: [batch_size, seq_len, x_dim__times__y_dim, 2]",
+    )
+    def process_inputs(self, x: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
+        """
+        Transform inputs to split out the x dimensions for dimension-agnostic processing.
+        """
+        x_dim, y_dim = x.shape[-1], y.shape[-1]
+        x = cs(x[..., None], "[batch_size, seq_len, x_dim, 1]")
+        x = cs(jnp.repeat(x, y_dim, axis=-1), "[batch_size, seq_len, x_dim, y_dim]")
+        y = cs(y[..., None, :], "[batch_size, seq_len, 1, y_dim]")
+        y = cs(jnp.repeat(y, x_dim, axis=-2), "[batch_size, seq_len, x_dim, y_dim]")
+        out = jnp.concatenate([x[..., None], y[..., None]], axis=-1)
+        out = cs(out, "[batch_size, seq_len, x_dim, y_dim, 2]")
+        out = rearrange(out, "... n x_dim y_dim h -> ... n (x_dim y_dim) h")
+        return out
+
+    @check_shapes(
+        "x: [batch_size, num_points, x_dim]",
+        "y: [batch_size, num_points, y_dim]",
+        "t: [batch_size]",
+        "return: [batch_size, num_points, y_dim]",
+    )
+    def __call__(self, x: jnp.ndarray, y: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
+        """
+        Computes the additive noise that was added to `y_0` to obtain `y_t`
+        based on `x_t` and `y_t` and `t`
+        """
+        x_dim = x.shape[-1]
+        x = cs(
+            self.process_inputs(x, y),
+            "[batch_size, num_points, x_dim__times__y_dim, 2]",
+        )
+
+        x = cs(
+            hk.Linear(self.hidden_dim)(x),
+            "[batch_size, num_points, x_dim__times__y_dim, hidden_dim]",
+        )
+        x = jax.nn.gelu(x)
+
+        t_embedding = timestep_embedding(t, self.hidden_dim)
+
+        skip = None
+        for _ in range(self.num_layers):
+            layer = BiDimensionalAttentionBlock(self.hidden_dim, self.num_heads)
+            x, skip_connection = layer(x, t_embedding)
+            skip = skip_connection if skip is None else skip_connection + skip
+
+        x = cs(x, "[batch_size, num_points, x_dim__times__y_dim, hidden_dim]")
+        skip = cs(skip, "[batch_size, num_points, x_dim__times__y_dim, hidden_dim]")
+        skip = rearrange(
+            skip, "... n (x_dim y_dim) h -> ... n x_dim y_dim h", x_dim=x_dim
+        )
+
+        skip = cs(
+            reduce(skip, "b n x_dim y_dim h -> b n y_dim h", "mean"),
+            "[batch, num_points, y_dim, hidden_dim]",
+        )
+        skip = skip / math.sqrt(self.num_layers * 1.0)
+        eps = jax.nn.gelu(hk.Linear(self.hidden_dim)(skip))
+        eps = hk.Linear(1, w_init=jnp.zeros)(eps)
+        eps = cs(jnp.squeeze(eps, -1), "[batch, num_points, y_dim]")
         return eps
