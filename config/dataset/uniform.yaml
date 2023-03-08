@@ -1,6 +1,0 @@
-_target_: riemannian_score_sde.datasets.simple.Uniform
-_convert_: partial
-batch_dims:
-  - ${batch_size}
-manifold: ${manifold}
-seed: ${seed}

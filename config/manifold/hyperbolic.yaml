@@ -1,3 +1,0 @@
-_target_: geomstats.geometry.hyperbolic.Hyperbolic
-dim: 2
-default_coords_type: ball

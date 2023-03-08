@@ -1,4 +1,0 @@
-defaults:
-    - csv
-    # - tensorboard
-    - wandb

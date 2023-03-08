@@ -1,3 +1,0 @@
-_target_: score_sde.schedule.ConstantBetaSchedule
-tf: 1.
-value: 1.
