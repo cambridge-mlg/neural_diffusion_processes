@@ -1,3 +1,13 @@
+# from setuptools import setup, find_packages
+
+# setup(
+#   name="neural-diffusion-processes",
+#   version="0.1",
+#   packages=find_packages(
+#     exclude=[]
+#   ),
+# )
+
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
@@ -13,24 +23,17 @@ with open("VERSION", "r") as file:
     version = file.read().strip()
 
 setup(
-    name="score-sde",
+    name="neural-diffusion-processes",
     version=version,
-    author="Michael Hutchinson, Emile Mathieu",
-    author_email="michael.hutchinson@stats.ox.ac.uk",
+    author="Emile Mathieu, Vincent Dutordoir",
     long_description=long_description,
     long_description_content_type="text/markdown",
     description="",
     # license="Apache License 2.0",
     keywords="",
-    # install_requires=requirements,
-    packages=find_namespace_packages(
-        include=["score_sde", "riemannian_score-sde", "stochastic-process-score-sde"]
-    ),
+    install_requires=requirements,
     classifiers=[
-        # "License :: OSI Approved :: Apache Software License",
-        # "Programming Language :: Python :: 3.6",
-        # "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
+        "Programming Language :: Python :: 3.9",
         "Operating System :: OS Independent",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],

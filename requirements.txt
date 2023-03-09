@@ -1,9 +1,13 @@
 --find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-jax[cuda11_cudnn805]==0.3.15
+# jax[cuda11_cudnn805]==0.4.1
+jax==0.4.1
+diffrax==0.2.2
+check_shapes==1.0.0
 dm-haiku
+einops
 optax
-distrax
-diffrax
+distrax==0.1.2
+gpjax==0.5.9
+jaxkern
+e3nn_jax
 fsspec[http]>=2021.05.0, !=2021.06.0
-joblib
-cvxpy

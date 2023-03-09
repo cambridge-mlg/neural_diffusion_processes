@@ -2,3 +2,11 @@ ml-collections==0.1.1
 clu
 matplotlib
 seaborn
+tqdm
+
+wandb
+hydra_core
+
+git+https://github.com/emilemathieu/submitit.git#egg=submitit
+git+https://github.com/emilemathieu/hydra.git#egg=hydra-submitit-launcher&subdirectory=plugins/hydra_submitit_launcher
+hydra-joblib-launcher==1.1.5

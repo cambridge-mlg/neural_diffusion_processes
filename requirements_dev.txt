@@ -1,4 +1,0 @@
-black
-ipykernel
-tensorflow
-tensorflow_datasets

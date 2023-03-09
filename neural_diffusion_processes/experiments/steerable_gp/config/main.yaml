@@ -1,0 +1,90 @@
+
+defaults:
+  # GENERAL #
+  - _self_
+
+  - server: base
+  # - experiment: s2_toy
+
+  - logger: csv
+
+  # - net: attn
+  - net: mattn
+  - lr_schedule: rcosine
+  - beta_schedule: linear
+  - kernel: whitevec
+  # - kernel: divfree
+  - data_kernel: divfree
+
+  # - optim: adam
+  # - scheduler: rcosine
+  # - beta_schedule: linear
+  
+  # enable color logging
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
+
+name: steerable_gp
+
+seed: 0
+
+beta_schedule:
+  t0: 3e-4
+  beta0: 0.001
+  beta1: 15.0
+
+optimization:
+  batch_size: 16
+  num_steps: 100_000
+  lr: 1e-3
+
+data:
+  _target_: neural_diffusion_processes.data.get_vec_gp_data
+  num_samples_train: 100_000
+  # num_points: 30
+  num_points: 10
+  x_radius: 20
+  kernel: ${data_kernel.cls}
+  # hyperparameters: ${data_kernel.hyps}
+  params:
+    kernel:
+      # lengthscale: ${eval:math.sqrt(5.)}
+      lengthscale: 2.23606797749979
+      variance: 10.0
+    mean_fn: {}
+  mean_function:
+    _target_: gpjax.Zero
+    output_dim: 2
+  obs_noise: 0.02
+  seed_test: 1
+  num_samples_test: 64
+  seed: 0
+
+sde:
+  # limiting_kernel_hyperparameters: 
+  #   variance: 1.0
+  #   lengthscale: 1.0
+  # limiting_kernel:
+    # _target_: neural_diffusion_processes.kernels.RBFVec
+    # _target_: neural_diffusion_processes.kernels.WhiteVec
+    # output_dim: 2
+  limiting_mean_fn:
+    _target_: gpjax.Zero
+    output_dim: 2
+
+
+# eval_batch_size: ${batch_size}
+now: ${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+resume: false
+mode: all
+PROJECT_NAME: score-sde
+work_dir: ${hydra:runtime.cwd}
+
+# path to folder with data
+data_dir: ${work_dir}/data/
+ckpt_dir: ckpt
+logs_dir: logs
+
+logdir: ${work_dir}/results
+# rundir: ${dataset.name}/${model.name}
