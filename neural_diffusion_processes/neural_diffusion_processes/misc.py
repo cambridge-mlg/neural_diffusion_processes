@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from check_shapes import check_shapes
+from einops import rearrange
 
 from .types import Array
 from .constants import JITTER
@@ -27,3 +28,11 @@ def sample_mvn(key, mean: Array, cov: Array, num_samples: Optional[int] = None):
         return s[0]
     else:
         return s
+
+
+def flatten(y):
+    return rearrange(y, "... n d -> ... (n d)")
+
+
+def unflatten(y, d):
+    return rearrange(y, "... (n d) -> ... n d", d=d)

@@ -9,8 +9,8 @@ from check_shapes import check_shapes, check_shape
 
 from jaxtyping import Array
 
-from .misc import sample_mvn
-from .kernels import sample_prior_gp
+from .misc import sample_mvn, flatten, unflatten
+from .kernels import sample_prior_gp, prior_gp, posterior_gp
 
 import jax.numpy as jnp
 from einops import rearrange
@@ -86,33 +86,34 @@ def get_vec_gp_data(
     params: Optional[Mapping[str, float]] = None,
     **kwargs,
 ):
+    # TODO: merge with get_gp_data function
     """
     Returns tuple of inputs and outputs. The outputs are drawn from a GP prior with a fixed kernel.
     """
-    assert input_dim > 1
-    assert output_dim > 1
-
-    # if params is None:
-    #     params = {
-    #         "lengthscale": 0.2,
-    #         "variance": 1.0,
-    #     }
+    assert input_dim == 2
+    assert output_dim == 2
 
     x = radial_grid_2d(x_radius, num_points)
-    # y = sample_gp(
-    # lambda x: kernel.gram(params, x).to_dense(),
     y = sample_prior_gp(
         key,
-        kernel,
         mean_function,
+        kernel, 
+        params,
         x,
-        params={"kernel": params, "mean_fn": {}},
         num_samples=num_samples,
         obs_noise=obs_noise,
     )
     x = jnp.repeat(x[None, ...], y.shape[0], 0)
     return x, y
 
+def get_vec_gp_log_prob(
+    kernel: jaxkern.base.AbstractKernel,
+    mean_function,
+    obs_noise: float,
+    params: Optional[Mapping[str, float]] = None,
+    **kwargs,
+    ):
+    return lambda xc, yc, xs, ys: posterior_gp(mean_function, kernel, params, xc, yc, obs_noise)(xs).log_prob(flatten(ys))
 
 def get_gp_data(
     key,

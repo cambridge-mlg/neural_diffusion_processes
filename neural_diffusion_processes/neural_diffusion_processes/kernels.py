@@ -3,13 +3,14 @@ import dataclasses
 from functools import partial
 import jax
 import jax.numpy as jnp
-from jax import vmap
 
 from check_shapes import check_shapes
 from jaxtyping import Float, jaxtyped
 from typeguard import typechecked as typechecker
 from einops import rearrange
 
+from gpjax.mean_functions import AbstractMeanFunction
+from gpjax.gaussian_distribution import GaussianDistribution
 from jaxkern.base import AbstractKernel
 import jaxkern
 from jaxkern.computations import (
@@ -17,13 +18,11 @@ from jaxkern.computations import (
     DenseKernelComputation,
     ConstantDiagonalKernelComputation,
 )
-from gpjax.mean_functions import AbstractMeanFunction
-from jaxlinop import (
-    ConstantDiagonalLinearOperator,
-    DiagonalLinearOperator,
-)
+from jaxlinop import ConstantDiagonalLinearOperator, DiagonalLinearOperator, identity
 
+from .constants import JITTER
 from .types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable
+from .misc import flatten, unflatten
 
 
 def check_shape(func):
@@ -257,87 +256,25 @@ class RBFCurlFree(AbstractKernel):
         return K
 
 
-## Mean functions
+# inspired by GPjax but handling mutli-dimensional output
+def prior_gp(
+    mean_function: AbstractMeanFunction,
+    kernel: AbstractKernel,
+    params: Mapping,
+    obs_noise: float = 0.0,
+):
+    @check_shapes("x_test: [N, x_dim]")
+    def predict(x_test):
+        μt = mean_function(params["mean_fn"], x_test)
+        n_test = μt.shape[0] * μt.shape[1]
+        # p = μt.shape[-1]
+        μt = flatten(μt)  # jnp.atleast_1d(μt.squeeze())
+        Ktt = kernel.gram(params["kernel"], x_test)
+        Ktt += identity(n_test) * (JITTER + obs_noise)
+        dist = GaussianDistribution(μt, Ktt)
+        return dist
 
-
-# @dataclasses.dataclass(frozen=True)
-# class Constant:
-#     value: float = 0.0
-#     output_dim: Optional[Tuple] = None
-
-#     def __call__(self, x):
-#         output_dim = x.shape[-1] if self.output_dim is None else self.output_dim
-#         return self.value * jnp.ones((*x.shape[:-1], output_dim))
-
-
-# @dataclasses.dataclass(frozen=True)
-# class Zero(Constant):
-#     value: float = 0.0
-#     output_dim: Optional[Tuple] = None
-
-
-# @dataclasses.dataclass(frozen=True)
-# class Quadratic:
-#     output_dim: Optional[Tuple] = None
-#     a: float = 1.0
-#     b: float = 0.0
-
-#     def __call__(self, x):
-#         # output_dim = x.shape[-1] if self.output_dim is None else self.output_dim
-#         return self.a * x**2 + self.b
-
-
-# Multi-dimensional
-
-
-# class MultiOutputMeanFunction:
-#     def __init__(self, output_dim: int):
-#         self.output_dim = output_dim
-
-#     @check_shapes("x: [input_dim]", "return: [output_dim]")
-#     def __call__(self, x):
-#         ...
-
-
-# class ZeroMultiOutputMeanFunction(MultiOutputMeanFunction):
-#     @check_shapes("x: [input_dim]", "return: [output_dim]")
-#     def __call__(self, x):
-#         return jnp.zeros((self.output_dim,))
-
-
-# @check_shapes("x: [N, input_dim]", "return: [N, output_dim]")
-# def eval_meanfunction(mf: MultiOutputMeanFunction, x):
-#     return jax.vmap(lambda x_: mf.__call__(x_))(x)
-
-
-# @check_shapes(
-#     "x: [N, D]", "return: [S, N, P] if num_samples", "return: [N, P] if not num_samples"
-# )
-# def sample_gp(
-#     key,
-#     kernel,
-#     mean_function,
-#     x,
-#     num_samples: Optional[int] = 1,
-#     obs_noise: float = 0.0,
-# ):
-#     # kxx = kernel.gram(kernel_params, x).to_dense()
-#     # kxx = rearrange(kxx, "n1 n2 p1 p2 -> (n1 p1) (n2 p2)")
-#     kxx = kernel(x)
-#     kxx += obs_noise * jnp.eye(kxx.shape[-1])
-#     mu = eval_meanfunction(mean_function, x)  # [N, P]
-#     p = mu.shape[-1]
-#     mu = rearrange(mu, "n p -> (n p) 1")
-#     samples = sample_mvn(key, mu, kxx, num_samples)
-#     if num_samples is not None:
-#         return rearrange(samples, "s (n p) 1 -> s n p", p=p)
-#     else:
-#         return rearrange(samples, "(n p) 1 -> n p", p=p)
-
-
-from .constants import JITTER
-from gpjax.gaussian_distribution import GaussianDistribution
-from jaxlinop import identity
+    return predict
 
 
 @check_shapes(
@@ -345,23 +282,70 @@ from jaxlinop import identity
 )
 def sample_prior_gp(
     key,
-    kernel: AbstractKernel,
     mean_function: AbstractMeanFunction,
-    x,
+    kernel: AbstractKernel,
     params: Mapping,
+    x,
     num_samples: Optional[int] = None,
     obs_noise: float = 0.0,
 ):
-    μt = mean_function(params["mean_fn"], x)
-    n_test = μt.shape[0] * μt.shape[1]
-    p = μt.shape[-1]
-    μt = rearrange(μt, "n p -> (n p)")  # jnp.atleast_1d(μt.squeeze())
-    Ktt = kernel.gram(params["kernel"], x)
-    Ktt += identity(n_test) * (JITTER + obs_noise)
-    dist = GaussianDistribution(μt, Ktt)
+    p = mean_function(params["mean_fn"], x).shape[-1]
+    dist = prior_gp(mean_function, kernel, params, obs_noise)(x)
     samples = dist.sample(seed=key, sample_shape=(num_samples or 1,))
     if num_samples is not None:
         samples = rearrange(samples, "s (n p) -> s n p", p=p)
     else:
         samples = rearrange(samples, "1 (n p) -> n p", p=p)
     return samples
+
+
+@check_shapes("x: [N, x_dim]", "y: [N, y_dim]", "return: []")
+def log_prob_prior_gp(
+    mean_function: AbstractMeanFunction,
+    kernel: AbstractKernel,
+    params: Mapping,
+    x,
+    y,
+    obs_noise: float = 0.0
+):
+    return prior_gp(mean_function, kernel, params, obs_noise)(x).log_prob(flatten(y))
+
+
+@check_shapes("x: [M, x_dim]", "y: [M, y_dim]")
+def posterior_gp(
+    mean_function: AbstractMeanFunction,
+    kernel: AbstractKernel,
+    params: Mapping,
+    x,
+    y,
+    obs_noise: float = 0.0,
+):
+    μx = mean_function(params["mean_fn"], x)
+    n = μx.shape[0] * μx.shape[1]
+    μx = flatten(μx)  # jnp.atleast_1d(μt.squeeze())
+    Kxx = kernel.gram(params["kernel"], x)
+    Sigma = Kxx + identity(n) * (JITTER + obs_noise)
+
+    @check_shapes("x_test: [N, x_dim]")
+    def predict(x_test):
+        
+        μt = mean_function(params["mean_fn"], x_test)
+        n_test = μt.shape[0] * μt.shape[1]
+        Ktt = kernel.gram(params["kernel"], x_test)
+        Kxt = kernel.cross_covariance(params["kernel"], x, x_test)
+
+        # Σ⁻¹ Kxt
+        Sigma_inv_Kxt = Sigma.solve(Kxt)
+
+        # μt  +  Ktx (Kxx + Iσ²)⁻¹ (y  -  μx)
+        mean = flatten(μt) + jnp.matmul(Sigma_inv_Kxt.T, flatten(y) - μx)
+
+        # Ktt  -  Ktx (Kxx + Iσ²)⁻¹ Kxt, TODO: Take advantage of covariance structure to compute Schur complement more efficiently.
+        covariance = Ktt - jnp.matmul(Kxt.T, Sigma_inv_Kxt)
+        covariance += identity(n_test) * JITTER
+
+        dist = GaussianDistribution(mean, covariance)
+        return dist
+
+    return predict
+

@@ -375,7 +375,9 @@ class WandbLogger(LightningLoggerBase):
         self.experiment.config.update(params, allow_val_change=True)
 
     @rank_zero_only
-    def log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None) -> None:
+    def log_metrics(
+        self, metrics: Dict[str, float], step: Optional[int] = None
+    ) -> None:
         assert rank_zero_only.rank == 0, "experiment tried to log from global_rank != 0"
 
         metrics = self._add_prefix(metrics)
@@ -439,10 +441,11 @@ class WandbLogger(LightningLoggerBase):
     def log_plot(self, name, plt, step):
         if plt is None:
             return
-        if isinstance(plt, list):
-            for i, plot_i in enumerate(plt):
+        if isinstance(plt, dict):
+            for plot_name, plot_i in plt.items():
                 self.experiment.log(
-                    {f"{name}_{i}": [wandb.Image(plot_i, caption=step)]}, commit=True
+                    {f"{name}_{plot_name}": [wandb.Image(plot_i, caption=step)]},
+                    commit=True,
                 )
         else:
             self.experiment.log({name: [wandb.Image(plt, caption=step)]}, commit=True)

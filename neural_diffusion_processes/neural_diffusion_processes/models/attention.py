@@ -10,6 +10,8 @@ from check_shapes import check_shape as cs, check_shapes
 import jax
 import jax.numpy as jnp
 
+from .misc import timestep_embedding
+
 
 @check_shapes(
     "q: [batch..., seq_len_q, depth]",
@@ -97,23 +99,6 @@ class MultiHeadAttention(hk.Module):
             return output, attention_weights
         else:
             return output
-
-
-@check_shapes(
-    "t: [batch_size]",
-    "return: [batch_size, embedding_dim]",
-)
-def timestep_embedding(t: jnp.ndarray, embedding_dim: int, max_positions: int = 10_000):
-    """Sinusoidal embedding"""
-    half_dim = embedding_dim // 2
-    emb = jnp.log(max_positions) / (half_dim - 1)
-    emb = jnp.exp(jnp.arange(half_dim, dtype=jnp.float32) * -emb)
-    emb = t[:, None] * emb[None, :]
-    emb = jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=1)
-    if embedding_dim % 2 == 1:  # zero pad
-        emb = jnp.pad(emb, [[0, 0], [0, 1]])
-    assert emb.shape == (t.shape[0], embedding_dim)
-    return emb
 
 
 @dataclass
