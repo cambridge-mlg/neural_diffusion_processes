@@ -22,6 +22,9 @@ setup(
     # license="Apache License 2.0",
     keywords="",
     #install_requires=requirements,
+    packages=find_namespace_packages(
+        include=["neural_diffusion_processes"]
+    ),
     classifiers=[
         "Programming Language :: Python :: 3.9",
         "Operating System :: OS Independent",

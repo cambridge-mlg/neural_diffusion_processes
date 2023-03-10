@@ -88,7 +88,7 @@ class SDE:
         )
 
     @check_shapes("t: []", "y0: [N, y_dim]")
-    def p0t(self, t, y0) -> Tuple[jaxkern.base.AbstractKernel, AbstractMeanFunction]:
+    def p0t(self, t, y0) -> Tuple[AbstractMeanFunction, jaxkern.base.AbstractKernel, dict]:
         # TODO: add equations as method description
         mean_coef = jnp.exp(-0.5 * self.beta_schedule.B(t))
         # E[Y_t|Y_0]
