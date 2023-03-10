@@ -1,6 +1,5 @@
 --find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-# jax[cuda11_cudnn805]==0.4.1
-jax==0.4.1
+jax[cuda]==0.4.5
 diffrax==0.2.2
 check_shapes==1.0.0
 dm-haiku

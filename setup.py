@@ -1,13 +1,3 @@
-# from setuptools import setup, find_packages
-
-# setup(
-#   name="neural-diffusion-processes",
-#   version="0.1",
-#   packages=find_packages(
-#     exclude=[]
-#   ),
-# )
-
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
@@ -31,7 +21,7 @@ setup(
     description="",
     # license="Apache License 2.0",
     keywords="",
-    install_requires=requirements,
+    #install_requires=requirements,
     classifiers=[
         "Programming Language :: Python :: 3.9",
         "Operating System :: OS Independent",
