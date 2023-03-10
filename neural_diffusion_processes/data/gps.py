@@ -6,8 +6,8 @@ import jax.numpy as jnp
 import jaxkern
 from einops import rearrange
 
-from .misc import sample_mvn, flatten, unflatten
-from .kernels import sample_prior_gp, prior_gp, posterior_gp
+from neural_diffusion_processes.misc import sample_mvn, flatten, unflatten
+from neural_diffusion_processes.kernels import sample_prior_gp, prior_gp, posterior_gp
 
 
 def grid_2d(min_x, max_x, n_xaxis, min_y=None, max_y=None, n_yaxis=None, flatten=True):

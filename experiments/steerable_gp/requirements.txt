@@ -1,6 +1,7 @@
 matplotlib
 seaborn
 tqdm
+tensorboardX
 
 wandb
 hydra_core

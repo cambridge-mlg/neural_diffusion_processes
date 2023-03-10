@@ -2,3 +2,4 @@ ml-collections==0.1.1
 clu
 matplotlib
 tqdm
+tensorboardX
