@@ -195,7 +195,7 @@ class MultiOutputConstantDiagonalKernelComputation(MultiOutputDenseKernelComputa
         Returns:
             CovarianceOperator: The computed square Gram matrix.
         """
-        matrix = self.kernel_fn(params, inputs[0], inputs[0])[0, 0]
+        matrix = self.kernel_fn(params, inputs[0], inputs[0])
         value = matrix[0, 0]
         output_dim = matrix.shape[0]
         input_dim = inputs.shape[0]
@@ -267,12 +267,12 @@ class DiagMultiOutputKernel(AbstractKernel):
     def __init__(
         self,
         output_dim,
-        scalar_kernel=None,
+        scalar_kernel: AbstractKernel = None,
         active_dims: Optional[List[int]] = None,
     ) -> None:
         if scalar_kernel is None:
             scalar_kernel = jaxkern.stationary.RBF(active_dims=active_dims)
-        if isinstance(scalar_kernel.compute_engine, ConstantDiagonalKernelComputation):
+        if scalar_kernel.compute_engine == ConstantDiagonalKernelComputation:
             compute_engine = MultiOutputConstantDiagonalKernelComputation
         else:
             compute_engine = MultiOutputDiagonalKernelComputation
