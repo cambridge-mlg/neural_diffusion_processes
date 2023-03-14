@@ -9,6 +9,7 @@ from jaxtyping import Float, jaxtyped
 from typeguard import typechecked as typechecker
 from einops import rearrange
 
+import gpjax
 from gpjax.mean_functions import AbstractMeanFunction
 from gpjax.gaussian_distribution import GaussianDistribution
 from jaxkern.base import AbstractKernel
@@ -262,9 +263,9 @@ def prior_gp(
     kernel: AbstractKernel,
     params: Mapping,
     obs_noise: float = 0.0,
-):
+) -> Callable[[Float[Array, "N x_dim"]], GaussianDistribution]:
     @check_shapes("x_test: [N, x_dim]")
-    def predict(x_test):
+    def predict(x_test) -> GaussianDistribution:
         μt = mean_function(params["mean_fn"], x_test)
         n_test = μt.shape[0] * μt.shape[1]
         # p = μt.shape[-1]
@@ -349,3 +350,26 @@ def posterior_gp(
 
     return predict
 
+
+def get_kernel(kernel_type: str, active_dims = Optional[List[int]]) -> jaxkern.base.AbstractKernel:
+    if kernel_type.lower() == "matern12":
+        return jaxkern.stationary.Matern12(active_dims=active_dims)
+    elif kernel_type.lower() == "matern32":
+        return jaxkern.stationary.Matern32(active_dims=active_dims)
+    elif kernel_type.lower() == "matern52":
+        return jaxkern.stationary.Matern52(active_dims=active_dims)
+    elif kernel_type.lower() in ["rbf", "se", "squared_exponential"]:
+        return jaxkern.stationary.RBF(active_dims=active_dims)
+    elif kernel_type.lower() == "white":
+        return jaxkern.stationary.White(active_dims=active_dims)
+    else:
+        raise NotImplementedError("Unknown kernel: %s" % kernel_type)
+
+
+def get_mean_fn(mean_fn_type: str) -> gpjax.mean_functions.AbstractMeanFunction:
+    if mean_fn_type.lower() == "zero":
+        return gpjax.mean_functions.Zero()
+    elif mean_fn_type.lower() == "constant":
+        return gpjax.mean_functions.Constant()
+    else:
+        raise NotImplementedError("Unknown mean function type %s" % mean_fn_type)

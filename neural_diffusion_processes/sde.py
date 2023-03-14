@@ -1,5 +1,6 @@
+from __future__ import annotations
 from abc import abstractmethod
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Type
 
 import copy
 from functools import partial
@@ -14,7 +15,7 @@ from diffrax import AbstractSolver, Dopri5, Tsit5
 import jaxkern
 import gpjax
 from gpjax.mean_functions import AbstractMeanFunction, Zero, Constant
-from jaxlinop import identity
+from jaxlinop import LinearOperator, identity, ZeroLinearOperator
 
 from jaxtyping import Array, Float, PyTree
 from check_shapes import check_shapes
@@ -59,6 +60,24 @@ class LinearBetaSchedule:
             self.beta0 * normed_t + 0.5 * (normed_t**2) * (self.beta1 - self.beta0)
         )
 
+def promote_compute_engines(engine1: Type[jaxkern.computations.AbstractKernelComputation], engine2: Type[jaxkern.computations.AbstractKernelComputation]) -> Type[jaxkern.computations.AbstractKernelComputation]:
+    if engine1 == jaxkern.computations.ConstantDiagonalKernelComputation and engine2 == jaxkern.computations.ConstantDiagonalKernelComputation:
+        return jaxkern.computations.ConstantDiagonalKernelComputation
+
+    if engine1 == jaxkern.computations.ConstantDiagonalKernelComputation and engine2 == jaxkern.computations.DiagonalKernelComputation:
+        return jaxkern.computations.DiagonalKernelComputation
+
+    if engine2 == jaxkern.computations.ConstantDiagonalKernelComputation and engine1 == jaxkern.computations.DiagonalKernelComputation:
+        return jaxkern.computations.DiagonalKernelComputation
+
+    if engine1 == jaxkern.computations.DenseKernelComputation or engine2 == jaxkern.computations.DenseKernelComputation:
+        return jaxkern.computations.DenseKernelComputation
+
+    raise NotImplementedError(
+        "Add rule for optimal compute engine sum kernel for types %s and %s." % (
+            engine1, engine2
+        ))
+
 
 class SDE:
     def __init__(
@@ -87,23 +106,50 @@ class SDE:
             self.limiting_mean_fn, self.limiting_kernel, self.limiting_params, x, y
         )
 
-    @check_shapes("t: []", "y0: [N, y_dim]")
-    def p0t(self, t, y0) -> Tuple[AbstractMeanFunction, jaxkern.base.AbstractKernel, dict]:
+    def p0t(
+        self,
+        t,
+        y0: Callable[[Float[Array, "N x_dim"]], Float[Array, "N y_dim"]] | Float[Array, "N x_dim"],
+        k0: jaxkern.base.AbstractKernel = None,
+        k0_params: Mapping | None = None
+    ) -> Tuple[AbstractMeanFunction, jaxkern.base.AbstractKernel, dict]:
         # TODO: add equations as method description
-        mean_coef = jnp.exp(-0.5 * self.beta_schedule.B(t))
+
+        # backwards compatibility...
+        if not callable(y0):
+            y0 = lambda _: y0
+
         # E[Y_t|Y_0]
-        μ0t = Constant(output_dim=self.limiting_mean_fn.output_dim)
-        μT_value = self.limiting_params["mean_fn"].get(
-            "constant", jnp.zeros(shape=μ0t.output_dim)
-        )
-        μ0t_params = {"constant": mean_coef * y0 + (1.0 - mean_coef) * μT_value}
+        mean_coef = jnp.exp(-0.5 * self.beta_schedule.B(t))
+
+        class _Mean(AbstractMeanFunction):
+            def __call__(self_, params: Mapping, x: Float[Array, "N D"]) -> Float[Array, "N Q"]:
+                del params
+                μT_value = self.limiting_mean_fn(self.limiting_params["mean_fn"], x)
+                return mean_coef * y0(x) + (1.0 - mean_coef) * μT_value
+            def init_params(self, key):
+                return {}
+
+        μ0t = _Mean()
+
         # Cov[Y_t|Y_0]
-        k0t_param = copy.copy(self.limiting_params["kernel"])
-        k0t_param["variance"] = k0t_param["variance"] * (
-            1.0 - jnp.exp(-self.beta_schedule.B(t))
+        if k0 is None:
+            k0 = self.limiting_kernel # as we set the variance to 0.0 we can pick any kernel.
+            k0_params = {"variance": self.limiting_params["kernel"]["variance"] * 0.0}
+        else:
+            assert k0_params is not None
+
+        cov_coef = jnp.exp(-self.beta_schedule.B(t))
+        k0_params["variance"] = k0_params["variance"] * cov_coef
+        kt_param = copy.copy(self.limiting_params["kernel"])
+        kt_param["variance"] = kt_param["variance"] * (1. - cov_coef)
+        k0t = jaxkern.SumKernel(
+            [k0, self.limiting_kernel],
+            compute_engine=promote_compute_engines(k0.compute_engine, self.limiting_kernel.compute_engine)
         )
-        params = {"mean_fn": μ0t_params, "kernel": k0t_param}
-        return μ0t, self.limiting_kernel, params
+        k0t_params = [k0_params, kt_param]
+        params = {"mean_fn": {}, "kernel": k0t_params}
+        return μ0t, k0t, params
 
     @check_shapes("t: []", "x: [N, x_dim]", "y: [N, y_dim]", "return: [N, y_dim]")
     def sample_marginal(self, key, t, x, y):

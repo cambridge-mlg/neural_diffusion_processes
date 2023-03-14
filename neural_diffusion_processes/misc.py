@@ -1,5 +1,6 @@
-from typing import Optional
+from typing import Optional, Iterator
 
+import math
 import jax
 import jax.numpy as jnp
 
@@ -36,3 +37,21 @@ def flatten(y):
 
 def unflatten(y, d):
     return rearrange(y, "... (n d) -> ... n d", d=d)
+
+
+def get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
+    while True:
+        init_key, next_key = jax.random.split(init_key)
+        yield next_key
+    
+
+def generate_logarithmic_sequence(end, L):
+    base = math.exp(math.log(end) / (L-1))
+    sequence = [0]
+    current = base
+    while len(sequence) < L:
+        current = int(current)
+        sequence.append(current)
+        current *= base
+    sequence.append(end - 1)
+    return sequence
