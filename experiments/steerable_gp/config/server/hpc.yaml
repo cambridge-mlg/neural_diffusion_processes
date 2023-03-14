@@ -1,0 +1,41 @@
+# @package _global_
+defaults:
+  # - base
+  - override /hydra/launcher: submitit_slurm
+
+paths:
+  experiments: results
+#   experiments: /data/ziz/not-backed-up/scratch/${oc.env:USER}/${PROJECT_NAME}/results
+# data_dir: /data/localhost/not-backed-up/datasets-ziz-all/
+
+num_workers: 8
+n_jobs: 32
+num_gpus: 1
+
+hydra:
+  job:
+    env_set:
+      XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+      LD_LIBRARY_PATH: /usr/local/software/cuda/11.4/lib64:${oc.env:LD_LIBRARY_PATH}
+      PATH: /usr/local/software/cuda/11.4/bin/:${oc.env:PATH}
+      XLA_FLAGS: '--xla_gpu_cuda_data_dir=/usr/local/software/cuda/11.4'
+  launcher:
+    submitit_folder: ${hydra.sweep.dir}/.submitit/%j
+    timeout_min: ${eval:60*12}
+    cpus_per_task: ${num_gpus}
+    tasks_per_node: 1
+    mem_gb: 10
+    name: ${hydra.job.name}
+    partition: ampere
+    # account: T2-CS162-GPU
+    gres: gpu:${num_gpus}
+    max_num_timeout: 0
+    array_parallelism: ${n_jobs}
+    setup: [". /etc/profile.d/modules.sh", "module purge", "module load rhel8/default-amp dot rhel8/slurm singularity/current rhel8/global cuda/11.4"]
+    executable: /home/${oc.env:USER}/rds/${PROJECT_NAME}/venv/bin/python
+    additional_parameters: {
+      "account": "T2-CS162-GPU",
+      # "gres": "gpu:${num_gpus}",
+    }
+
+

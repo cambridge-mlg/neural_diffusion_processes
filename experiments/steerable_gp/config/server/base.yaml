@@ -3,7 +3,10 @@
 num_workers: 8
 
 paths:
+  data_dir: ${hydra:runtime.cwd}/data/
   experiments: results
+  ckpt_dir: ckpt
+  logs_dir: logs
 
 hydra:
   sweep:
@@ -25,6 +28,7 @@ hydra:
       handlers: [console, file]
 
   job:
+    chdir: true
     config:
       # configuration for the ${hydra.job.override_dirname} runtime variable
       override_dirname:
