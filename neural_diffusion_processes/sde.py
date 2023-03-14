@@ -96,9 +96,9 @@ class SDE:
     ) -> Tuple[AbstractMeanFunction, jaxkern.base.AbstractKernel, dict]:
         # TODO: add equations as method description
 
-        # backwards compatibility...
-        if not callable(y0):
-            y0 = lambda _: y0
+        # # backwards compatibility...
+        # if not callable(y0):
+        #     y0 = lambda _: y0
 
         # E[Y_t|Y_0]
         mean_coef = jnp.exp(-0.5 * self.beta_schedule.B(t))
@@ -107,28 +107,31 @@ class SDE:
             def __call__(self_, params: Mapping, x: Float[Array, "N D"]) -> Float[Array, "N Q"]:
                 del params
                 μT_value = self.limiting_mean_fn(self.limiting_params["mean_fn"], x)
-                return mean_coef * y0(x) + (1.0 - mean_coef) * μT_value
+                # return mean_coef * y0(x) + (1.0 - mean_coef) * μT_value
+                return mean_coef * y0 + (1.0 - mean_coef) * μT_value
             def init_params(self, key):
                 return {}
 
         μ0t = _Mean()
 
         # Cov[Y_t|Y_0]
+        cov_coef = jnp.exp(-self.beta_schedule.B(t))
         if k0 is None:
-            k0 = self.limiting_kernel # as we set the variance to 0.0 we can pick any kernel.
-            k0_params = {"variance": self.limiting_params["kernel"]["variance"] * 0.0}
+            k0t = self.limiting_kernel
+            k0t_params = copy.copy(self.limiting_params["kernel"])
+            k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
+        #     k0 = self.limiting_kernel # as we set the variance to 0.0 we can pick any kernel.
+        #     k0_params = {"variance": self.limiting_params["kernel"]["variance"] * 0.0}
         else:
             assert k0_params is not None
-
-        cov_coef = jnp.exp(-self.beta_schedule.B(t))
-        k0_params["variance"] = k0_params["variance"] * cov_coef
-        kt_param = copy.copy(self.limiting_params["kernel"])
-        kt_param["variance"] = kt_param["variance"] * (1. - cov_coef)
-        k0t = jaxkern.SumKernel(
-            [k0, self.limiting_kernel],
-            compute_engine=promote_compute_engines(k0.compute_engine, self.limiting_kernel.compute_engine)
-        )
-        k0t_params = [k0_params, kt_param]
+            k0_params["variance"] = k0_params["variance"] * cov_coef
+            kt_param = copy.copy(self.limiting_params["kernel"])
+            kt_param["variance"] = kt_param["variance"] * (1. - cov_coef)
+            k0t = jaxkern.SumKernel(
+                [k0, self.limiting_kernel],
+                compute_engine=promote_compute_engines(k0.compute_engine, self.limiting_kernel.compute_engine)
+            )
+            k0t_params = [k0_params, kt_param]
         params = {"mean_fn": {}, "kernel": k0t_params}
         return μ0t, k0t, params
 
