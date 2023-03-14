@@ -52,7 +52,7 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
         Returns:
             Float[Array, "1"]: Trace of the linear matrix.
         """
-        return jnp.sum([linop.trace() for linop in self.linops])
+        return jnp.sum(jnp.array([linop.trace() for linop in self.linops]))
 
     def log_det(self) -> Float[Array, "1"]:
         """Trace of the linear matrix.
@@ -60,7 +60,7 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
         Returns:
             Float[Array, "1"]: Trace of the linear matrix.
         """
-        return jnp.sum([linop.log_det() for linop in self.linops])
+        return jnp.sum(jnp.array([linop.log_det() for linop in self.linops]))
 
     def to_root(self) -> LinearOperator:
         return BlockDiagonalLinearOperator([linop.to_root() for linop in self.linops])
@@ -68,6 +68,23 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
     def inverse(self) -> LinearOperator:
         return BlockDiagonalLinearOperator([linop.inverse() for linop in self.linops])
     
+    def solve(self, rhs: Float[Array, "N"]) -> Float[Array, "N"]:
+        """Solve linear system. Default implementation uses dense Cholesky decomposition.
+
+        Args:
+            rhs (Float[Array, "N"]): Right hand side of the linear system.
+
+        Returns:
+            Float[Array, "N]: Solution of the linear system.
+        """
+        # NOTE: use jax.scipy.sparse.linalg.cg?
+        shapes_0, _ = zip(*[linop.shape for linop in self.linops])
+        def f(m, rhs):
+            root = m.to_root()
+            rootT = root.T
+            return rootT.solve(root.solve(rhs))
+        return jnp.concatenate([f(m, rhs[shapes_0[0]*i:shapes_0[0]*(i+1)]) for i, m in enumerate(self.linops)], axis=0)
+
     def _add_diagonal(self, other: DiagonalLinearOperator) -> LinearOperator:
         """Add diagonal to the covariance operator,  useful for computing, Kxx + Iσ².
 
@@ -452,7 +469,8 @@ def log_prob_prior_gp(
     y,
     obs_noise: float = 0.0
 ):
-    return prior_gp(mean_function, kernel, params, obs_noise)(x).log_prob(flatten(y))
+    dist = prior_gp(mean_function, kernel, params, obs_noise)(x)
+    return dist.log_prob(flatten(y))
 
 
 @check_shapes("x: [M, x_dim]", "y: [M, y_dim]")
