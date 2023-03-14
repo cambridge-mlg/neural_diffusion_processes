@@ -3,10 +3,9 @@ import dataclasses
 from functools import partial
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from check_shapes import check_shapes
-from jaxtyping import Float, jaxtyped
-from typeguard import typechecked as typechecker
 from einops import rearrange
 
 import gpjax
@@ -19,15 +18,90 @@ from jaxkern.computations import (
     DenseKernelComputation,
     ConstantDiagonalKernelComputation,
 )
-from jaxlinop import ConstantDiagonalLinearOperator, DiagonalLinearOperator, identity
+from jaxlinop import LinearOperator, DenseLinearOperator, ConstantDiagonalLinearOperator, DiagonalLinearOperator, identity
+from jaxlinop.dense_linear_operator import _check_matrix
 
 from .constants import JITTER
-from .types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable
-from .misc import flatten, unflatten
+from .types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable, Float
+from .misc import flatten, unflatten, check_shape
 
 
-def check_shape(func):
-    return typechecker(jaxtyped(func))
+class BlockDiagonalLinearOperator(DenseLinearOperator):
+    """Block diagonal matrix."""
+
+    def __init__(self, matrices: List[Float[Array, "N N"]]):
+        """Initialize the covariance operator.
+
+        Args:
+            matrix (Float[Array, "N N"]): Dense matrix.
+        """
+        [_check_matrix(matrix) for matrix in matrices]
+        self.linops = [matrix if isinstance(matrix, LinearOperator) else DenseLinearOperator(matrix) for matrix in matrices]
+
+    @property
+    def matrix(self):
+        return self.to_dense()
+
+    @property
+    def T(self) -> LinearOperator:
+        return BlockDiagonalLinearOperator([linop.T for linop in self.linops])
+
+    def trace(self) -> Float[Array, "1"]:
+        """Trace of the linear matrix.
+
+        Returns:
+            Float[Array, "1"]: Trace of the linear matrix.
+        """
+        return jnp.sum([linop.trace() for linop in self.linops])
+
+    def log_det(self) -> Float[Array, "1"]:
+        """Trace of the linear matrix.
+
+        Returns:
+            Float[Array, "1"]: Trace of the linear matrix.
+        """
+        return jnp.sum([linop.log_det() for linop in self.linops])
+
+    def to_root(self) -> LinearOperator:
+        return BlockDiagonalLinearOperator([linop.to_root() for linop in self.linops])
+
+    def inverse(self) -> LinearOperator:
+        return BlockDiagonalLinearOperator([linop.inverse() for linop in self.linops])
+    
+    def _add_diagonal(self, other: DiagonalLinearOperator) -> LinearOperator:
+        """Add diagonal to the covariance operator,  useful for computing, Kxx + Iσ².
+
+        Args:
+            other (DiagonalLinearOperator): Diagonal covariance operator to add to the covariance operator.
+
+        Returns:
+            LinearOperator: Sum of the two covariance operators.
+        """
+        shapes_0, _ = zip(*[linop.shape for linop in self.linops])
+        # diag_idx = jnp.concatenate([jnp.zeros((1)), jnp.cumsum(jnp.array(shapes_0))])
+        diag = other.diagonal()
+        diag_linops = [DiagonalLinearOperator(diag[shapes_0[0]*i:shapes_0[0]*(i+1)]) for i in range(len(self.linops))]
+        linops = [linop._add_diagonal(diag_linops[i]) for i, linop in enumerate(self.linops)]
+
+        return BlockDiagonalLinearOperator(matrices=linops)
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        """Covaraince matrix shape.
+
+        Returns:
+            Tuple[int, int]: shape of the covariance operator.
+        """
+        shapes_0, shapes_1 = zip(*[linop.shape for linop in self.linops])
+        return (sum(shapes_0), sum(shapes_1))
+
+    def to_dense(self) -> Float[Array, "N N"]:
+        """Construct dense Covaraince matrix from the covariance operator.
+
+        Returns:
+            Float[Array, "N N"]: Dense covariance matrix.
+        """
+        return jax.scipy.linalg.block_diag(*[linop.to_dense() for linop in self.linops])
 
 
 class MultiOutputDenseKernelComputation(DenseKernelComputation):
@@ -63,8 +137,7 @@ class MultiOutputDenseKernelComputation(DenseKernelComputation):
 
 
 class MultiOutputConstantDiagonalKernelComputation(MultiOutputDenseKernelComputation):
-    """Dense kernel computation class. Operations with the kernel assume
-    a dense gram matrix structure.
+    """
     """
 
     def __init__(
@@ -101,6 +174,40 @@ class MultiOutputConstantDiagonalKernelComputation(MultiOutputDenseKernelComputa
             value=jnp.atleast_1d(value), size=input_dim * output_dim
         )
 
+class MultiOutputDiagonalKernelComputation(MultiOutputDenseKernelComputation):
+    """
+    """
+
+    def __init__(
+        self,
+        kernel_fn: Callable[
+            [Dict, Float[jax.Array, "1 D"], Float[jax.Array, "1 D"]], jax.Array
+        ] = None,
+    ) -> None:
+        super().__init__(kernel_fn)
+
+    def gram(
+        self,
+        params: Dict,
+        inputs: Float[Array, "N D"],
+    ) -> BlockDiagonalLinearOperator:
+        """For a kernel with diagonal structure, compute the NxN gram matrix on
+        an input matrix of shape NxD.
+
+        Args:
+            kernel (AbstractKernel): The kernel for which the Gram matrix
+                should be computed for.
+            params (Dict): The kernel's parameter set.
+            inputs (Float[Array, "N D"]): The input matrix.
+
+        Returns:
+            CovarianceOperator: The computed square Gram matrix.
+        """
+        gram = jax.vmap(lambda x: jax.vmap(lambda y: self.kernel_fn(params, x, y))(inputs))(inputs)
+        matrices = [gram[..., 0, 0], gram[..., 1, 1]]
+
+        return BlockDiagonalLinearOperator(matrices)
+
 
 @dataclasses.dataclass
 class DiagMultiOutputKernel(AbstractKernel):
@@ -115,8 +222,7 @@ class DiagMultiOutputKernel(AbstractKernel):
         if isinstance(scalar_kernel.compute_engine, ConstantDiagonalKernelComputation):
             compute_engine = MultiOutputConstantDiagonalKernelComputation
         else:
-            # TODO: use black diagonal structure
-            compute_engine = MultiOutputDenseKernelComputation
+            compute_engine = MultiOutputDiagonalKernelComputation
 
         super().__init__(
             compute_engine=compute_engine,
@@ -271,7 +377,8 @@ def prior_gp(
         # p = μt.shape[-1]
         μt = flatten(μt)  # jnp.atleast_1d(μt.squeeze())
         Ktt = kernel.gram(params["kernel"], x_test)
-        Ktt += identity(n_test) * (JITTER + obs_noise)
+        # Ktt += identity(n_test) * (JITTER + obs_noise)
+        Ktt = Ktt._add_diagonal(identity(n_test) * (JITTER + obs_noise))
         dist = GaussianDistribution(μt, Ktt)
         return dist
 
@@ -325,7 +432,8 @@ def posterior_gp(
     n = μx.shape[0] * μx.shape[1]
     μx = flatten(μx)  # jnp.atleast_1d(μt.squeeze())
     Kxx = kernel.gram(params["kernel"], x)
-    Sigma = Kxx + identity(n) * (JITTER + obs_noise)
+    # Sigma = Kxx + identity(n) * (JITTER + obs_noise)
+    Sigma = Kxx._add_diagonal(identity(n) * (JITTER + obs_noise))
 
     @check_shapes("x_test: [N, x_dim]")
     def predict(x_test):
@@ -343,7 +451,7 @@ def posterior_gp(
 
         # Ktt  -  Ktx (Kxx + Iσ²)⁻¹ Kxt, TODO: Take advantage of covariance structure to compute Schur complement more efficiently.
         covariance = Ktt - jnp.matmul(Kxt.T, Sigma_inv_Kxt)
-        covariance += identity(n_test) * JITTER
+        covariance = covariance._add_diagonal(identity(n_test) * JITTER)
 
         dist = GaussianDistribution(mean, covariance)
         return dist

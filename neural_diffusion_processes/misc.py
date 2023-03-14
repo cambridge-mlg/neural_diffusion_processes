@@ -10,6 +10,11 @@ from einops import rearrange
 from .types import Array
 from .constants import JITTER
 
+from jaxtyping import Float, jaxtyped
+from typeguard import typechecked as typechecker
+
+def check_shape(func):
+    return typechecker(jaxtyped(func))
 
 @check_shapes(
     "mean: [num_points, 1]",
