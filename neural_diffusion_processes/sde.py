@@ -1,6 +1,5 @@
 from __future__ import annotations
 from abc import abstractmethod
-from typing import Callable, Mapping, Type
 
 import copy
 from functools import partial
@@ -20,9 +19,9 @@ from jaxlinop import LinearOperator, identity, ZeroLinearOperator
 from jaxtyping import Array, Float, PyTree
 from check_shapes import check_shapes
 
-from .types import Tuple
+from .types import Tuple, Callable, Mapping
 from .data import DataBatch
-from .kernels import sample_prior_gp, log_prob_prior_gp
+from .kernels import sample_prior_gp, log_prob_prior_gp, promote_compute_engines
 from .constants import JITTER
 from .misc import flatten, unflatten
 
@@ -59,24 +58,6 @@ class LinearBetaSchedule:
         return interval * (
             self.beta0 * normed_t + 0.5 * (normed_t**2) * (self.beta1 - self.beta0)
         )
-
-def promote_compute_engines(engine1: Type[jaxkern.computations.AbstractKernelComputation], engine2: Type[jaxkern.computations.AbstractKernelComputation]) -> Type[jaxkern.computations.AbstractKernelComputation]:
-    if engine1 == jaxkern.computations.ConstantDiagonalKernelComputation and engine2 == jaxkern.computations.ConstantDiagonalKernelComputation:
-        return jaxkern.computations.ConstantDiagonalKernelComputation
-
-    if engine1 == jaxkern.computations.ConstantDiagonalKernelComputation and engine2 == jaxkern.computations.DiagonalKernelComputation:
-        return jaxkern.computations.DiagonalKernelComputation
-
-    if engine2 == jaxkern.computations.ConstantDiagonalKernelComputation and engine1 == jaxkern.computations.DiagonalKernelComputation:
-        return jaxkern.computations.DiagonalKernelComputation
-
-    if engine1 == jaxkern.computations.DenseKernelComputation or engine2 == jaxkern.computations.DenseKernelComputation:
-        return jaxkern.computations.DenseKernelComputation
-
-    raise NotImplementedError(
-        "Add rule for optimal compute engine sum kernel for types %s and %s." % (
-            engine1, engine2
-        ))
 
 
 class SDE:
@@ -170,7 +151,7 @@ class SDE:
         # print("yt", type(yt), yt.shape)
         del yt
         Ktt = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
-        Ktt += JITTER * identity(np)
+        Ktt = Ktt._add_diagonal(JITTER * identity(np))
         # print("Ktt", type(Ktt), Ktt.shape)
         sqrt_K = Ktt.to_root()
         # print("sqrt_K", type(sqrt_K), sqrt_K.shape)
@@ -178,7 +159,6 @@ class SDE:
         # print("beta_term", type(beta_term), beta_term.shape)
         diffusion = beta_term * sqrt_K
         # print("diffusion", type(diffusion), (diffusion).shape)
-        # TODO: beta_term multiplication is loosing the linear op structure!
         return diffusion.to_dense()
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
@@ -237,10 +217,8 @@ class MatVecControlTerm(dfx.ControlTerm):
     @staticmethod
     def prod(vf: PyTree, control: PyTree) -> PyTree:
         # TODO: use linop structure
-        # print("vf", type(vf), vf.shape)
-        # print("control", type(control), control.shape)
-        # print("(vf @ control)", type((vf @ control)), (vf @ control).shape)
         return jtu.tree_map(lambda a, b: a @ b, vf, control)
+        # return vf @ control
 
 
 # def reverse_solve(sde: SDE, network: ScoreNetwork, x, *, key, prob_flow: bool = True):

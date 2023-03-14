@@ -3,6 +3,7 @@ from typing import Optional, Iterator
 import math
 import jax
 import jax.numpy as jnp
+from jax import lax
 
 from check_shapes import check_shapes
 from einops import rearrange
@@ -60,3 +61,6 @@ def generate_logarithmic_sequence(end, L):
         current *= base
     sequence.append(end - 1)
     return sequence
+
+def jax_unstack(x, axis=0):
+  return [lax.index_in_dim(x, i, axis, keepdims=False) for i in range(x.shape[axis])]

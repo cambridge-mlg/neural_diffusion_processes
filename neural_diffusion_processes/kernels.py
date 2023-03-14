@@ -22,8 +22,8 @@ from jaxlinop import LinearOperator, DenseLinearOperator, ConstantDiagonalLinear
 from jaxlinop.dense_linear_operator import _check_matrix
 
 from .constants import JITTER
-from .types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable, Float
-from .misc import flatten, unflatten, check_shape
+from .types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable, Float, Type
+from .misc import flatten, unflatten, check_shape, jax_unstack
 
 
 class BlockDiagonalLinearOperator(DenseLinearOperator):
@@ -78,12 +78,11 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
             LinearOperator: Sum of the two covariance operators.
         """
         shapes_0, _ = zip(*[linop.shape for linop in self.linops])
-        # diag_idx = jnp.concatenate([jnp.zeros((1)), jnp.cumsum(jnp.array(shapes_0))])
         diag = other.diagonal()
         diag_linops = [DiagonalLinearOperator(diag[shapes_0[0]*i:shapes_0[0]*(i+1)]) for i in range(len(self.linops))]
         linops = [linop._add_diagonal(diag_linops[i]) for i, linop in enumerate(self.linops)]
 
-        return BlockDiagonalLinearOperator(matrices=linops)
+        return BlockDiagonalLinearOperator(linops)
 
     @property
     def shape(self) -> Tuple[int, int]:
@@ -94,6 +93,20 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
         """
         shapes_0, shapes_1 = zip(*[linop.shape for linop in self.linops])
         return (sum(shapes_0), sum(shapes_1))
+
+
+    def __mul__(self, other: float) -> LinearOperator:
+        """Multiply covariance operator by scalar.
+
+        Args:
+            other (LinearOperator): Scalar.
+
+        Returns:
+            LinearOperator: Covariance operator multiplied by a scalar.
+        """
+
+        return BlockDiagonalLinearOperator([linop * other for linop in self.linops])
+
 
     def to_dense(self) -> Float[Array, "N N"]:
         """Construct dense Covaraince matrix from the covariance operator.
@@ -204,10 +217,33 @@ class MultiOutputDiagonalKernelComputation(MultiOutputDenseKernelComputation):
             CovarianceOperator: The computed square Gram matrix.
         """
         gram = jax.vmap(lambda x: jax.vmap(lambda y: self.kernel_fn(params, x, y))(inputs))(inputs)
-        matrices = [gram[..., 0, 0], gram[..., 1, 1]]
+        # matrices = jax.numpy.diagonal(gram, axis1=-2, axis2=-1)
+        matrices = jax.vmap(jax.vmap(jax.numpy.diagonal))(gram)
+        matrices = jax_unstack(matrices, axis=-1)
 
         return BlockDiagonalLinearOperator(matrices)
 
+
+def promote_compute_engines(engine1: Type[jaxkern.computations.AbstractKernelComputation], engine2: Type[jaxkern.computations.AbstractKernelComputation]) -> Type[jaxkern.computations.AbstractKernelComputation]:
+    if engine1 ==MultiOutputDiagonalKernelComputation and engine2 == jaxkern.computations.ConstantDiagonalKernelComputation:
+        return jaxkern.computations.ConstantDiagonalKernelComputation
+
+    if engine1 == jaxkern.computations.ConstantDiagonalKernelComputation and engine2 == jaxkern.computations.DiagonalKernelComputation:
+        return jaxkern.computations.DiagonalKernelComputation
+
+    if engine2 == jaxkern.computations.ConstantDiagonalKernelComputation and engine1 == jaxkern.computations.DiagonalKernelComputation:
+        return jaxkern.computations.DiagonalKernelComputation
+
+    if engine2 ==MultiOutputDiagonalKernelComputation and engine1 == MultiOutputDiagonalKernelComputation:
+        return MultiOutputDiagonalKernelComputation
+
+    if engine1 == jaxkern.computations.DenseKernelComputation or engine2 == jaxkern.computations.DenseKernelComputation:
+        return jaxkern.computations.DenseKernelComputation
+
+    raise NotImplementedError(
+        "Add rule for optimal compute engine sum kernel for types %s and %s." % (
+            engine1, engine2
+        ))
 
 @dataclasses.dataclass
 class DiagMultiOutputKernel(AbstractKernel):
