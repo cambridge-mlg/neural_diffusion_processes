@@ -471,7 +471,7 @@ def log_prob_prior_gp(
     obs_noise: float = 0.0
 ):
     dist = prior_gp(mean_function, kernel, params, obs_noise)(x)
-    return dist.log_prob(flatten(y))
+    return dist.log_prob(flatten(y)).squeeze()
 
 
 @check_shapes("x: [M, x_dim]", "y: [M, y_dim]")
