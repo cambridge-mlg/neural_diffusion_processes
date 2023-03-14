@@ -56,14 +56,12 @@ def run(config):
     ####### init relevant diffusion classes
     beta_schedule = instantiate(config.beta_schedule)
     limiting_kernel = instantiate(config.kernel.cls)
-    # limiting_kernel = instantiate(config.sde.limiting_kernel)
     limiting_mean_fn = instantiate(config.sde.limiting_mean_fn)
     limiting_params = {
-        # "kernel": OmegaConf.to_container(config.kernel.hyps, resolve=True),
         "kernel": limiting_kernel.init_params(key),
         "mean_fn": limiting_mean_fn.init_params(key),
     }
-    # TODO: merge kernel parameters with config ones
+    limiting_params["kernel"].update(OmegaConf.to_container(config.kernel.params, resolve=True)) # NOTE: breaks RFF?
     sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
 
     ####### prepare data

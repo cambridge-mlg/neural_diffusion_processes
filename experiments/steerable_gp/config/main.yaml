@@ -4,21 +4,16 @@ defaults:
   - _self_
 
   - server: base
-  # - experiment: s2_toy
 
   - logger: csv
 
-  # - net: attn
   - net: mattn
+  # - optim: adam
   - lr_schedule: rcosine
   - beta_schedule: linear
   - kernel: whitevec
-  # - kernel: divfree
   - data_kernel: divfree
 
-  # - optim: adam
-  # - scheduler: rcosine
-  # - beta_schedule: linear
   
   # enable color logging
   - override hydra/hydra_logging: default
@@ -41,16 +36,16 @@ optimization:
 data:
   _target_: neural_diffusion_processes.data.get_vec_gp_data
   num_samples_train: 100_000
-  # num_points: 30
-  num_points: 10
+  num_points: 30
   x_radius: 20
   kernel: ${data_kernel.cls}
-  # hyperparameters: ${data_kernel.hyps}
+  variance: 10
+  # hyperparameters: ${data_kernel.params}
   params:
     kernel:
       # lengthscale: ${eval:math.sqrt(5.)}
       lengthscale: 2.23606797749979
-      variance: 10.0
+      variance: ${data.variance}
     mean_fn: {}
   mean_function:
     _target_: gpjax.Zero
@@ -59,6 +54,10 @@ data:
   seed_test: 1
   num_samples_test: 64
   seed: 0
+
+kernel:
+  params:
+    variance: ${data.variance}
 
 sde:
   # limiting_kernel_hyperparameters: 
@@ -76,15 +75,6 @@ sde:
 # eval_batch_size: ${batch_size}
 now: ${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-resume: false
-mode: all
-PROJECT_NAME: score-sde
-work_dir: ${hydra:runtime.cwd}
-
-# path to folder with data
-data_dir: ${work_dir}/data/
-ckpt_dir: ckpt
-logs_dir: logs
-
-logdir: ${work_dir}/results
-# rundir: ${dataset.name}/${model.name}
+# resume: false
+# mode: all
+PROJECT_NAME: neural_diffusion_processes

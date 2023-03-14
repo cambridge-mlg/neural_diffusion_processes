@@ -1,6 +1,6 @@
 cls:
   _target_: neural_diffusion_processes.kernels.RBFVec
   output_dim: 2
-hyps:
-  lengthscale: 1.0
-  variance: 1.0
+#params:
+#  lengthscale: 1.0
+#  variance: 1.0
