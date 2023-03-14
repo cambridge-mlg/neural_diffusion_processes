@@ -276,6 +276,7 @@ class DiagMultiOutputKernel(AbstractKernel):
             compute_engine = MultiOutputConstantDiagonalKernelComputation
         else:
             compute_engine = MultiOutputDiagonalKernelComputation
+            # compute_engine = MultiOutputDenseKernelComputation
 
         super().__init__(
             compute_engine=compute_engine,

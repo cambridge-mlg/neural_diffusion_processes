@@ -1,5 +1,6 @@
 from __future__ import annotations
 from abc import abstractmethod
+import operator
 
 import copy
 from functools import partial
@@ -14,7 +15,7 @@ from diffrax import AbstractSolver, Dopri5, Tsit5
 import jaxkern
 import gpjax
 from gpjax.mean_functions import AbstractMeanFunction, Zero, Constant
-from jaxlinop import LinearOperator, identity, ZeroLinearOperator
+from jaxlinop import LinearOperator, DenseLinearOperator, DiagonalLinearOperator, identity, ZeroLinearOperator
 
 from jaxtyping import Array, Float, PyTree
 from check_shapes import check_shapes
@@ -162,7 +163,7 @@ class SDE:
         # print("beta_term", type(beta_term), beta_term.shape)
         diffusion = beta_term * sqrt_K
         # print("diffusion", type(diffusion), (diffusion).shape)
-        return diffusion.to_dense()
+        return diffusion#.to_dense()
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
@@ -219,12 +220,21 @@ def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
 class MatVecControlTerm(dfx.ControlTerm):
     @staticmethod
     def prod(vf: PyTree, control: PyTree) -> PyTree:
-        # TODO: use linop structure
         return jtu.tree_map(lambda a, b: a @ b, vf, control)
+
+class LinOpControlTerm(dfx.ControlTerm):
+    @staticmethod
+    def prod(vf: LinearOperator, control: PyTree) -> PyTree:
+        # TODO: use linop structure
+        # return jtu.tree_map(lambda a, b: a @ b, vf, control)
         # return vf @ control
+        if isinstance(vf, DiagonalLinearOperator):
+            # NOTE: cf dfx.WeaklyDiagonalControlTerm
+            return jtu.tree_map(operator.mul, vf.diagonal(), control)
+        else:
+            return jtu.tree_map(lambda a, b: a @ b, vf.to_dense(), control)
 
 
-# def reverse_solve(sde: SDE, network: ScoreNetwork, x, *, key, prob_flow: bool = True):
 def reverse_solve(
     sde: SDE,
     network: ScoreNetwork,
@@ -259,7 +269,7 @@ def reverse_solve(
         diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
 
         terms = dfx.MultiTerm(
-            dfx.ODETerm(reverse_drift_sde), MatVecControlTerm(diffusion, bm)
+            dfx.ODETerm(reverse_drift_sde), LinOpControlTerm(diffusion, bm)
         )
     # TODO: adaptive step?
     ys = dfx.diffeqsolve(
@@ -324,7 +334,7 @@ def conditional_sample(
     diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
     drift = lambda t, yt, arg: flatten(sde.drift(t, unflatten(yt, y_dim), arg))
     sde_terms_forward = dfx.MultiTerm(
-        dfx.ODETerm(drift), MatVecControlTerm(diffusion, bm)
+        dfx.ODETerm(drift), LinOpControlTerm(diffusion, bm)
     )
 
     def inner_loop(key, yt, t):
