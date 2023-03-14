@@ -1,8 +1,11 @@
 wandb:
     _target_: neural_diffusion_processes.utils.loggers_pl.WandbLogger
-    save_dir: null # /data/localhost/not-backed-up/mhutchin/score-sde/logs #${logs_dir}
+    save_dir: null #${paths.logs_dir}
     name: ${str:${seed}}
     group: ${name}_${hydra:job.override_dirname}
-    entity: oxcsml
-    project: diffusion_manifold
+    # entity: oxcsml
+    # entity: cbl-mlg
+    entity: emilem
+    # project: diffusion_manifold
+    project: equiv-stochastic-diffusion-processes
     offline: False

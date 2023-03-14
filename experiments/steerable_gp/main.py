@@ -1,9 +1,10 @@
+import math
 from typing import Tuple, Mapping, Iterator, List
 import os
 import socket
 import logging
 from collections import defaultdict
-import functools
+from functools import partial
 import tqdm
 
 import haiku as hk
@@ -44,7 +45,7 @@ def run(config):
     run_path = os.getcwd()
     log.info(f"run_path: {run_path}")
     log.info(f"hostname: {socket.gethostname()}")
-    ckpt_path = os.path.join(run_path, config.ckpt_dir)
+    ckpt_path = os.path.join(run_path, config.paths.ckpt_dir)
     os.makedirs(ckpt_path, exist_ok=True)
     loggers = [instantiate(logger_config) for logger_config in config.logger.values()]
     logger = LoggerCollection(loggers)
@@ -164,12 +165,12 @@ def run(config):
 
     @jax.jit
     def plot_reverse(key, x_plt, params):
-        net_ = functools.partial(net, params)
+        net_ = partial(net, params)
         return ndp.sde.reverse_solve(sde, net_, x_plt, key=key)
 
     @jax.jit
     def plot_cond(key, x_plt, params):
-        net_ = functools.partial(net, params)
+        net_ = partial(net, params)
         if x_dim == 1:
             x_known = jnp.reshape(jnp.asarray([[-0.2, 0.2, 0.6]]), (-1, 1)) + 1.0e-2
         elif x_dim == 2:
@@ -193,6 +194,7 @@ def run(config):
     def plots(state: TrainingState, key) -> Mapping[str, plt.Figure]:
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
         keys = jax.random.split(key, 6)
+        plot_v = partial(plot_vector_field, scale=50*math.sqrt(config.data.variance))
 
         # plot data process
         fig_data, ax = plt.subplots(figsize=(8, 8))
@@ -203,7 +205,7 @@ def run(config):
             pass
         elif y_dim == 2:
             fig_data.set_size_inches(8, 8)
-            plot_vector_field(ax, batch.xs[idx], batch.ys[idx])
+            plot_v(ax, batch.xs[idx], batch.ys[idx])
 
         # define grid over x space
         if x_dim == 1:
@@ -222,7 +224,7 @@ def run(config):
             fig_forward.set_size_inches(8, 8)
             t = 0.5 * jnp.ones(())
             out = sde.sample_marginal(keys[1], t, batch.xs[idx], batch.ys[idx])
-            plot_vector_field(ax, batch.xs[idx], out)
+            plot_v(ax, batch.xs[idx], out)
 
         # plot limiting process
         fig_limiting, ax = plt.subplots()
@@ -232,7 +234,7 @@ def run(config):
         elif y_dim == 2:
             fig_limiting.set_size_inches(8, 8)
             out = sde.sample_prior(keys[2], x_plt)
-            plot_vector_field(ax, x_plt, out)
+            plot_v(ax, x_plt, out)
 
         # plot generated samples
         fig_reverse, ax = plt.subplots()
@@ -247,7 +249,7 @@ def run(config):
         elif out.shape[-1] == 2:
             fig_reverse.set_size_inches(8, 8)
             out = plot_reverse(keys[4], x_plt, state.params).squeeze()
-            plot_vector_field(ax, x_plt, out)
+            plot_v(ax, x_plt, out)
         else:
             return []
 
@@ -262,7 +264,7 @@ def run(config):
         elif out.shape[-1] == 2:
             fig_cond.set_size_inches(8, 8)
             out = plot_cond(keys[5], x_plt, state.params).squeeze()
-            plot_vector_field(ax, x_plt, out)
+            plot_v(ax, x_plt, out)
         else:
             return []
 
@@ -275,25 +277,25 @@ def run(config):
         }
 
     # #############
-    @functools.partial(jax.jit)
+    @partial(jax.jit)
     def eval(state: TrainingState, key) -> Mapping[str, float]:
         num_samples = 32
 
-        @functools.partial(jax.vmap, in_axes=[None, None, None, 0])
-        @functools.partial(jax.vmap, in_axes=[0, 0, 0, None])
+        @partial(jax.vmap, in_axes=[None, None, None, 0])
+        @partial(jax.vmap, in_axes=[0, 0, 0, None])
         def conditional_sample(x_context, y_context, x_target, key):
-            net_ = functools.partial(net, state.params)
+            net_ = partial(net, state.params)
             return ndp.sde.conditional_sample(
                 sde, net_, x_context, y_context, x_target, key=key
             )
 
-        @functools.partial(jax.vmap, in_axes=[0, 0, None])
+        @partial(jax.vmap, in_axes=[0, 0, None])
         def prior_log_prob(x, y, key):
-            net_ = functools.partial(net, state.params)
+            net_ = partial(net, state.params)
             return ndp.sde.log_prob(sde, net_, x, y, key=key)
 
-        @functools.partial(jax.vmap, in_axes=[None, None, None, 0])
-        @functools.partial(jax.vmap)
+        @partial(jax.vmap, in_axes=[None, None, None, 0])
+        @partial(jax.vmap)
         def cond_log_prob(xc, yc, xs, ys):
             config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_log_prob"
             posterior_log_prob = call(config.data)
@@ -312,18 +314,18 @@ def run(config):
             mse_med_pred = jnp.sum((batch.ys - f_pred) ** 2)
             metrics["cond_mse_median"].append(mse_med_pred)
             
-            #TODO: clean
-            logp = cond_log_prob(batch.xc, batch.yc, batch.xs, samples)
-            metrics["cond_log_prob"].append(jnp.sum(jnp.mean(logp, axis=-1)))
+            # #TODO: clean
+            # logp = cond_log_prob(batch.xc, batch.yc, batch.xs, samples)
+            # metrics["cond_log_prob"].append(jnp.sum(jnp.mean(logp, axis=-1)))
         
-            x_augmented = jnp.concatenate([batch.xs, batch.xc], axis=1)
-            y_augmented = jnp.concatenate([batch.ys, batch.yc], axis=1)
-            augmented_logp = prior_log_prob(x_augmented, y_augmented, key)
-            context_logp = prior_log_prob(batch.xc, batch.yc, key)
-            metrics["cond_log_prob2"].append(jnp.sum(augmented_logp - context_logp))
+            # x_augmented = jnp.concatenate([batch.xs, batch.xc], axis=1)
+            # y_augmented = jnp.concatenate([batch.ys, batch.yc], axis=1)
+            # augmented_logp = prior_log_prob(x_augmented, y_augmented, key)
+            # context_logp = prior_log_prob(batch.xc, batch.yc, key)
+            # metrics["cond_log_prob2"].append(jnp.sum(augmented_logp - context_logp))
 
-            logp = prior_log_prob(batch.xs, batch.ys, key)
-            metrics["prior_log_prob"].append(jnp.sum(logp))
+            # logp = prior_log_prob(batch.xs, batch.ys, key)
+            # metrics["prior_log_prob"].append(jnp.sum(logp))
 
         v = {k: jnp.sum(jnp.stack(v)) / len(data_test) for k, v in metrics.items()}
         return v
@@ -335,16 +337,16 @@ def run(config):
                 kwargs["metrics"], step
             ),
         ),
+        # ml_tools.actions.PeriodicCallback(
+        #     # every_steps=2_000,
+        #     every_steps=1,
+        #     callback_fn=lambda step, t, **kwargs: logger.log_metrics(
+        #         eval(kwargs["state"], kwargs["key"]), step
+        #     ),
+        # ),
         ml_tools.actions.PeriodicCallback(
             # every_steps=2_000,
-            every_steps=1,
-            callback_fn=lambda step, t, **kwargs: logger.log_metrics(
-                eval(kwargs["state"], kwargs["key"]), step
-            ),
-        ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=2_000,
-            # every_steps=1,
+            every_steps=500,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"]), step
             ),
