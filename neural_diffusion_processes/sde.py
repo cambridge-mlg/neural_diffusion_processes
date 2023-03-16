@@ -54,7 +54,6 @@ class LinearBetaSchedule:
         """
         interval = self.t1 - self.t0
         normed_t = (t - self.t0) / interval
-        # TODO: Notice the additional scaling by the interval t1-t0.
         # This is not done in the package.
         return interval * (
             self.beta0 * normed_t + 0.5 * (normed_t**2) * (self.beta1 - self.beta0)
@@ -75,6 +74,8 @@ class SDE:
         self.limiting_params = limiting_params
         self.beta_schedule = beta_schedule
         self.weighted = True
+        self.std_trick = True
+        self.residual_trick = True
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
@@ -137,67 +138,73 @@ class SDE:
         return μ0t, k0t, params
 
     @check_shapes("t: []", "x: [N, x_dim]", "y: [N, y_dim]", "return: [N, y_dim]")
-    def sample_marginal(self, key, t, x, y):
+    def sample_marginal(self, key, t: Array, x: Array, y: Array) -> Array:
         μ0t, k0t, params = self.p0t(t, y)
         return sample_prior_gp(key, μ0t, k0t, params, x)
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    def drift(self, t, yt, x):
+    def drift(self, t: Array, yt: Array, x: Array) -> Array:
         μT = self.limiting_mean_fn(self.limiting_params["mean_fn"], x)
-        return -0.5 * self.beta_schedule(t) * (yt - μT)  # [N, 1]
+        return -0.5 * self.beta_schedule(t) * (yt - μT)
 
-    # @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, N]")
-    # @check_shapes(
-    #     "t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N * y_dim, N * y_dim]"
-    # )
-    def diffusion(self, t, yt, x):
+    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]")
+    def diffusion(self, t, yt, x) -> LinearOperator:
         np = yt.shape[-2] * yt.shape[-1]
-        # print("yt", type(yt), yt.shape)
         del yt
         Ktt = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
         Ktt = Ktt._add_diagonal(JITTER * identity(np))
-        # print("Ktt", type(Ktt), Ktt.shape)
         sqrt_K = Ktt.to_root()
-        # print("sqrt_K", type(sqrt_K), sqrt_K.shape)
         beta_term = jnp.sqrt(self.beta_schedule(t))
-        # print("beta_term", type(beta_term), beta_term.shape)
         diffusion = beta_term * sqrt_K
-        # print("diffusion", type(diffusion), (diffusion).shape)
-        return diffusion#.to_dense()
+        return diffusion
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
-        factor = (1.0 - jnp.exp(self.beta_schedule.B(t))) ** -1
-        score = factor * network(t, yt, x, key=key)
+        """ This parametrise the preconditioned score K(x,x) grad log p(y_t|x) """
+        score = network(t, yt, x, key=key)
+        if self.std_trick:
+            std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
+            score = score / std
+        if self.residual_trick:
+            # NOTE: s.t. bwd SDE = fwd SDE
+            fwd_drift = self.drift(t, yt, x)
+            residual = 2 * fwd_drift / self.beta_schedule(t)
+            score += residual
         return score
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    def reverse_drift_ode(self, key, t, yt, x, network):
+    def reverse_drift_ode(self, key, t: Array, yt: Array, x: Array, network) -> Array:
         return self.drift(t, yt, x) - 0.5 * self.beta_schedule(t) * self.score(
             key, t, yt, x, network
         )
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    def reverse_drift_sde(self, key, t, yt, x, network):
+    def reverse_drift_sde(self, key, t: Array, yt: Array, x: Array, network) -> Array:
         return self.drift(t, yt, x) - self.beta_schedule(t) * self.score(
             key, t, yt, x, network
         )
 
     @check_shapes("t: []", "y: [N, y_dim]", "x: [N, x_dim]", "return: []")
     def loss(self, key, t: Array, y: Array, x: Array, network: ScoreNetwork) -> Array:
+        # TODO: this is DSM loss, refactor to enable ISM loss etc
+        """ grad log p(y_t|y_0) = - \Sigma^-1 (y_t - mean) """
 
+        factor = (1.0 - jnp.exp(-self.beta_schedule.B(t)))
+        # TODO: allow for 'likelihood' weight with weight=diffusion**2?
         if self.weighted:
-            weight = 1 - jnp.exp(-self.beta_schedule.B(t))
+            weight = factor
         else:
             weight = 1.0
 
         ekey, nkey = jax.random.split(key)
         μ0t, k0t, params = self.p0t(t, y)
         yt = sample_prior_gp(ekey, μ0t, k0t, params, x)
-        objective = -(yt - μ0t(params["mean_fn"], x))
+        precond_score = -(yt - μ0t(params["mean_fn"], x)) / factor
 
-        precond_score_pt = network(t, yt, x, key=nkey)
-        return weight * jnp.mean(jnp.sum((objective - precond_score_pt) ** 2, -1), -1)
+        precond_score_net = self.score(nkey, t, yt, x, network)
+        loss = jnp.mean(jnp.sum((precond_score - precond_score_net) ** 2, -1))
+        return weight * loss
+
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
@@ -211,10 +218,10 @@ def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
     t = t + (t1 / batch_size) * jnp.arange(batch_size)
 
     keys = jax.random.split(key, batch_size)
-    error = jax.vmap(sde.loss, in_axes=[0, 0, 0, 0, None])(
+    losses = jax.vmap(sde.loss, in_axes=[0, 0, 0, 0, None])(
         keys, t, batch.ys, batch.xs, network
     )
-    return jnp.mean(error)
+    return jnp.mean(losses)
 
 
 class MatVecControlTerm(dfx.ControlTerm):
@@ -225,14 +232,8 @@ class MatVecControlTerm(dfx.ControlTerm):
 class LinOpControlTerm(dfx.ControlTerm):
     @staticmethod
     def prod(vf: LinearOperator, control: PyTree) -> PyTree:
-        # TODO: use linop structure
         # return jtu.tree_map(lambda a, b: a @ b, vf, control)
-        # return vf @ control
-        if isinstance(vf, DiagonalLinearOperator):
-            # NOTE: cf dfx.WeaklyDiagonalControlTerm
-            return jtu.tree_map(operator.mul, vf.diagonal(), control)
-        else:
-            return jtu.tree_map(lambda a, b: a @ b, vf.to_dense(), control)
+        return vf @ control
 
 
 def reverse_solve(
