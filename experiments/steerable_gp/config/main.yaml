@@ -28,7 +28,7 @@ beta_schedule:
   beta0: 0.001
   beta1: 15.0
 
-optimization:
+optim:
   batch_size: 16
   num_steps: 100_000
   lr: 1e-3

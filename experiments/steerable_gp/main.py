@@ -85,7 +85,7 @@ def run(config):
     )
     dataloader_test = ndp.data.dataloader(
         data_test,
-        batch_size=config.optimization.batch_size,
+        batch_size=config.optim.batch_size,
         key=next(key_iter),
         run_forever=False,  # only run once
     )
@@ -153,7 +153,7 @@ def run(config):
     # state = restore_if_exists(state, path)
 
     progress_bar = tqdm.tqdm(
-        list(range(1, config.optimization.num_steps + 1)), miniters=1
+        list(range(1, config.optim.num_steps + 1)), miniters=1
     )
     # exp_root_dir = get_experiment_dir(config)
 
