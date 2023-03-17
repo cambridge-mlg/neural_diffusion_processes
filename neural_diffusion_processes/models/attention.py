@@ -147,7 +147,7 @@ class BiDimensionalAttentionBlock(hk.Module):
 
 @dataclass
 class BiDimensionalAttentionModel(hk.Module):
-    num_bidim_attention_layers: int
+    n_layers: int
     """Number of bi-dimensional attention blocks."""
     hidden_dim: int
     num_heads: int
@@ -188,7 +188,7 @@ class BiDimensionalAttentionModel(hk.Module):
         t_embedding = timestep_embedding(t, self.hidden_dim)
 
         skip = None
-        for _ in range(self.num_bidim_attention_layers):
+        for _ in range(self.n_layers):
             layer = BiDimensionalAttentionBlock(self.hidden_dim, self.num_heads)
             x, skip_connection = layer(x, t_embedding)
             skip = skip_connection if skip is None else skip_connection + skip
@@ -200,7 +200,7 @@ class BiDimensionalAttentionModel(hk.Module):
             reduce(skip, "b n d h -> b n h", "mean"), "[batch, num_points, hidden_dim]"
         )
 
-        eps = skip / math.sqrt(self.num_bidim_attention_layers * 1.0)
+        eps = skip / math.sqrt(self.n_layers * 1.0)
         eps = jax.nn.gelu(hk.Linear(self.hidden_dim)(eps))
         eps = hk.Linear(1, w_init=jnp.zeros)(eps)
         return eps
@@ -210,13 +210,13 @@ class BiDimensionalAttentionModel(hk.Module):
 class MultiOutputAttentionModel(hk.Module):
     def __init__(
         self,
-        num_bidim_attention_layers: int,  # Number of bi-dimensional attention blocks
+        n_layers: int,  # Number of bi-dimensional attention blocks
         hidden_dim: int,
         num_heads: int,
         **kwargs,
     ):
         super().__init__()
-        self.num_layers = num_bidim_attention_layers
+        self.num_layers = n_layers
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
 

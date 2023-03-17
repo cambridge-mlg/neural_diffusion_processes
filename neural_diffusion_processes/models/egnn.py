@@ -51,8 +51,8 @@ class E_GCL(hk.Module):
     re
     """
 
-    output_nf: int
-    hidden_nf: int
+    output_dim: int
+    hidden_dim: int
     act_fn: Callable = get_activation("silu")
     residual: bool = True
     attention: bool = False
@@ -68,9 +68,9 @@ class E_GCL(hk.Module):
             out = jnp.concatenate([source, target, radial, edge_attr], axis=1)
         edge_mlp = hk.Sequential(
             [
-                hk.Linear(self.hidden_nf),
+                hk.Linear(self.hidden_dim),
                 self.act_fn,
-                hk.Linear(self.hidden_nf),
+                hk.Linear(self.hidden_dim),
                 self.act_fn,
             ]
         )
@@ -91,7 +91,7 @@ class E_GCL(hk.Module):
             agg = jnp.concatenate([x, agg], axis=1)
 
         node_mlp = hk.Sequential(
-            [hk.Linear(self.hidden_nf), self.act_fn, hk.Linear(self.output_nf)]
+            [hk.Linear(self.hidden_dim), self.act_fn, hk.Linear(self.output_dim)]
         )
         out = node_mlp(agg)
 
@@ -107,7 +107,7 @@ class E_GCL(hk.Module):
         layer = hk.Linear(1, with_bias=False, w_init=w_init)
 
         coord_mlp = []
-        coord_mlp.append(hk.Linear(self.hidden_nf))
+        coord_mlp.append(hk.Linear(self.hidden_dim))
         coord_mlp.append(self.act_fn)
         coord_mlp.append(layer)
         if self.tanh:
@@ -151,8 +151,8 @@ class E_GCL(hk.Module):
 class EGNN(hk.Module):
     """
 
-    :param hidden_nf: Number of hidden features
-    :param out_node_nf: Number of features for 'h' at the output
+    :param hidden_dim: Number of hidden features
+    :param out_node_dim: Number of features for 'h' at the output
     :param act_fn: Non-linearity
     :param n_layers: Number of layer for the EGNN
     :param residual: Use residual connections, we recommend not changing this one
@@ -167,8 +167,8 @@ class EGNN(hk.Module):
                     We didn't use it in our paper.
     """
 
-    hidden_nf: int
-    # out_node_nf: int
+    hidden_dim: int
+    # out_node_dim: int
     act_fn: str = "silu"
     n_layers: int = 4
     residual: bool = True
@@ -179,14 +179,14 @@ class EGNN(hk.Module):
     norm_constant: int = 0
 
     def __call__(self, h, y, edges, edge_attr=None, node_attr=None):
-        embedding_in = hk.Linear(self.hidden_nf)
+        embedding_in = hk.Linear(self.hidden_dim)
         embedding_out = hk.Linear(h.shape[-1])
         act_fn = get_activation(self.act_fn)
         h = embedding_in(h)
         for i in range(0, self.n_layers):
             layer = E_GCL(
-                output_nf=self.hidden_nf,
-                hidden_nf=self.hidden_nf,
+                output_dim=self.hidden_dim,
+                hidden_dim=self.hidden_dim,
                 act_fn=act_fn,
                 residual=self.residual,
                 attention=self.attention,
@@ -210,7 +210,7 @@ class E_FGCL(E_GCL):
         for coord_diff in [x_diff, y_diff]:
             w_init = hk.initializers.VarianceScaling(0.001, "fan_avg", "uniform")
             layer = hk.Linear(1, with_bias=False, w_init=w_init)
-            coord_mlp = [hk.Linear(self.hidden_nf), self.act_fn, layer]
+            coord_mlp = [hk.Linear(self.hidden_dim), self.act_fn, layer]
             if self.tanh:
                 coord_mlp.append(jnp.tanh)
             coord_mlp = hk.Sequential(coord_mlp)
@@ -244,14 +244,14 @@ class E_FGCL(E_GCL):
 @dataclasses.dataclass
 class EFGNN(EGNN):
     def __call__(self, h, x, y, edges, edge_attr=None, node_attr=None):
-        embedding_in = hk.Linear(self.hidden_nf)
+        embedding_in = hk.Linear(self.hidden_dim)
         embedding_out = hk.Linear(h.shape[-1])
         act_fn = get_activation(self.act_fn)
         h = embedding_in(h)
         for i in range(0, self.n_layers):
             layer = E_FGCL(
-                output_nf=self.hidden_nf,
-                hidden_nf=self.hidden_nf,
+                output_dim=self.hidden_dim,
+                hidden_dim=self.hidden_dim,
                 act_fn=act_fn,
                 residual=self.residual,
                 attention=self.attention,
@@ -355,7 +355,7 @@ class EGNNScore(EGNN):
         t = t.squeeze()
         node_attr = t if self.node_attr else None
         h = jnp.concatenate([h, t], axis=-1)
-        embedding_in = hk.Linear(self.hidden_nf)
+        embedding_in = hk.Linear(self.hidden_dim)
         h = embedding_in(h)
         act_fn = get_activation(self.act_fn)
 
@@ -370,8 +370,8 @@ class EGNNScore(EGNN):
 
         for _ in range(0, self.n_layers):
             layer = E_FGCL(
-                output_nf=self.hidden_nf,
-                hidden_nf=self.hidden_nf,
+                output_dim=self.hidden_dim,
+                hidden_dim=self.hidden_dim,
                 act_fn=act_fn,
                 residual=self.residual,
                 attention=self.attention,
