@@ -20,7 +20,7 @@ from jaxlinop import LinearOperator, DenseLinearOperator, DiagonalLinearOperator
 from jaxtyping import Array, Float, PyTree
 from check_shapes import check_shapes
 
-from .types import Tuple, Callable, Mapping
+from .types import Tuple, Callable, Mapping, Sequence
 from .data import DataBatch
 from .kernels import sample_prior_gp, log_prob_prior_gp, promote_compute_engines
 from .constants import JITTER
@@ -120,14 +120,14 @@ class SDE:
         cov_coef = jnp.exp(-self.beta_schedule.B(t))
         if k0 is None:
             k0t = self.limiting_kernel
-            k0t_params = copy.copy(self.limiting_params["kernel"])
+            k0t_params = copy.deepcopy(self.limiting_params["kernel"])
             k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
         #     k0 = self.limiting_kernel # as we set the variance to 0.0 we can pick any kernel.
         #     k0_params = {"variance": self.limiting_params["kernel"]["variance"] * 0.0}
         else:
             assert k0_params is not None
             k0_params["variance"] = k0_params["variance"] * cov_coef
-            kt_param = copy.copy(self.limiting_params["kernel"])
+            kt_param = copy.deepcopy(self.limiting_params["kernel"])
             kt_param["variance"] = kt_param["variance"] * (1. - cov_coef)
             k0t = jaxkern.SumKernel(
                 [k0, self.limiting_kernel],
@@ -380,67 +380,59 @@ def conditional_sample(
 
 ## Likelihood evaluation
 
-# def get_div_fn(drift_fn, hutchinson_type: str = "None"):
-#     """Pmapped divergence of the drift function."""
-#     if hutchinson_type == "None":
-#         return lambda y, t, context, eps: get_exact_div_fn(drift_fn)(y, t, context)
-#     else:
-#         return lambda y, t, context, eps: get_estimate_div_fn(drift_fn)(
-#             y, t, context, eps
-#         )
+def get_estimate_div_fn(fn):
+    """Create the divergence function of `fn` using the Hutchinson-Skilling trace estimator."""
 
+    @check_shapes("t: []", "y: [N, y_dim]", "eps: [N, y_dim]", "return: []")
+    def div_fn(t, y: jnp.ndarray, arg, eps: jnp.ndarray) -> jnp.ndarray:
+        y_dim = y.shape[-1]
+        flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
+        _, vjp_fn = jax.vjp(flattened_fn, flatten(y))
+        (eps_dfdy,) = vjp_fn(flatten(eps))
+        return jnp.sum(eps_dfdy * flatten(eps), axis=-1)
 
-# def div_noise(
-#     rng: jax.random.KeyArray, shape: Sequence[int], hutchinson_type: str
-# ) -> jnp.ndarray:
-#     """Sample noise for the hutchinson estimator."""
-#     if hutchinson_type == "Gaussian":
-#         epsilon = jax.random.normal(rng, shape)
-#     elif hutchinson_type == "Rademacher":
-#         epsilon = (
-#             jax.random.randint(rng, shape, minval=0, maxval=2).astype(jnp.float32) * 2 - 1
-#         )
-#     elif hutchinson_type == "None":
-#         epsilon = None
-#     else:
-#         raise NotImplementedError(f"Hutchinson type {hutchinson_type} unknown.")
-#     return epsilon
-
-
-
-# def get_estimate_div_fn(fn):
-#     """Create the divergence function of `fn` using the Hutchinson-Skilling trace estimator."""
-
-#     @check_shapes("t: []", "y: [N, y_dim]", "return: []")
-#     def div_fn(t, y: jnp.ndarray, arg, eps: jnp.ndarray):
-#         y_dim = y.shape[-1]
-#         eps = flatten(eps)
-#         flattened_fn = lambda t, y, arg: flatten(fn(t, unflatten(y, y_dim), arg))
-#         # eps = eps.reshape(eps.shape[0], -1)
-#         # grad_fn = lambda y: jnp.sum(fn(y, t, arg) * eps)
-#         # grad_fn_eps = jax.grad(grad_fn)(y).reshape(y.shape[0], -1)
-#         # return jnp.sum(grad_fn_eps * eps, axis=tuple(range(1, len(eps.shape))))
-#         grad_fn = lambda y: jnp.sum(flattened_fn(y, t, arg) * eps)
-#         grad_fn_eps = jax.grad(grad_fn)(flatten(y))
-#         print("y", y.shape)
-#         print("eps", eps.shape)
-#         print("grad_fn_eps", grad_fn_eps.shape)
-#         return jnp.sum(grad_fn_eps * eps, axis=-1)
-
-#     return div_fn
+    return div_fn
 
 
 def get_exact_div_fn(fn):
     "flatten all but the last axis and compute the true divergence"
 
     @check_shapes("t: []", "y: [N, y_dim]", "return: []")
-    def div_fn(t, y: jnp.ndarray, arg):
+    def div_fn(t, y: jnp.ndarray, arg) -> jnp.ndarray:
         y_dim = y.shape[-1]
         flattened_fn = lambda t, y, arg: flatten(fn(t, unflatten(y, y_dim), arg))
         jac = jax.jacrev(flattened_fn, argnums=1)(t, flatten(y), arg)
         return jnp.trace(jac, axis1=-1, axis2=-2)
 
     return div_fn
+
+
+def get_div_fn(drift_fn, hutchinson_type):
+    """Pmapped divergence of the drift function."""
+    if hutchinson_type == "None":
+        return lambda y, t, context, eps: get_exact_div_fn(drift_fn)(y, t, context)
+    else:
+        return lambda y, t, context, eps: get_estimate_div_fn(drift_fn)(
+            y, t, context, eps
+        )
+
+
+def div_noise(
+    rng: jax.random.KeyArray, shape: Sequence[int], hutchinson_type: str
+) -> jnp.ndarray:
+    """Sample noise for the hutchinson estimator."""
+    if hutchinson_type == "Gaussian":
+        epsilon = jax.random.normal(rng, shape)
+    elif hutchinson_type == "Rademacher":
+        epsilon = (
+            jax.random.randint(rng, shape, minval=0, maxval=2).astype(jnp.float32) * 2 - 1
+        )
+    elif hutchinson_type == "None":
+        epsilon = None
+    else:
+        raise NotImplementedError(f"Hutchinson type {hutchinson_type} unknown.")
+    return epsilon
+
 
 
 @check_shapes("x: [N, x_dim]", "y: [N, y_dim]", "return: []")
@@ -453,20 +445,20 @@ def log_prob(
     key,
     num_steps: int = 100,
     solver: AbstractSolver = Dopri5(),
-    stepsize_controller: AbstractStepSizeController = ConstantStepSize()
+    stepsize_controller: AbstractStepSizeController = ConstantStepSize(),
+    hutchinson_type = None
 ):
     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
         key, t, yt, arg, network
     )
 
-    # div_fn = get_estimate_div_fn(reverse_drift_ode)
-    div_fn = get_exact_div_fn(reverse_drift_ode)
+    div_fn = get_div_fn(reverse_drift_ode, hutchinson_type)
     def logp_wrapper(t, carry, static_args):
         yt, _ = carry
-        _, x = static_args
+        eps, x = static_args
 
         drift = reverse_drift_ode(t, yt, x)
-        logp = div_fn(t, yt, x)
+        logp = div_fn(t, yt, x, eps)
 
         return drift, logp
 
@@ -475,11 +467,9 @@ def log_prob(
     t1 = sde.beta_schedule.t1
     dt = (t1 - t0) / num_steps
 
-    # TODO: approx vs exact as argument
-    # term = dfx.ODETerm(approx_logp_wrapper)
     term = dfx.ODETerm(logp_wrapper)
-
-    eps = jax.random.normal(key, y.shape)
+    # #NOTE: should we resample?
+    eps = div_noise(key, y.shape, hutchinson_type)
 
     sol = dfx.diffeqsolve(
         term,

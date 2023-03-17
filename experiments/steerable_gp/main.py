@@ -292,7 +292,7 @@ def run(config):
         @partial(jax.vmap, in_axes=[0, 0, None])
         def prior_log_prob(x, y, key):
             net_ = partial(net, state.params)
-            return ndp.sde.log_prob(sde, net_, x, y, key=key)
+            return ndp.sde.log_prob(sde, net_, x, y, key=key, num_steps=10, hutchinson_type="Gaussian")
 
         @partial(jax.vmap, in_axes=[None, None, None, 0])
         @partial(jax.vmap)
