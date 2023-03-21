@@ -24,8 +24,7 @@ from neural_diffusion_processes import ml_tools
 from neural_diffusion_processes.ml_tools.state import TrainingState
 from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
 from neural_diffusion_processes.utils.vis import plot_scalar_field, plot_vector_field, plot_covariances
-from neural_diffusion_processes.data import radial_grid_2d
-# from .utils.cfg import *
+from neural_diffusion_processes.data import radial_grid_2d, DataBatch
 
 
 def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
@@ -36,8 +35,8 @@ def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
 
 log = logging.getLogger(__name__)
 
-
 def run(config):
+    # jax.config.update("jax_enable_x64", True)
     log.info("Stage : Startup")
     log.info(f"Jax devices: {jax.devices()}")
     run_path = os.getcwd()
@@ -83,6 +82,9 @@ def run(config):
         key=jax.random.PRNGKey(config.data.seed_test),
         num_samples=config.data.num_samples_test,
     )
+    plot_batch = DataBatch(xs=data_test[0][:32], ys=data_test[1][:32])
+    plot_batch = ndp.data.split_dataset_in_context_and_target(plot_batch, next(key_iter), config.data.min_context, config.data.max_context)
+    
     dataloader_test = ndp.data.dataloader(
         data_test,
         batch_size=config.optim.batch_size,
@@ -96,6 +98,7 @@ def run(config):
     ]
 
     ####### Forward haiku model
+    print("config.net", config.net)
     def network(t, y, x):
         model = instantiate(config.net)
         return model(x, y, t)
@@ -121,6 +124,7 @@ def run(config):
         # kernel_params = limiting_kernel.init_params(key)
         # print(type(kernel_params), kernel_params)
         initial_params = loss_fn.init(init_rng, batch)
+        # initial_params = jax.tree_util.tree_map(lambda x: x.astype(jnp.float32), initial_params)
         initial_opt_state = optimizer.init(initial_params)
         return TrainingState(
             params=initial_params,
@@ -173,31 +177,8 @@ def run(config):
     @jax.jit
     def plot_cond(key, x_plt, params, x_context, y_context):
         net_ = partial(net, params)
-        # print(x_context.dtype, y_context.dtype, x_context.shape, y_context.shape)
-        # if x_dim == 1:
-        #     x_context = jnp.reshape(jnp.asarray([[-0.2, 0.2, 0.6]]), (-1, 1)) + 1.0e-2
-        # elif x_dim == 2:
-        #     x_context = jnp.zeros((1, 2)) + 1.0e-2
-
-        # if x_dim == 1 and y_dim == 1:
-        #     y_context = jnp.reshape(
-        #         jnp.asarray([[0.0, -1.0, 0.0]]), (len(x_context), y_dim)
-        #     )
-        # elif x_dim == 1 and y_dim == 2:
-        #     y_context = jnp.reshape(
-        #         jnp.asarray([[0.0, -1.0, 3.0, 0.2, 1.1, 0.0]]),
-        #         (len(x_context), y_dim),
-        #     )
-        # elif x_dim == 2 and y_dim == 2:
-        #     x_context = 15 * jnp.array([[0.25, 0.5], [0.5, 0.25], [-0.25, -0.25]])
-        #     x_context = x_context.astype(float) + 1.0e-2
-        #     y_context = 4 * jnp.array([[1, 1], [1, -2], [-4, 3]]).astype(float)
-        # print(x_context.dtype, y_context.dtype, x_context.shape, y_context.shape)
-        x_context = x_context.astype(float) + 1.0e-2
-
-        out = ndp.sde.conditional_sample(sde, net_, x_context, y_context, x_plt, key=key)
-        return out
-        # return out, x_context, y_context
+        x_context = x_context.astype(float) + 1.0e-2 #NOTE: to avoid context overlapping with grid
+        return ndp.sde.conditional_sample(sde, net_, x_context, y_context, x_plt, key=key)
 
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
@@ -205,24 +186,19 @@ def run(config):
         plot_vf = partial(plot_vector_field, scale=50*math.sqrt(config.data.variance), width=0.005)
         plot_cov = partial(plot_covariances, scale=0.1, zorder=-1)
         batch = next(iter(data_test))
-        # x_min, y_min = jnp.min(batch.xs[..., 0]), jnp.min(batch.xs[..., 1])
-        # x_max, y_max = jnp.max(batch.xs[..., 0]), jnp.max(batch.xs[..., 1])
+        batch = plot_batch
         idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
 
         # define grid over x space
         if x_dim == 1:
             x_plt = jnp.linspace(-1, 1, 100)[:, None]
         elif x_dim == 2:
-            x_plt = radial_grid_2d(20, config.data.num_points)
+            x_plt = radial_grid_2d(config.data.x_radius, config.data.num_points)
         else:
             return []
 
         fig_backward, axes = plt.subplots(4, 2, figsize=(8*2, 8*4), sharex=True, sharey=True)
         fig_backward.subplots_adjust(wspace=0, hspace=0.)
-        # axes[0,0].set_xlim([x_min * 1.15, x_max * 1.15])
-        # axes[0,0].set_ylim([y_min * 1.15, y_max * 1.15])
-        axes[0,0].set_xlim([config.data.x_radius, -config.data.x_radius])
-        axes[0,0].set_ylim([config.data.x_radius, -config.data.x_radius])
         
         plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][0])
         plot_vf(batch.xs[0], jnp.mean(batch.ys, 0), ax=axes[0][1])
@@ -303,7 +279,6 @@ def run(config):
     @partial(jax.jit)
     def eval(state: TrainingState, key, t) -> Mapping[str, float]:
         num_samples = 32
-        # num_samples = 10
 
         @partial(jax.vmap, in_axes=[None, 0])
         @partial(jax.vmap, in_axes=[0, None])
@@ -362,19 +337,15 @@ def run(config):
             # augmented_logp = prior_log_prob(x_augmented, y_augmented, key)
             # context_logp = prior_log_prob(batch.xc, batch.yc, key)
             # metrics["cond_log_prob2"].append(jnp.mean(augmented_logp - context_logp))
-            logp = prior_log_prob(batch.xs, batch.ys, key)
-            metrics["log_prob"].append(jnp.mean(logp))
+            # logp = prior_log_prob(batch.xs, batch.ys, key)
+            # metrics["log_prob"].append(jnp.mean(logp))
 
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
-        # print("metrics", metrics)
         v = {k: jnp.mean(jnp.stack(v)) for k, v in metrics.items()}
-        # v = {}
-        # print("v", v)
         samples = model_sample(batch.xs, jnp.stack(keys)).squeeze()
         logp = data_log_prob(batch.xs, samples)
         v["data_log_prob"] = jnp.mean(jnp.mean(logp, axis=-1))
-        # print("v", v)
         
         return v
 
@@ -386,14 +357,12 @@ def run(config):
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            # every_steps=2_000,
             every_steps=config.optim.num_steps // 20,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 eval(kwargs["state"], kwargs["key"], step), step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            # every_steps=2_000,
             every_steps=config.optim.num_steps // 20,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"], step), step
@@ -410,11 +379,9 @@ def run(config):
     # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
     
-    # logger.log_plot("process", plots(state, key, 0), 0)
+    logger.log_plot("process", plots(state, key, 0), 0)
     # logger.log_metrics(eval(state, key, 0), 0)
     # logger.save()
-    # raise
-
 
     for step, batch, key in zip(progress_bar, dataloader, key_iter):
         state, metrics = update_step(state, batch)
@@ -426,7 +393,7 @@ def run(config):
         for action in actions:
             action(step, t=None, metrics=metrics, state=state, key=key)
 
-        if step % 10 == 0:
+        if step % 100 == 0:
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")
 
 
@@ -435,8 +402,6 @@ def main(cfg):
     # os.environ["GEOMSTATS_BACKEND"] = "jax"
     # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["WANDB_START_METHOD"] = "thread"
-    os.environ["JAX_ENABLE_X64"] = "True"
-
     # from run import run
 
     return run(cfg)

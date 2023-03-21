@@ -44,14 +44,15 @@ class DataBatch:
     "data[1]: [len_data, num_points, output_dim]",
 )
 def dataloader(
-    data: Tuple[Array, Array], batch_size: int, *, key, run_forever=True, n_points=None
+    data: Tuple[Array, Array], batch_size: int, *, key, run_forever=True, n_points=-1
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
+    # x = x.astype(jnp.float32)
+    # y = y.astype(jnp.float32)
     dataset_size = len(x)
     indices_batch = jnp.arange(dataset_size)
     indices_points = jnp.arange(x.shape[1])
-    n_points = n_points if n_points is not None else -1
     while True:
         perm = jax.random.permutation(key, indices_batch)
         (key,) = jax.random.split(key, 1)
@@ -60,11 +61,13 @@ def dataloader(
         while end < dataset_size:
             batch_perm = perm[start:end]
             (key,) = jax.random.split(key, 1)
+            # print("n_points", n_points)
             points_perm = jax.random.permutation(key, indices_points)[:n_points]
-            # TODO: idk why x[batch_perm,points_perm,:] didn't work
+            # print("indices_points", indices_points.shape)
+            # print("points_perm", points_perm.shape)
             yield DataBatch(
-                xs=x[batch_perm].transpose(1,0,2)[points_perm].transpose(1,0,2),
-                ys=y[batch_perm].transpose(1,0,2)[points_perm].transpose(1,0,2)
+                xs=jnp.take(x[batch_perm], axis=1, indices=points_perm),
+                ys=jnp.take(y[batch_perm], axis=1, indices=points_perm),
                 )
             start = end
             end = start + batch_size
