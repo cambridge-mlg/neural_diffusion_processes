@@ -12,8 +12,8 @@ defaults:
   # - lr_schedule: constant
   - beta_schedule: linear
   - kernel: whitevec
-  - data_kernel: divfree
-
+  # - data_kernel: divfree
+  - data_kernel: curlfree
   
   # enable color logging
   - override hydra/hydra_logging: default
@@ -30,14 +30,15 @@ beta_schedule:
 
 optim:
   batch_size: 30
-  num_steps: 100_000
+  num_steps: 30_000
   lr: 1e-3
 
 data:
   _target_: neural_diffusion_processes.data.get_vec_gp_data
   num_samples_train: 70_000
   num_points: 30
-  x_radius: 20
+  x_radius: 10
+  # x_radius: 20
   kernel: ${data_kernel.cls}
   variance: 10
   # hyperparameters: ${data_kernel.params}
@@ -76,6 +77,9 @@ sde:
     _target_: gpjax.Zero
     output_dim: 2
 
+# net:
+#   n_layers: 5
+#   hidden_dim: 64
 
 # eval_batch_size: ${batch_size}
 now: ${now:%Y-%m-%d}/${now:%H-%M-%S}
