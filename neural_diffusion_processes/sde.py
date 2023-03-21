@@ -243,10 +243,11 @@ def reverse_solve(
     *,
     key,
     prob_flow: bool = False,
-    num_steps: int = 200
+    num_steps: int = 200,
+    yT = None
 ):
     key, ykey = jax.random.split(key)
-    yT = sde.sample_prior(ykey, x)
+    yT = sde.sample_prior(ykey, x) if yT is None else yT
     y_dim = yT.shape[-1]
     yT = flatten(yT)
 

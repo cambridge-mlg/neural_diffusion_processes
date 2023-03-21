@@ -44,20 +44,28 @@ class DataBatch:
     "data[1]: [len_data, num_points, output_dim]",
 )
 def dataloader(
-    data: Tuple[Array, Array], batch_size: int, *, key, run_forever=True
+    data: Tuple[Array, Array], batch_size: int, *, key, run_forever=True, n_points=None
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
     dataset_size = len(x)
-    indices = jnp.arange(dataset_size)
+    indices_batch = jnp.arange(dataset_size)
+    indices_points = jnp.arange(x.shape[1])
+    n_points = n_points if n_points is not None else -1
     while True:
-        perm = jax.random.permutation(key, indices)
+        perm = jax.random.permutation(key, indices_batch)
         (key,) = jax.random.split(key, 1)
         start = 0
         end = batch_size
         while end < dataset_size:
             batch_perm = perm[start:end]
-            yield DataBatch(xs=x[batch_perm], ys=y[batch_perm])
+            (key,) = jax.random.split(key, 1)
+            points_perm = jax.random.permutation(key, indices_points)[:n_points]
+            # TODO: idk why x[batch_perm,points_perm,:] didn't work
+            yield DataBatch(
+                xs=x[batch_perm].transpose(1,0,2)[points_perm].transpose(1,0,2),
+                ys=y[batch_perm].transpose(1,0,2)[points_perm].transpose(1,0,2)
+                )
             start = end
             end = start + batch_size
 
@@ -65,14 +73,14 @@ def dataloader(
             break
 
 
-def split_dataset_in_context_and_target(data: DataBatch, key) -> DataBatch:
+def split_dataset_in_context_and_target(data: DataBatch, key, min_context, max_context) -> DataBatch:
     if key is None:
         key = jax.random.PRNGKey(0)
 
     key1, key2 = jax.random.split(key)
     x, y = data.xs, data.ys
     indices = jnp.arange(data.num_points)
-    num_context = jax.random.randint(key1, (), minval=4, maxval=20)
+    num_context = jax.random.randint(key1, (), minval=min_context, maxval=max_context)
     num_target = data.num_points - num_context
     perm = jax.random.permutation(key2, indices)
     return DataBatch(

@@ -86,7 +86,6 @@ def get_vec_gp_data(
     """
     assert input_dim == 2
     assert output_dim == 2
-
     x = radial_grid_2d(x_radius, num_points)
     y = sample_prior_gp(
         key,
@@ -100,7 +99,16 @@ def get_vec_gp_data(
     x = jnp.repeat(x[None, ...], y.shape[0], 0)
     return x, y
 
-def get_vec_gp_log_prob(
+def get_vec_gp_prior_log_prob(
+    kernel: jaxkern.base.AbstractKernel,
+    mean_function,
+    obs_noise: float,
+    params: Optional[Mapping[str, float]] = None,
+    **kwargs,
+    ):
+    return lambda xs, ys: prior_gp(mean_function, kernel, params, obs_noise)(xs).log_prob(flatten(ys))
+
+def get_vec_gp_cond_log_prob(
     kernel: jaxkern.base.AbstractKernel,
     mean_function,
     obs_noise: float,

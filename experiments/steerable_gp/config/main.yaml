@@ -8,8 +8,8 @@ defaults:
   - logger: csv
 
   - net: mattn
-  # - optim: adam
   - lr_schedule: rcosine
+  # - lr_schedule: constant
   - beta_schedule: linear
   - kernel: whitevec
   - data_kernel: divfree
@@ -26,16 +26,16 @@ seed: 0
 beta_schedule:
   t0: 3e-4
   beta0: 0.001
-  beta1: 15.0
+  beta1: 10.0
 
 optim:
-  batch_size: 16
+  batch_size: 30
   num_steps: 100_000
   lr: 1e-3
 
 data:
   _target_: neural_diffusion_processes.data.get_vec_gp_data
-  num_samples_train: 100_000
+  num_samples_train: 70_000
   num_points: 30
   x_radius: 20
   kernel: ${data_kernel.cls}
@@ -52,12 +52,17 @@ data:
     output_dim: 2
   obs_noise: 0.02
   seed_test: 1
-  num_samples_test: 64
+  num_samples_test:  64
+  # num_samples_test: 20_000
   seed: 0
+  min_context: 5
+  max_context: 50
+  n_points: 50
 
 kernel:
   params:
     variance: ${data.variance}
+    lengthscale: 1.
 
 sde:
   # limiting_kernel_hyperparameters: 

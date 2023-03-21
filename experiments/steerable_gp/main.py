@@ -19,14 +19,12 @@ import hydra
 from hydra.utils import instantiate, call
 from jax.config import config as jax_config
 
-jax_config.update("jax_enable_x64", True)
-
 import neural_diffusion_processes as ndp
 from neural_diffusion_processes import ml_tools
 from neural_diffusion_processes.ml_tools.state import TrainingState
 from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
-from neural_diffusion_processes.utils.vis import plot_vector_field
-from neural_diffusion_processes.data import radial_grid_2d, get_vec_gp_log_prob
+from neural_diffusion_processes.utils.vis import plot_scalar_field, plot_vector_field, plot_covariances
+from neural_diffusion_processes.data import radial_grid_2d
 # from .utils.cfg import *
 
 
@@ -63,6 +61,7 @@ def run(config):
         "mean_fn": limiting_mean_fn.init_params(key),
     }
     limiting_params["kernel"].update(OmegaConf.to_container(config.kernel.params, resolve=True)) # NOTE: breaks RFF?
+    log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params}")
     sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
 
     ####### prepare data
@@ -72,11 +71,12 @@ def run(config):
         num_samples=config.data.num_samples_train,
     )
     dataloader = ndp.data.dataloader(
-        data, batch_size=config.optimization.batch_size, key=next(key_iter)
+        data, batch_size=config.optim.batch_size, key=next(key_iter), n_points=config.data.n_points
     )
     batch0 = next(dataloader)
     x_dim = batch0.xs.shape[-1]
     y_dim = batch0.ys.shape[-1]
+    log.info(f"num elements: {batch0.xs.shape[-2]} & x_dim: {x_dim} & y_dim: {y_dim}")
 
     data_test = call(
         config.data,
@@ -88,9 +88,10 @@ def run(config):
         batch_size=config.optim.batch_size,
         key=next(key_iter),
         run_forever=False,  # only run once
+        n_points=config.data.n_points
     )
     data_test: List[ndp.data.DataBatch] = [
-        ndp.data.split_dataset_in_context_and_target(batch, next(key_iter))
+        ndp.data.split_dataset_in_context_and_target(batch, next(key_iter), config.data.min_context, config.data.max_context)
         for batch in dataloader_test
     ]
 
@@ -154,6 +155,7 @@ def run(config):
 
     progress_bar = tqdm.tqdm(
         list(range(1, config.optim.num_steps + 1)), miniters=1
+        # list(range(0, config.optim.num_steps)), miniters=1
     )
     # exp_root_dir = get_experiment_dir(config)
 
@@ -169,117 +171,147 @@ def run(config):
         return ndp.sde.reverse_solve(sde, net_, x_plt, key=key)
 
     @jax.jit
-    def plot_cond(key, x_plt, params):
+    def plot_cond(key, x_plt, params, x_context, y_context):
         net_ = partial(net, params)
-        if x_dim == 1:
-            x_known = jnp.reshape(jnp.asarray([[-0.2, 0.2, 0.6]]), (-1, 1)) + 1.0e-2
-        elif x_dim == 2:
-            x_known = jnp.zeros((1, 2)) + 1.0e-2
+        # print(x_context.dtype, y_context.dtype, x_context.shape, y_context.shape)
+        # if x_dim == 1:
+        #     x_context = jnp.reshape(jnp.asarray([[-0.2, 0.2, 0.6]]), (-1, 1)) + 1.0e-2
+        # elif x_dim == 2:
+        #     x_context = jnp.zeros((1, 2)) + 1.0e-2
 
-        if x_dim == 1 and y_dim == 1:
-            y_known = jnp.reshape(
-                jnp.asarray([[0.0, -1.0, 0.0]]), (len(x_known), y_dim)
-            )
-        elif x_dim == 1 and y_dim == 2:
-            y_known = jnp.reshape(
-                jnp.asarray([[0.0, -1.0, 3.0, 0.2, 1.1, 0.0]]),
-                (len(x_known), y_dim),
-            )
-        elif x_dim == 2 and y_dim == 2:
-            x_known = jnp.array([[0.25, 0.5], [0.5, 0.25], [-0.25, -0.25]])
-            x_known = x_known.astype(float) + 1.0e-2
-            y_known = jnp.array([[1, 1], [1, -2], [-4, 3]]).astype(float)
-        return ndp.sde.conditional_sample(sde, net_, x_known, y_known, x_plt, key=key)
+        # if x_dim == 1 and y_dim == 1:
+        #     y_context = jnp.reshape(
+        #         jnp.asarray([[0.0, -1.0, 0.0]]), (len(x_context), y_dim)
+        #     )
+        # elif x_dim == 1 and y_dim == 2:
+        #     y_context = jnp.reshape(
+        #         jnp.asarray([[0.0, -1.0, 3.0, 0.2, 1.1, 0.0]]),
+        #         (len(x_context), y_dim),
+        #     )
+        # elif x_dim == 2 and y_dim == 2:
+        #     x_context = 15 * jnp.array([[0.25, 0.5], [0.5, 0.25], [-0.25, -0.25]])
+        #     x_context = x_context.astype(float) + 1.0e-2
+        #     y_context = 4 * jnp.array([[1, 1], [1, -2], [-4, 3]]).astype(float)
+        # print(x_context.dtype, y_context.dtype, x_context.shape, y_context.shape)
+        x_context = x_context.astype(float) + 1.0e-2
 
-    def plots(state: TrainingState, key) -> Mapping[str, plt.Figure]:
+        out = ndp.sde.conditional_sample(sde, net_, x_context, y_context, x_plt, key=key)
+        return out
+        # return out, x_context, y_context
+
+    def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
         keys = jax.random.split(key, 6)
-        plot_v = partial(plot_vector_field, scale=50*math.sqrt(config.data.variance))
-
-        # plot data process
-        fig_data, ax = plt.subplots(figsize=(8, 8))
+        plot_vf = partial(plot_vector_field, scale=50*math.sqrt(config.data.variance), width=0.005)
+        plot_cov = partial(plot_covariances, scale=0.1, zorder=-1)
         batch = next(iter(data_test))
+        # x_min, y_min = jnp.min(batch.xs[..., 0]), jnp.min(batch.xs[..., 1])
+        # x_max, y_max = jnp.max(batch.xs[..., 0]), jnp.max(batch.xs[..., 1])
         idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
-
-        if y_dim == 1:
-            pass
-        elif y_dim == 2:
-            fig_data.set_size_inches(8, 8)
-            plot_v(ax, batch.xs[idx], batch.ys[idx])
 
         # define grid over x space
         if x_dim == 1:
             x_plt = jnp.linspace(-1, 1, 100)[:, None]
         elif x_dim == 2:
-            x_plt = radial_grid_2d(20, 30)  # TODO: change grid
+            x_plt = radial_grid_2d(20, config.data.num_points)
         else:
             return []
 
-        # plot forward noising process
-        fig_forward, ax = plt.subplots()
-
-        if y_dim == 1:
-            pass
-        elif y_dim == 2:
-            fig_forward.set_size_inches(8, 8)
-            t = 0.5 * jnp.ones(())
-            out = sde.sample_marginal(keys[1], t, batch.xs[idx], batch.ys[idx])
-            plot_v(ax, batch.xs[idx], out)
-
-        # plot limiting process
-        fig_limiting, ax = plt.subplots()
-
-        if y_dim == 1:
-            pass
-        elif y_dim == 2:
-            fig_limiting.set_size_inches(8, 8)
-            out = sde.sample_prior(keys[2], x_plt)
-            plot_v(ax, x_plt, out)
+        fig_backward, axes = plt.subplots(4, 2, figsize=(8*2, 8*4), sharex=True, sharey=True)
+        fig_backward.subplots_adjust(wspace=0, hspace=0.)
+        # axes[0,0].set_xlim([x_min * 1.15, x_max * 1.15])
+        # axes[0,0].set_ylim([y_min * 1.15, y_max * 1.15])
+        axes[0,0].set_xlim([config.data.x_radius, -config.data.x_radius])
+        axes[0,0].set_ylim([config.data.x_radius, -config.data.x_radius])
+        
+        plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][0])
+        plot_vf(batch.xs[0], jnp.mean(batch.ys, 0), ax=axes[0][1])
+        covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(batch.ys)
+        plot_cov(batch.xs[0], covariances, ax=axes[0][1])
+        axes[0][0].set_title(rf"$p_{{data}}$")
 
         # plot generated samples
-        fig_reverse, ax = plt.subplots()
-        if x_dim == 2:
-            x_plt = radial_grid_2d(20, 10)  # TODO: change grid
-
-        if out.shape[-1] == 1:
-            out = jax.vmap(plot_reverse, in_axes=[0, None, None])(
-                jax.random.split(keys[3], 10), x_plt, state.params
-            )
+        # TODO: start from same limiting samples as above with yT argument
+        out = jax.vmap(plot_reverse, in_axes=[0, None, None])(
+            jax.random.split(keys[3], 10), x_plt, state.params
+        ).squeeze()
+        if y_dim == 1:
             ax.plot(x_plt, out[:, -1, :, 0].T, "C0", alpha=0.3)
-        elif out.shape[-1] == 2:
-            fig_reverse.set_size_inches(8, 8)
-            out = plot_reverse(keys[4], x_plt, state.params).squeeze()
-            plot_v(ax, x_plt, out)
+        elif y_dim == 2:
+            # out = plot_reverse(keys[4], x_plt, state.params).squeeze()
+            plot_vf(x_plt, out[0], ax=axes[1][0])
+            plot_vf(x_plt, jnp.mean(out, 0).squeeze(), ax=axes[1][1])
+            covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(out)
+            plot_cov(batch.xs[0], covariances, ax=axes[1][1])
+            axes[1][0].set_title(rf"$p_{{model}}$")
         else:
             return []
-
+        
+        # plot conditional data
+        plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[2][0])
+        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[2][0])
+        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[2][1])
+        axes[2][0].set_title(rf"$p_{{data}}$")
+        
         # plot conditional samples
-        fig_cond, ax = plt.subplots()
-
-        if out.shape[-1] == 1:
-            out = jax.vmap(plot_cond, in_axes=[0, None, None])(
-                jax.random.split(keys[3], 10), x_plt, state.params
-            )
+        out = jax.vmap(lambda key: plot_cond(key, x_plt, state.params, batch.xc[idx], batch.yc[idx]))(jax.random.split(keys[3], 10))
+        if y_dim == 1:
             ax.plot(x_plt, out[:, -1, :, 0].T, "C0", alpha=0.3)
-        elif out.shape[-1] == 2:
-            fig_cond.set_size_inches(8, 8)
-            out = plot_cond(keys[5], x_plt, state.params).squeeze()
-            plot_v(ax, x_plt, out)
+        elif y_dim == 2:
+            out = out.squeeze()
+            plot_vf(x_plt, out[0], ax=axes[3][0])
+            plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[3][0])
+            plot_vf(x_plt, jnp.mean(out, 0), ax=axes[3][1])
+            plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[3][1])
+            covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(out)
+            plot_cov(batch.xs[0], covariances, ax=axes[3][1])
+            axes[3][0].set_title(rf"$p_{{model}}$")
         else:
             return []
 
-        return {
-            "data": fig_data,
-            "noised": fig_forward,
-            "limiting": fig_limiting,
-            "reverse": fig_reverse,
-            "conditional": fig_cond,
-        }
+        out_plots = {"backward": fig_backward}
+        
+        if t == 0: # NOTE: Only plot fwd at the beggining
+            ts = [0.2, 0.5, 0.8, sde.beta_schedule.t1]
+            nb_cols = len(ts) + 2
+            fig_forward, axes = plt.subplots(1, nb_cols, figsize=(8*nb_cols, 8), sharex=True, sharey=True)
+            fig_forward.subplots_adjust(wspace=0, hspace=0)
+
+            # plot data process
+            if y_dim == 1:
+                pass
+            elif y_dim == 2:
+                plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0])
+                axes[0].set_title(rf"$p_{{data}}$")
+
+                for k, t in enumerate(ts):
+                    out = sde.sample_marginal(keys[1], t * jnp.ones(()), batch.xs[idx], batch.ys[idx])
+                    plot_vf(batch.xs[idx], out, ax=axes[k+1])
+                    axes[k+1].set_title(rf"$p_{{t={t}}}$")
+
+                out = sde.sample_prior(keys[2], x_plt)
+                plot_vf(x_plt, out, ax=axes[-1])
+                axes[-1].set_title(rf"$p_{{ref}}$")
+
+            out_plots["forward"] = fig_forward
+        
+        plt.close()
+        return out_plots
+    
 
     # #############
     @partial(jax.jit)
-    def eval(state: TrainingState, key) -> Mapping[str, float]:
+    def eval(state: TrainingState, key, t) -> Mapping[str, float]:
         num_samples = 32
+        # num_samples = 10
+
+        @partial(jax.vmap, in_axes=[None, 0])
+        @partial(jax.vmap, in_axes=[0, None])
+        def model_sample(x_target, key):
+            net_ = partial(net, state.params)
+            return ndp.sde.reverse_solve(
+                sde, net_, x_target, key=key
+            )
 
         @partial(jax.vmap, in_axes=[None, None, None, 0])
         @partial(jax.vmap, in_axes=[0, 0, 0, None])
@@ -292,42 +324,58 @@ def run(config):
         @partial(jax.vmap, in_axes=[0, 0, None])
         def prior_log_prob(x, y, key):
             net_ = partial(net, state.params)
-            return ndp.sde.log_prob(sde, net_, x, y, key=key, num_steps=10, hutchinson_type="Gaussian")
+            return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian")
 
         @partial(jax.vmap, in_axes=[None, None, None, 0])
         @partial(jax.vmap)
         def cond_log_prob(xc, yc, xs, ys):
-            config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_log_prob"
+            config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_cond_log_prob"
             posterior_log_prob = call(config.data)
             return posterior_log_prob(xc, yc, xs, ys)
+
+        @partial(jax.vmap, in_axes=[None, 0])
+        @partial(jax.vmap)
+        def data_log_prob(xs, ys):
+            config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_prior_log_prob"
+            prior_log_prob = call(config.data)
+            return prior_log_prob(xs, ys)
 
         metrics = defaultdict(list)
 
         for i, batch in enumerate(data_test):
             key, *keys = jax.random.split(key, num_samples + 1)
-            samples = conditional_sample(batch.xc, batch.yc, batch.xs, jnp.stack(keys))
-            f_pred = jnp.mean(samples, axis=0)
-            mse_mean_pred = jnp.sum((batch.ys - f_pred) ** 2)
-            metrics["cond_mse"].append(mse_mean_pred)
-            # ignore outliers
-            f_pred = jnp.median(samples, axis=0)
-            mse_med_pred = jnp.sum((batch.ys - f_pred) ** 2)
-            metrics["cond_mse_median"].append(mse_med_pred)
+            # samples = conditional_sample(batch.xc, batch.yc, batch.xs, jnp.stack(keys))
+            # f_pred = jnp.mean(samples, axis=0)
+            # mse_mean_pred = jnp.sum((batch.ys - f_pred) ** 2)
+            # metrics["cond_mse"].append(mse_mean_pred)
+            # # ignore outliers
+            # f_pred = jnp.median(samples, axis=0)
+            # mse_med_pred = jnp.sum((batch.ys - f_pred) ** 2)
+            # metrics["cond_mse_median"].append(mse_med_pred)
             
             # #TODO: clean
             # logp = cond_log_prob(batch.xc, batch.yc, batch.xs, samples)
-            # metrics["cond_log_prob"].append(jnp.sum(jnp.mean(logp, axis=-1)))
+            # metrics["cond_log_prob"].append(jnp.mean(jnp.mean(logp, axis=-1)))
         
             # x_augmented = jnp.concatenate([batch.xs, batch.xc], axis=1)
             # y_augmented = jnp.concatenate([batch.ys, batch.yc], axis=1)
             # augmented_logp = prior_log_prob(x_augmented, y_augmented, key)
             # context_logp = prior_log_prob(batch.xc, batch.yc, key)
-            # metrics["cond_log_prob2"].append(jnp.sum(augmented_logp - context_logp))
+            # metrics["cond_log_prob2"].append(jnp.mean(augmented_logp - context_logp))
+            logp = prior_log_prob(batch.xs, batch.ys, key)
+            metrics["log_prob"].append(jnp.mean(logp))
 
-            # logp = prior_log_prob(batch.xs, batch.ys, key)
-            # metrics["prior_log_prob"].append(jnp.sum(logp))
 
-        v = {k: jnp.sum(jnp.stack(v)) / len(data_test) for k, v in metrics.items()}
+        # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
+        # print("metrics", metrics)
+        v = {k: jnp.mean(jnp.stack(v)) for k, v in metrics.items()}
+        # v = {}
+        # print("v", v)
+        samples = model_sample(batch.xs, jnp.stack(keys)).squeeze()
+        logp = data_log_prob(batch.xs, samples)
+        v["data_log_prob"] = jnp.mean(jnp.mean(logp, axis=-1))
+        # print("v", v)
+        
         return v
 
     actions = [
@@ -337,45 +385,57 @@ def run(config):
                 kwargs["metrics"], step
             ),
         ),
-        # ml_tools.actions.PeriodicCallback(
-        #     # every_steps=2_000,
-        #     every_steps=1,
-        #     callback_fn=lambda step, t, **kwargs: logger.log_metrics(
-        #         eval(kwargs["state"], kwargs["key"]), step
-        #     ),
-        # ),
         ml_tools.actions.PeriodicCallback(
             # every_steps=2_000,
-            every_steps=500,
-            callback_fn=lambda step, t, **kwargs: logger.log_plot(
-                "process", plots(kwargs["state"], kwargs["key"]), step
+            every_steps=config.optim.num_steps // 20,
+            callback_fn=lambda step, t, **kwargs: logger.log_metrics(
+                eval(kwargs["state"], kwargs["key"], step), step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=500,
+            # every_steps=2_000,
+            every_steps=config.optim.num_steps // 20,
+            callback_fn=lambda step, t, **kwargs: logger.log_plot(
+                "process", plots(kwargs["state"], kwargs["key"], step), step
+            ),
+        ),
+        ml_tools.actions.PeriodicCallback(
+            every_steps=config.optim.num_steps // 100,
             callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(
                 kwargs["state"], ckpt_path, step
             ),
         ),
     ]
 
+    # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
+    # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
+    
+    # logger.log_plot("process", plots(state, key, 0), 0)
+    # logger.log_metrics(eval(state, key, 0), 0)
+    # logger.save()
+    # raise
+
+
     for step, batch, key in zip(progress_bar, dataloader, key_iter):
         state, metrics = update_step(state, batch)
+        if jnp.isnan(metrics['loss']).any():
+            log.warning("Loss is nan")
+            break
         metrics["lr"] = learning_rate_schedule(step)
 
         for action in actions:
             action(step, t=None, metrics=metrics, state=state, key=key)
 
-        if step % 100 == 0:
+        if step % 10 == 0:
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")
 
 
 @hydra.main(config_path="config", config_name="main", version_base="1.3.2")
 def main(cfg):
-    os.environ["GEOMSTATS_BACKEND"] = "jax"
-    os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+    # os.environ["GEOMSTATS_BACKEND"] = "jax"
+    # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["WANDB_START_METHOD"] = "thread"
-    # os.environ["JAX_ENABLE_X64"] = "True"
+    os.environ["JAX_ENABLE_X64"] = "True"
 
     # from run import run
 
