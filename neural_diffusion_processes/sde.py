@@ -22,7 +22,7 @@ from check_shapes import check_shapes
 
 from .types import Tuple, Callable, Mapping, Sequence
 from .data import DataBatch
-from .kernels import sample_prior_gp, log_prob_prior_gp, promote_compute_engines
+from .kernels import prior_gp, sample_prior_gp, log_prob_prior_gp, promote_compute_engines
 from .constants import JITTER
 from .misc import flatten, unflatten
 
@@ -73,8 +73,8 @@ class SDE:
         assert isinstance(self.limiting_mean_fn, (Zero, Constant))
         self.limiting_params = limiting_params
         self.beta_schedule = beta_schedule
-        self.weighted = True
-        self.std_trick = True
+        # self.weighted = True
+        self.std_trick = False
         self.residual_trick = True
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
@@ -190,20 +190,32 @@ class SDE:
         """ grad log p(y_t|y_0) = - \Sigma^-1 (y_t - mean) """
 
         factor = (1.0 - jnp.exp(-self.beta_schedule.B(t)))
+        std = jnp.sqrt(factor)
         # TODO: allow for 'likelihood' weight with weight=diffusion**2?
-        if self.weighted:
-            weight = factor
-        else:
-            weight = 1.0
+        # if self.weighted:
+        #     weight = factor
+        # else:
+        #     weight = 1.0
 
         ekey, nkey = jax.random.split(key)
         μ0t, k0t, params = self.p0t(t, y)
-        yt = sample_prior_gp(ekey, μ0t, k0t, params, x)
-        precond_score = -(yt - μ0t(params["mean_fn"], x)) / factor
+        dist = prior_gp(μ0t, k0t, params)(x)
+
+        sqrt = dist.scale.to_root()
+        Z = jax.random.normal(ekey, flatten(y).shape)
+        affine_transformation = lambda x: dist.loc + sqrt @ x
+        yt = unflatten(affine_transformation(Z), y.shape[-1])
 
         precond_score_net = self.score(nkey, t, yt, x, network)
-        loss = jnp.mean(jnp.sum((precond_score - precond_score_net) ** 2, -1))
-        return weight * loss
+        loss = jnp.mean(jnp.sum(jnp.square(std * precond_score_net + unflatten(sqrt @ Z, y.shape[-1])), -1))
+        return loss
+
+        yt = sample_prior_gp(ekey, μ0t, k0t, params, x)
+        precond_score = -(yt - μ0t(params["mean_fn"], x))# / factor
+        precond_score_net = self.score(nkey, t, yt, x, network)
+        loss = jnp.mean(jnp.sum(jnp.square(precond_score - factor * precond_score_net), -1))
+        # return factor * loss
+        return loss / factor
 
 
 
