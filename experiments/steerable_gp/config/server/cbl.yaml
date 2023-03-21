@@ -13,5 +13,10 @@ hydra:
     subdir: ${seed}
   run:
     dir: ${paths.experiments}/${name}/${hydra.job.override_dirname}/${seed}
+  # callbacks:
+  #   save_job_info:
+  #     _target_: hydra.experimental.callbacks.PickleJobInfoCallback
+  #   log_job_return:
+  #     _target_: hydra.experimental.callbacks.LogJobReturnCallback
 
 # num_workers: 8
