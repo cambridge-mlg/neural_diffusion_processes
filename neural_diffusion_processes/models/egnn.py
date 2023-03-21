@@ -345,8 +345,8 @@ class EGNNScore(EGNN):
 
     def score(self, x, y, t):
         # compute graph
-        # edges = get_edges_knn(x, self.k)
-        edges = get_edges_batch(x.shape[-2], batch_size=1)[0]
+        edges = get_edges_knn(x, self.k)
+        # edges = get_edges_batch(x.shape[-2], batch_size=1)[0]
 
         h = jnp.linalg.norm(x, axis=-1, keepdims=True)
         # t = jnp.broadcast_to(t[None, :], (x.shape[0], t.shape[-1]))
