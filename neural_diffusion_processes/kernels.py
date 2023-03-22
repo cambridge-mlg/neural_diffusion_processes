@@ -275,8 +275,10 @@ class DiagMultiOutputKernel(AbstractKernel):
         if scalar_kernel.compute_engine == ConstantDiagonalKernelComputation:
             compute_engine = MultiOutputConstantDiagonalKernelComputation
         else:
-            compute_engine = MultiOutputDiagonalKernelComputation
-            # compute_engine = MultiOutputDenseKernelComputation
+            # compute_engine = MultiOutputDiagonalKernelComputation
+            compute_engine = MultiOutputDenseKernelComputation
+            # TODO: seems to be an issue with MultiOutputDiagonalKernelComputation...
+        print("compute_engine", compute_engine)
 
         super().__init__(
             compute_engine=compute_engine,
