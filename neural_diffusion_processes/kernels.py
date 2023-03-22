@@ -426,7 +426,7 @@ def prior_gp(
 ) -> Callable[[Float[Array, "N x_dim"]], GaussianDistribution]:
     @check_shapes("x_test: [N, x_dim]")
     def predict(x_test) -> GaussianDistribution:
-        μt = mean_function(params["mean_fn"], x_test)
+        μt = mean_function(params["mean_function"], x_test)
         n_test = μt.shape[0] * μt.shape[1]
         # p = μt.shape[-1]
         μt = flatten(μt)  # jnp.atleast_1d(μt.squeeze())
@@ -451,7 +451,7 @@ def sample_prior_gp(
     num_samples: Optional[int] = None,
     obs_noise: float = 0.0,
 ):
-    p = mean_function(params["mean_fn"], x).shape[-1]
+    p = mean_function(params["mean_function"], x).shape[-1]
     dist = prior_gp(mean_function, kernel, params, obs_noise)(x)
     samples = dist.sample(seed=key, sample_shape=(num_samples or 1,))
     if num_samples is not None:
@@ -483,7 +483,7 @@ def posterior_gp(
     y,
     obs_noise: float = 0.0,
 ):
-    μx = mean_function(params["mean_fn"], x)
+    μx = mean_function(params["mean_function"], x)
     n = μx.shape[0] * μx.shape[1]
     μx = flatten(μx)  # jnp.atleast_1d(μt.squeeze())
     Kxx = kernel.gram(params["kernel"], x)
@@ -493,7 +493,7 @@ def posterior_gp(
     @check_shapes("x_test: [N, x_dim]")
     def predict(x_test):
         
-        μt = mean_function(params["mean_fn"], x_test)
+        μt = mean_function(params["mean_function"], x_test)
         n_test = μt.shape[0] * μt.shape[1]
         Ktt = kernel.gram(params["kernel"], x_test)
         Kxt = kernel.cross_covariance(params["kernel"], x, x_test)

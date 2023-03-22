@@ -82,6 +82,7 @@ class SDE:
         return sample_prior_gp(
             key, self.limiting_mean_fn, self.limiting_kernel, self.limiting_params, x
         )
+        # return gpjax.Prior(jaxkern.RBF()).predict(self.limiting_params)(x).sample(seed=key, sample_shape=(2,)).T
 
     @check_shapes("x: [N, x_dim]", "y: [N, y_dim]", "return: []")
     def log_prob_prior(self, x, y):
@@ -108,7 +109,7 @@ class SDE:
         class _Mean(AbstractMeanFunction):
             def __call__(self_, params: Mapping, x: Float[Array, "N D"]) -> Float[Array, "N Q"]:
                 del params
-                μT_value = self.limiting_mean_fn(self.limiting_params["mean_fn"], x)
+                μT_value = self.limiting_mean_fn(self.limiting_params["mean_function"], x)
                 # return mean_coef * y0(x) + (1.0 - mean_coef) * μT_value
                 return mean_coef * y0 + (1.0 - mean_coef) * μT_value
             def init_params(self, key):
@@ -134,7 +135,7 @@ class SDE:
                 compute_engine=promote_compute_engines(k0.compute_engine, self.limiting_kernel.compute_engine)
             )
             k0t_params = [k0_params, kt_param]
-        params = {"mean_fn": {}, "kernel": k0t_params}
+        params = {"mean_function": {}, "kernel": k0t_params}
         return μ0t, k0t, params
 
     @check_shapes("t: []", "x: [N, x_dim]", "y: [N, y_dim]", "return: [N, y_dim]")
@@ -144,7 +145,7 @@ class SDE:
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def drift(self, t: Array, yt: Array, x: Array) -> Array:
-        μT = self.limiting_mean_fn(self.limiting_params["mean_fn"], x)
+        μT = self.limiting_mean_fn(self.limiting_params["mean_function"], x)
         return -0.5 * self.beta_schedule(t) * (yt - μT)
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]")
@@ -211,7 +212,7 @@ class SDE:
         return loss
 
         yt = sample_prior_gp(ekey, μ0t, k0t, params, x)
-        precond_score = -(yt - μ0t(params["mean_fn"], x))# / factor
+        precond_score = -(yt - μ0t(params["mean_function"], x))# / factor
         precond_score_net = self.score(nkey, t, yt, x, network)
         loss = jnp.mean(jnp.sum(jnp.square(precond_score - factor * precond_score_net), -1))
         # return factor * loss

@@ -59,7 +59,7 @@ def run(config):
     limiting_mean_fn = instantiate(config.sde.limiting_mean_fn)
     limiting_params = {
         "kernel": limiting_kernel.init_params(key),
-        "mean_fn": limiting_mean_fn.init_params(key),
+        "mean_function": limiting_mean_fn.init_params(key),
     }
     limiting_params["kernel"].update(OmegaConf.to_container(config.kernel.params, resolve=True)) # NOTE: breaks RFF?
     log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params}")

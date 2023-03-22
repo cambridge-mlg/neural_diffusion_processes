@@ -55,7 +55,7 @@ data:
       # lengthscale: ${eval:math.sqrt(5.)}
       lengthscale: 2.23606797749979
       variance: ${data.variance}
-    mean_fn: {}
+    mean_function: {}
   mean_function:
     _target_: gpjax.Zero
     output_dim: 2
