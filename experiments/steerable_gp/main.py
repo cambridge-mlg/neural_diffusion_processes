@@ -7,6 +7,8 @@ from collections import defaultdict
 from functools import partial
 import tqdm
 
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
 import haiku as hk
 import jax
 import jax.numpy as jnp
@@ -98,7 +100,6 @@ def run(config):
     ]
 
     ####### Forward haiku model
-    print("config.net", config.net)
     def network(t, y, x):
         model = instantiate(config.net)
         return model(x, y, t)
@@ -170,9 +171,9 @@ def run(config):
     )[0]
 
     @jax.jit
-    def plot_reverse(key, x_plt, params):
+    def plot_reverse(key, x_plt, params, yT=None):
         net_ = partial(net, params)
-        return ndp.sde.reverse_solve(sde, net_, x_plt, key=key)
+        return ndp.sde.reverse_solve(sde, net_, x_plt, key=key, yT=yT)
 
     @jax.jit
     def plot_cond(key, x_plt, params, x_context, y_context):
@@ -182,97 +183,79 @@ def run(config):
 
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
+        n_samples = 30
         keys = jax.random.split(key, 6)
         plot_vf = partial(plot_vector_field, scale=50*math.sqrt(config.data.variance), width=0.005)
         plot_cov = partial(plot_covariances, scale=0.1, zorder=-1)
+        def plot_vf_and_cov(x, ys, axes, title="", cov=True):
+            # print(title, x.shape, ys.shape)
+            plot_vf(x, ys[0], ax=axes[0])
+            plot_vf(x, jnp.mean(ys, 0), ax=axes[1])
+            covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(ys)
+            plot_cov(x, covariances, ax=axes[1])
+            axes[0].set_title(title)
+
         batch = next(iter(data_test))
         batch = plot_batch
         idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
 
         # define grid over x space
-        if x_dim == 1:
-            x_plt = jnp.linspace(-1, 1, 100)[:, None]
-        elif x_dim == 2:
-            x_plt = radial_grid_2d(config.data.x_radius, config.data.num_points)
-        else:
-            return []
+        x_plt = jnp.linspace(-1, 1, 100)[:, None]
+        x_plt = radial_grid_2d(config.data.x_radius, config.data.num_points)
 
-        fig_backward, axes = plt.subplots(4, 2, figsize=(8*2, 8*4), sharex=True, sharey=True)
+        fig_backward, axes = plt.subplots(2, 5, figsize=(8*5, 8*2), sharex=True, sharey=True)
         fig_backward.subplots_adjust(wspace=0, hspace=0.)
         
-        plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][0])
-        plot_vf(batch.xs[0], jnp.mean(batch.ys, 0), ax=axes[0][1])
-        covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(batch.ys)
-        plot_cov(batch.xs[0], covariances, ax=axes[0][1])
-        axes[0][0].set_title(rf"$p_{{data}}$")
+        plot_vf_and_cov(batch.xs[idx], batch.ys, axes[:, 0], rf"$p_{{data}}$")
+
+        # plot limiting
+        y_ref = jax.vmap(sde.sample_prior, in_axes=[0, None])(jax.random.split(keys[3], n_samples), x_plt).squeeze()
+        plot_vf_and_cov(x_plt, y_ref, axes[:, 1], rf"$p_{{ref}}$")
 
         # plot generated samples
         # TODO: start from same limiting samples as above with yT argument
-        out = jax.vmap(plot_reverse, in_axes=[0, None, None])(
-            jax.random.split(keys[3], 10), x_plt, state.params
+        y_model = jax.vmap(plot_reverse, in_axes=[0, None, None, 0])(
+            jax.random.split(keys[3], n_samples), x_plt, state.params, y_ref
         ).squeeze()
-        if y_dim == 1:
-            ax.plot(x_plt, out[:, -1, :, 0].T, "C0", alpha=0.3)
-        elif y_dim == 2:
-            # out = plot_reverse(keys[4], x_plt, state.params).squeeze()
-            plot_vf(x_plt, out[0], ax=axes[1][0])
-            plot_vf(x_plt, jnp.mean(out, 0).squeeze(), ax=axes[1][1])
-            covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(out)
-            plot_cov(batch.xs[0], covariances, ax=axes[1][1])
-            axes[1][0].set_title(rf"$p_{{model}}$")
-        else:
-            return []
+        # ax.plot(x_plt, y_model[:, -1, :, 0].T, "C0", alpha=0.3)
+        plot_vf_and_cov(x_plt, y_model, axes[:, 2], rf"$p_{{model}}$")
         
         # plot conditional data
-        plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[2][0])
-        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[2][0])
-        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[2][1])
-        axes[2][0].set_title(rf"$p_{{data}}$")
+        plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][3])
+        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][3])
+        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[1][3])
+        axes[0][3].set_title(rf"$p_{{data}}$")
         
         # plot conditional samples
-        out = jax.vmap(lambda key: plot_cond(key, x_plt, state.params, batch.xc[idx], batch.yc[idx]))(jax.random.split(keys[3], 10))
-        if y_dim == 1:
-            ax.plot(x_plt, out[:, -1, :, 0].T, "C0", alpha=0.3)
-        elif y_dim == 2:
-            out = out.squeeze()
-            plot_vf(x_plt, out[0], ax=axes[3][0])
-            plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[3][0])
-            plot_vf(x_plt, jnp.mean(out, 0), ax=axes[3][1])
-            plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[3][1])
-            covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(out)
-            plot_cov(batch.xs[0], covariances, ax=axes[3][1])
-            axes[3][0].set_title(rf"$p_{{model}}$")
-        else:
-            return []
+        y_cond = jax.vmap(lambda key: plot_cond(key, x_plt, state.params, batch.xc[idx], batch.yc[idx]))(jax.random.split(keys[3], n_samples)).squeeze()
+            # ax.plot(x_plt, y_cond[:, -1, :, 0].T, "C0", alpha=0.3)
+        plot_vf_and_cov(x_plt, y_cond, axes[:, 4], rf"$p_{{model}}$")
+        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][4])
+        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[1][4])
 
-        out_plots = {"backward": fig_backward}
+        dict_plots = {"backward": fig_backward}
         
         if t == 0: # NOTE: Only plot fwd at the beggining
-            ts = [0.2, 0.5, 0.8, sde.beta_schedule.t1]
+            # ts = [0.2, 0.5, 0.8, sde.beta_schedule.t1]
+            ts = [0.8, sde.beta_schedule.t1]
             nb_cols = len(ts) + 2
-            fig_forward, axes = plt.subplots(1, nb_cols, figsize=(8*nb_cols, 8), sharex=True, sharey=True)
+            fig_forward, axes = plt.subplots(2, nb_cols, figsize=(8*nb_cols, 8*2), sharex=True, sharey=True)
             fig_forward.subplots_adjust(wspace=0, hspace=0)
 
             # plot data process
-            if y_dim == 1:
-                pass
-            elif y_dim == 2:
-                plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0])
-                axes[0].set_title(rf"$p_{{data}}$")
+            plot_vf_and_cov(batch.xs[0], batch.ys, axes[:, 0], rf"$p_{{data}}$")
 
-                for k, t in enumerate(ts):
-                    out = sde.sample_marginal(keys[1], t * jnp.ones(()), batch.xs[idx], batch.ys[idx])
-                    plot_vf(batch.xs[idx], out, ax=axes[k+1])
-                    axes[k+1].set_title(rf"$p_{{t={t}}}$")
+            # TODO: only solve once and return different timesaves
+            for k, t in enumerate(ts):
+                yt = jax.vmap(lambda key: sde.sample_marginal(key,  t * jnp.ones(()), batch.xs[idx], batch.ys[idx]))(jax.random.split(keys[1], n_samples)).squeeze()
+                plot_vf_and_cov(batch.xs[idx], yt, axes[:, k+1], rf"$p_{{t={t}}}$")
 
-                out = sde.sample_prior(keys[2], x_plt)
-                plot_vf(x_plt, out, ax=axes[-1])
-                axes[-1].set_title(rf"$p_{{ref}}$")
+            plot_vf_and_cov(x_plt, y_ref, axes[:, -1], rf"$p_{{ref}}$")
 
-            out_plots["forward"] = fig_forward
+            dict_plots["forward"] = fig_forward
         
         plt.close()
-        return out_plots
+        return dict_plots
     
 
     # #############
@@ -356,12 +339,12 @@ def run(config):
                 kwargs["metrics"], step
             ),
         ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=config.optim.num_steps // 20,
-            callback_fn=lambda step, t, **kwargs: logger.log_metrics(
-                eval(kwargs["state"], kwargs["key"], step), step
-            ),
-        ),
+        # ml_tools.actions.PeriodicCallback(
+        #     every_steps=config.optim.num_steps // 20,
+        #     callback_fn=lambda step, t, **kwargs: logger.log_metrics(
+        #         eval(kwargs["state"], kwargs["key"], step), step
+        #     ),
+        # ),
         ml_tools.actions.PeriodicCallback(
             every_steps=config.optim.num_steps // 20,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(

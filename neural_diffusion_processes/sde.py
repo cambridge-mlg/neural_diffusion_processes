@@ -164,7 +164,7 @@ class SDE:
         score = network(t, yt, x, key=key)
         if self.std_trick:
             std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
-            score = score / std
+            score = score / (std + 1e-3)
         if self.residual_trick:
             # NOTE: s.t. bwd SDE = fwd SDE
             fwd_drift = self.drift(t, yt, x)
