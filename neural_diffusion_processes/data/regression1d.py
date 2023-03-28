@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Tuple, List, Callable, Mapping
 
+import abc
 from dataclasses import dataclass
 import jaxkern
 import jax
@@ -32,7 +33,7 @@ _DATASET = [
     "matern",
     "weaklyperiodic",
     "sawtooth",
-    "mixture",
+    "noisymixture",
 ]
 
 _TASKS = [
@@ -53,53 +54,42 @@ class DatasetConfig:
     train_num_target: UniformDiscrete
     eval_num_context: UniformDiscrete
     eval_num_target: UniformDiscrete
-    lengthscale: float | None
-    noise_variance: float
+
 
 _NOISE_VAR = 1e-8
 _KERNEL_VAR = 1.0
-_LENGTHSCALE = .7
+_LENGTHSCALE = 2.  # figure out correct lengthscale - samples in Fong et al look smoother.
 
 _DATASET_CONFIGS = {
     "se": DatasetConfig(
         train_num_context=UniformDiscrete(0, 50),
         train_num_target=UniformDiscrete(50, 50),
-        eval_num_context=UniformDiscrete(10, 10),
+        eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(50, 50),
-        lengthscale=0.25,
-        noise_variance=_NOISE_VAR
     ),
     "matern": DatasetConfig(
         train_num_context=UniformDiscrete(0, 50),
         train_num_target=UniformDiscrete(50, 50),
-        eval_num_context=UniformDiscrete(10, 10),
+        eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(50, 50),
-        lengthscale=0.25,
-        noise_variance=_NOISE_VAR
     ),
     "weaklyperiodic": DatasetConfig(
         train_num_context=UniformDiscrete(0, 50),
         train_num_target=UniformDiscrete(50, 50),
-        eval_num_context=UniformDiscrete(10, 10),
+        eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(50, 50),
-        lengthscale=None,  # different lengthscale for SE and Periodic SE
-        noise_variance=_NOISE_VAR
+    ),
+    "noisymixture": DatasetConfig(
+        train_num_context=UniformDiscrete(0, 50),
+        train_num_target=UniformDiscrete(50, 50),
+        eval_num_context=UniformDiscrete(0, 10),
+        eval_num_target=UniformDiscrete(50, 50),
     ),
     "sawtooth": DatasetConfig(
         train_num_context=UniformDiscrete(0, 100),
-        train_num_target=UniformDiscrete(100, 50),
-        eval_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(100, 100),
+        eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(100, 100),
-        lengthscale=None,  # no lengthscale
-        noise_variance=_NOISE_VAR
-    ),
-    "mixture": DatasetConfig(
-        train_num_context=UniformDiscrete(0, 100),
-        train_num_target=UniformDiscrete(100, 50),
-        eval_num_context=UniformDiscrete(10, 10),
-        eval_num_target=UniformDiscrete(100, 100),
-        lengthscale=None,  # see above
-        noise_variance=_NOISE_VAR
     ),
 }
 
@@ -127,20 +117,22 @@ _TASK_CONFIGS = {
 }
 
 
-class FuntionalDistribution:
+class FuntionalDistribution(abc.ABC):
     
-    def sample(self, key, x: Float[Array, "N D"]) -> Float[Array, "N P"]:
-        pass
+    @abc.abstractmethod
+    def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
+        raise NotImplementedError()
+        
 
 class GPFunctionalDistribution(FuntionalDistribution):
 
     def __init__(self, kernel: jaxkern.base.AbstractKernel, params: Mapping):
-        self._kernel = kernel
-        self._params = params
+        self.kernel = kernel
+        self.params = params
     
-    def sample(self, key, x: Float[Array, "N D"]) -> Float[Array, "N P"]:
-        noise_var = self._params["noise_variance"]
-        gram = self._kernel.gram(self._params, x).to_dense()
+    def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
+        noise_var = self.params["noise_variance"]
+        gram = self.kernel.gram(self.params["kernel"], x).to_dense()
         return sample_mvn(key, jnp.zeros_like(x), gram, noise_var=noise_var)
 
 
@@ -158,15 +150,73 @@ def register_dataset_factory(name: str):
 @register_dataset_factory("se")
 def _se_dataset_factory():
     kernel = jaxkern.stationary.RBF(active_dims=[0])
-    params = {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR, "noise_variance": _NOISE_VAR}
+    params = {
+        "kernel": {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR,},
+        "noise_variance": _NOISE_VAR
+    }
     return GPFunctionalDistribution(kernel, params)
 
 
 @register_dataset_factory("matern")
 def _matern_dataset_factory():
     kernel = jaxkern.stationary.Matern52(active_dims=[0])
-    params = {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR, "noise_variance": _NOISE_VAR}
+    params = {
+        "kernel": {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR,},
+        "noise_variance": _NOISE_VAR
+    }
     return GPFunctionalDistribution(kernel, params)
+
+
+@register_dataset_factory("weaklyperiodic")
+def _weaklyper_dataset_factory():
+    rbf = jaxkern.stationary.RBF(active_dims=[0])
+    per = jaxkern.stationary.Periodic(active_dims=[0])
+    kernel = jaxkern.ProductKernel([rbf, per])
+    params = {
+        "kernel": [
+            {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR},
+            {"lengthscale": 0.25, "variance": _KERNEL_VAR, "period": 1.},
+        ],
+        "noise_variance": _NOISE_VAR,
+    }
+
+    return GPFunctionalDistribution(kernel, params)
+
+
+@register_dataset_factory("noisymixture")
+def _noisymix_dataset_factory():
+    rbf1 = jaxkern.stationary.RBF(active_dims=[0])
+    rbf2 = jaxkern.stationary.RBF(active_dims=[0])
+    kernel = jaxkern.SumKernel([rbf1, rbf2])
+    params = {
+        "kernel": [
+            {"lengthscale": _LENGTHSCALE, "variance": 1.0},
+            {"lengthscale": 1.0, "variance": 1.0},
+        ],
+        "noise_variance": 1e-3,
+    }
+
+    return GPFunctionalDistribution(kernel, params)
+
+
+class Sawtooth(FuntionalDistribution):
+    """ See appendix H: https://arxiv.org/pdf/2007.01332.pdf"""
+    def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
+        fkey, skey, kkey = jax.random.split(key, 3)
+        A = 1.
+        K_max = 20
+        f = jax.random.uniform(fkey, (), minval=3., maxval=5.)
+        s = jax.random.uniform(skey, (), minval=-5., maxval=5.)
+        ks = jnp.arange(1, K_max + 1, dtype=x.dtype)[None, :]
+        vals = (-1.) ** ks * jnp.sin(2. * jnp.pi * ks * f * (x - s)) / ks
+        k = jax.random.randint(kkey, (), minval=10, maxval=K_max + 1)
+        mask = jnp.where(ks < k, jnp.ones_like(ks), jnp.zeros_like(ks))
+        return A/2. - A/jnp.pi * jnp.sum(vals * mask, axis=1, keepdims=True)
+
+
+@register_dataset_factory("sawtooth")
+def _sawtooth_dataset_factory():
+    return Sawtooth()
 
 
 def get_batch(key, batch_size: int, name: str, task: str):
@@ -197,41 +247,51 @@ def get_batch(key, batch_size: int, name: str, task: str):
 
 
 #%%
-import numpy
-import matplotlib.pyplot as plt
+if __name__ == "__main__":
+    import numpy
+    import matplotlib.pyplot as plt
+    import itertools
 
-def info(a, name):
-    print(name)
-    print(a.shape)
-    print(jnp.min(a))
-    print(jnp.max(a))
-    print("="*10)
+    def info(a, name):
+        print(name)
+        print(a.shape)
+        print(jnp.min(a))
+        print(jnp.max(a))
+        print("="*10)
 
-def plot_data(xc, yc, xt, yt, ax, legend=True, ns=1):
-    ax.plot(xc[:ns, :, 0].T, yc[:ns, :, 0].T, "C0x", label="context")
-    ax.plot(xt[:ns, :, 0].T, yt[:ns, :, 0].T, "C1x", label="target")
-    handles, labels = ax.get_legend_handles_labels()
-    labels, ids = numpy.unique(labels, return_index=True)
-    handles = [handles[i] for i in ids]
-    if legend:
-        ax.legend(handles, labels, loc='best')
+    def plot_data(xc, yc, xt, yt, ax, legend=True, ns=1):
+        ax.plot(xc[:ns, :, 0].T, yc[:ns, :, 0].T, "C0.", label="context")
+        ax.plot(xt[:ns, :, 0].T, yt[:ns, :, 0].T, "C1.", label="target")
+        handles, labels = ax.get_legend_handles_labels()
+        labels, ids = numpy.unique(labels, return_index=True)
+        handles = [handles[i] for i in ids]
+        if legend:
+            ax.legend(handles, labels, loc='best')
 
 
-key = jax.random.PRNGKey(0)
+    key = jax.random.PRNGKey(0)
 
-fig, axes = plt.subplots(len(_DATASET_FACTORIES), len(_TASK_CONFIGS), figsize=(10, 5), sharex=True, sharey=True, tight_layout=True)
+    fig, axes = plt.subplots(len(_DATASET_FACTORIES), len(_TASK_CONFIGS), figsize=(15, 5), sharex=True, tight_layout=True)
 
-import itertools
 
-for (i, dataset), (j, task) in itertools.product(enumerate(_DATASET_FACTORIES.keys()), enumerate(_TASK_CONFIGS.keys())):
-    print(dataset, task)
-    ax.set_xlim(-4, 6)
-    ax = axes[i,j]
-    data = get_batch(key, 16, dataset, task)
-    plot_data(*data, ax, legend=(i==0) and (j==0))
-    if i == 0:
-        ax.set_title(task)
-    if j == 0:
-        ax.ylabel(dataset)
+    for (i, dataset), (j, task) in itertools.product(enumerate(_DATASET_FACTORIES.keys()), enumerate(_TASK_CONFIGS.keys())):
+        print(dataset, task)
+        ax = axes[i,j]
+        ax.set_xlim(-4, 6)
+        data = get_batch(key, 16, dataset, task)
+        plot_data(*data, ax, legend=(i==0) and (j==0))
+        if i == 0:
+            ax.set_title(task)
+        if j == 0:
+            ax.set_ylabel(dataset)
 
-# %%
+
+    nrows = len(_DATASET_FACTORIES)
+    fig, axes = plt.subplots(nrows, 1, figsize=(15, 3 * nrows), sharex=True)
+    for i, name in enumerate(_DATASET_FACTORIES.keys()):
+        ax = axes[i]
+        keys = jax.random.split(key, 16)
+        x = jnp.linspace(-2, 3, 500)[:, None]
+        y = jax.vmap(_DATASET_FACTORIES[name].sample, in_axes=[0, None])(keys, x)
+        ax.set_title(name)
+        ax.plot(x, y[:3, :, 0].T)
