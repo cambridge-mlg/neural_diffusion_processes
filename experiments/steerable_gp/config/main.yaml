@@ -91,4 +91,5 @@ now: ${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 # resume: false
 # mode: all
-PROJECT_NAME: neural_diffusion_processes
+PROJECT_NAME: score-sde
+# PROJECT_NAME: neural_diffusion_processes

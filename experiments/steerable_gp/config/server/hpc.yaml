@@ -1,6 +1,6 @@
 # @package _global_
 defaults:
-  # - base
+  - base
   - override /hydra/launcher: submitit_slurm
 
 paths:
@@ -8,11 +8,20 @@ paths:
 #   experiments: /data/ziz/not-backed-up/scratch/${oc.env:USER}/${PROJECT_NAME}/results
 # data_dir: /data/localhost/not-backed-up/datasets-ziz-all/
 
+# paths:
+#   experiments: /scratch/${oc.env:USER}/${PROJECT_NAME}/results
+#   data_dir: ${hydra:runtime.cwd}/data/
+
 num_workers: 8
 n_jobs: 32
 num_gpus: 1
 
 hydra:
+  sweep:
+    dir: ${paths.experiments}/${name}/${hydra.job.override_dirname}
+    subdir: ${seed}
+  run:
+    dir: ${paths.experiments}/${name}/${hydra.job.override_dirname}/${seed}
   job:
     env_set:
       XLA_PYTHON_CLIENT_PREALLOCATE: "false"
@@ -31,8 +40,9 @@ hydra:
     gres: gpu:${num_gpus}
     max_num_timeout: 0
     array_parallelism: ${n_jobs}
-    setup: [". /etc/profile.d/modules.sh", "module purge", "module load rhel8/default-amp dot rhel8/slurm singularity/current rhel8/global cuda/11.4"]
+    setup: [". /etc/profile.d/modules.sh", "module purge", "module load rhel8/default-amp dot rhel8/slurm singularity/current rhel8/global cuda/11.4 cudnn/8.2.4.15-11.4/"]
     executable: /home/${oc.env:USER}/rds/${PROJECT_NAME}/venv/bin/python
+    # executable: /home/${oc.env:USER}/rds/miniconda3/envs/venv/bin/python
     additional_parameters: {
       "account": "T2-CS162-GPU",
       # "gres": "gpu:${num_gpus}",

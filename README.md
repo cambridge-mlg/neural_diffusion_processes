@@ -9,8 +9,6 @@ Create virtual environment, either with `virtualenv`
 ```
 virtualenv -p python3.9 venv
 source venv/bin/activate
-pip install jax[cuda]==0.4.6 --find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-
 ```
 
 or with `conda` (convenient to install jax)
