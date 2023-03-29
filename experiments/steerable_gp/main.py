@@ -131,7 +131,6 @@ def run(config):
         return TrainingState(
             params=initial_params,
             params_ema=initial_params,
-            # params=initial_params,
             opt_state=initial_opt_state,
             key=key,
             step=0,
