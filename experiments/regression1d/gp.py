@@ -85,8 +85,8 @@ import click
 @click.command()
 @click.option(
     '--model',
-    default="gp",
-    type=click.Choice(["gp", "gpfull"]),
+    default="gpdiag",
+    type=click.Choice(["gpdiag", "gpfull"]),
 )
 @click.option(
     '--dataset',
@@ -114,14 +114,14 @@ def run(model: str, dataset: str):
     def compute_metrics(x_context, y_context, x_target, y_target) -> Mapping:
         post = posterior_gp(mean_fn, kernel, params, x_context, y_context, obs_noise=params["noise_variance"])
         post_x = post(x_target)
-        log_prob_full = -1.0 * post_x.log_prob(flatten(y_target)).squeeze() / len(y_target) 
+        log_prob_full = post_x.log_prob(flatten(y_target)).squeeze() / len(y_target) 
         post_x.scale = DiagonalLinearOperator(post_x.stddev())  # full_cov = False
-        log_prob_diag = -1.0 * post_x.log_prob(flatten(y_target)) / len(y_target) 
+        log_prob_diag = post_x.log_prob(flatten(y_target)) / len(y_target) 
         mse_ = jnp.mean((post_x.mean().flatten() - y_target.flatten()) ** 2)
         return {
             "log_prob": log_prob_full if "full" in model else log_prob_diag,
-            "log_prob_diag": log_prob_full,
-            "log_prob_full": log_prob_diag,
+            "log_prob_diag": log_prob_diag,
+            "log_prob_full": log_prob_full,
             "mse": mse_
         }
 
