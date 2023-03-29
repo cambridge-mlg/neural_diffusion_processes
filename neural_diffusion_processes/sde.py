@@ -14,7 +14,7 @@ from diffrax import AbstractStepSizeController, PIDController, ConstantStepSize
 from diffrax import AbstractSolver, Dopri5, Tsit5
 import jaxkern
 import gpjax
-from gpjax.mean_functions import AbstractMeanFunction, Zero, Constant
+from gpjax.mean_functions import Zero, Constant
 from jaxlinop import LinearOperator, DenseLinearOperator, DiagonalLinearOperator, identity, ZeroLinearOperator
 
 from jaxtyping import Array, Float, PyTree
@@ -26,6 +26,9 @@ from .kernels import prior_gp, sample_prior_gp, log_prob_prior_gp, promote_compu
 from .constants import JITTER
 from .misc import flatten, unflatten
 
+class AbstractMeanFunction(gpjax.mean_functions.AbstractMeanFunction):
+    def init_params(self, key):
+        return {}
 
 class ScoreNetwork(Callable):
     @abstractmethod
@@ -93,49 +96,53 @@ class SDE:
         self,
         t,
         y0: Callable[[Float[Array, "N x_dim"]], Float[Array, "N y_dim"]] | Float[Array, "N x_dim"],
-        k0: jaxkern.base.AbstractKernel = None,
-        k0_params: Mapping | None = None
     ) -> Tuple[AbstractMeanFunction, jaxkern.base.AbstractKernel, dict]:
-        # TODO: add equations as method description
-
-        # # backwards compatibility...
-        # if not callable(y0):
-        #     y0 = lambda _: y0
-
+        
         # E[Y_t|Y_0]
         mean_coef = jnp.exp(-0.5 * self.beta_schedule.B(t))
-
         class _Mean(AbstractMeanFunction):
             def __call__(self_, params: Mapping, x: Float[Array, "N D"]) -> Float[Array, "N Q"]:
-                del params
                 μT_value = self.limiting_mean_fn(self.limiting_params["mean_function"], x)
-                # return mean_coef * y0(x) + (1.0 - mean_coef) * μT_value
                 return mean_coef * y0 + (1.0 - mean_coef) * μT_value
-            def init_params(self, key):
-                return {}
-
         μ0t = _Mean()
 
         # Cov[Y_t|Y_0]
         cov_coef = jnp.exp(-self.beta_schedule.B(t))
-        if k0 is None:
-            k0t = self.limiting_kernel
-            k0t_params = copy.deepcopy(self.limiting_params["kernel"])
-            k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
-        #     k0 = self.limiting_kernel # as we set the variance to 0.0 we can pick any kernel.
-        #     k0_params = {"variance": self.limiting_params["kernel"]["variance"] * 0.0}
-        else:
-            assert k0_params is not None
-            k0_params["variance"] = k0_params["variance"] * cov_coef
-            kt_param = copy.deepcopy(self.limiting_params["kernel"])
-            kt_param["variance"] = kt_param["variance"] * (1. - cov_coef)
-            k0t = SumKernel(
-                [k0, self.limiting_kernel],
-                compute_engine=promote_compute_engines(k0.compute_engine, self.limiting_kernel.compute_engine)
-            )
-            k0t_params = [k0_params, kt_param]
+        k0t = self.limiting_kernel
+        k0t_params = copy.deepcopy(self.limiting_params["kernel"])
+        k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
         params = {"mean_function": {}, "kernel": k0t_params}
         return μ0t, k0t, params
+    
+    def pt(
+        self,
+        t,  
+        y0: Callable[[Float[Array, "N x_dim"]], Float[Array, "N y_dim"]] | Float[Array, "N x_dim"],
+        k0: jaxkern.base.AbstractKernel,
+        k0_params: Mapping
+    ) -> Tuple[AbstractMeanFunction, jaxkern.base.AbstractKernel, dict]:
+
+        # E[Y_t|Y_0]
+        mean_coef = jnp.exp(-0.5 * self.beta_schedule.B(t))
+        class _Mean(AbstractMeanFunction):
+            def __call__(self_, params: Mapping, x: Float[Array, "N D"]) -> Float[Array, "N Q"]:
+                μT_value = self.limiting_mean_fn(self.limiting_params["mean_function"], x)
+                # return mean_coef * y0(x) + (1.0 - mean_coef) * μT_value
+                return mean_coef * y0 + (1.0 - mean_coef) * μT_value
+        μ0t = _Mean()
+
+        # Cov[Y_t|Y_0]
+        cov_coef = jnp.exp(-self.beta_schedule.B(t))
+        k0_params["variance"] = k0_params["variance"] * cov_coef
+        kt_param = copy.deepcopy(self.limiting_params["kernel"])
+        kt_param["variance"] = kt_param["variance"] * (1. - cov_coef)
+        k0t = SumKernel(
+            [k0, self.limiting_kernel],
+            compute_engine=promote_compute_engines(k0.compute_engine, self.limiting_kernel.compute_engine)
+        )
+        params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
+        return μ0t, k0t, params
+
 
     @check_shapes("t: []", "x: [N, x_dim]", "y: [N, y_dim]", "return: [N, y_dim]")
     def sample_marginal(self, key, t: Array, x: Array, y: Array) -> Array:
@@ -167,6 +174,7 @@ class SDE:
             score = score / (std + 1e-3)
         if self.residual_trick:
             # NOTE: s.t. bwd SDE = fwd SDE
+            # NOTE: wrong sign?
             fwd_drift = self.drift(t, yt, x)
             residual = 2 * fwd_drift / self.beta_schedule(t)
             score += residual
@@ -192,8 +200,9 @@ class SDE:
     #     Sigma_t = Sigma_t._add_diagonal(identity(n) * JITTER)
     #     # # Σ⁻¹ (yt - m_0(x))
     #     Sigma_inv_b = Sigma_t.solve(b)
-    #     SigmaT =self.limiting_kernel.gram(self.limiting_params["kernel"], x)
-    #     out = - (SigmaT @ (SigmaT.T @ Sigma_inv_b))
+    #     # SigmaT = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
+    #     # out = - (SigmaT @ (SigmaT.T @ Sigma_inv_b))
+    #     out = - Sigma_inv_b
     #     return unflatten(out, yt.shape[-1])
 
 
@@ -281,7 +290,11 @@ def reverse_solve(
     key,
     prob_flow: bool = False,
     num_steps: int = 200,
-    yT = None
+    yT = None,
+    # solver: AbstractSolver = dfx.Euler(),
+    # stepsize_controller: AbstractStepSizeController = ConstantStepSize(),
+    solver: AbstractSolver = dfx.Heun(),
+    stepsize_controller: AbstractStepSizeController = dfx.PIDController(rtol=1e-3, atol=1e-3),
 ):
     key, ykey = jax.random.split(key)
     yT = sde.sample_prior(ykey, x) if yT is None else yT
@@ -311,16 +324,18 @@ def reverse_solve(
             dfx.ODETerm(reverse_drift_sde), LinOpControlTerm(diffusion, bm)
         )
     # TODO: adaptive step?
-    ys = dfx.diffeqsolve(
+    out = dfx.diffeqsolve(
         terms,
-        solver=dfx.Euler(),
+        solver=solver,
         t0=t1,
         t1=t0,
         dt0=-dt,
         y0=yT,
         args=x,
         adjoint=dfx.NoAdjoint(),
-    ).ys
+        stepsize_controller=stepsize_controller
+    )
+    ys = out.ys
     return unflatten(ys, y_dim)
 
 
