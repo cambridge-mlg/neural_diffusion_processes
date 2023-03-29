@@ -179,7 +179,7 @@ def run(config):
     def plot_cond(key, x_plt, params, x_context, y_context):
         net_ = partial(net, params)
         x_context = x_context.astype(float) + 1.0e-2 #NOTE: to avoid context overlapping with grid
-        return ndp.sde.conditional_sample(sde, net_, x_context, y_context, x_plt, key=key)
+        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_plt, key=key)
 
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
