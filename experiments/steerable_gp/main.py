@@ -54,7 +54,6 @@ def run(config):
     key_iter = _get_key_iter(key)
 
     ####### init relevant diffusion classes
-    beta_schedule = instantiate(config.beta_schedule)
     limiting_kernel = instantiate(config.kernel.cls)
     limiting_mean_fn = instantiate(config.sde.limiting_mean_fn)
     limiting_params = {
@@ -64,7 +63,7 @@ def run(config):
     limiting_params["kernel"].update(OmegaConf.to_container(config.kernel.params, resolve=True)) # NOTE: breaks RFF?
     log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params['kernel']}")
     # sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
-    sde = instantiate(config.sde, limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
+    sde = instantiate(config.sde, limiting_params=limiting_params, beta_schedule=config.beta_schedule)
 
     ####### prepare data
     data = call(
@@ -148,7 +147,7 @@ def run(config):
         new_params_ema = jax.tree_util.tree_map(
                 lambda p_ema, p: p_ema * config.optim.ema_rate
                 + p * (1.0 - config.optim.ema_rate),
-                config.optim.params_ema,
+                state.params_ema,
                 new_params,
         )
         new_state = TrainingState(
