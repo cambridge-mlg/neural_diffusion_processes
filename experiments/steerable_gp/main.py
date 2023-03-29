@@ -340,13 +340,13 @@ def run(config):
             ),
         ),
         # ml_tools.actions.PeriodicCallback(
-        #     every_steps=config.optim.num_steps // 20,
+        #     every_steps=config.optim.num_steps // 10,
         #     callback_fn=lambda step, t, **kwargs: logger.log_metrics(
         #         eval(kwargs["state"], kwargs["key"], step), step
         #     ),
         # ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=config.optim.num_steps // 20,
+            every_steps=config.optim.num_steps // 10,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"], step), step
             ),

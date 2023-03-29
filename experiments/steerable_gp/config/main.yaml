@@ -72,7 +72,7 @@ data:
 kernel:
   params:
     variance: ${data.variance}
-    lengthscale: 1.
+    lengthscale: 2.
 
 sde:
   # limiting_kernel_hyperparameters: 
