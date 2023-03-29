@@ -13,6 +13,7 @@ _STEP_FILENAME_EXT = ".eqx"
 
 class TrainingState(eqx.Module):
     params: PyTree
+    params_ema: PyTree
     opt_state: optax.OptState
     key: Array
     step: Array
