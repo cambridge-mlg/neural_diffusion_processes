@@ -651,8 +651,8 @@ def div_noise(
     return epsilon
 
 
-
-@check_shapes("x: [N, x_dim]", "y: [N, y_dim]", "return: []")
+@check_shapes("x: [N, x_dim]", "y: [N, y_dim]")#, "return: []")
+# @partial(jax.jit, static_argnames=["sde", "num_steps", "solver", "stepsize_controller", "hutchinson_type"])
 def log_prob(
     sde: SDE,
     network: ScoreNetwork,
@@ -662,7 +662,8 @@ def log_prob(
     key,
     num_steps: int = 100,
     solver: AbstractSolver = Dopri5(),
-    stepsize_controller: AbstractStepSizeController = ConstantStepSize(),
+    # stepsize_controller: AbstractStepSizeController = ConstantStepSize(),
+    stepsize_controller: AbstractStepSizeController = dfx.PIDController(rtol=1e-3, atol=1e-3),
     hutchinson_type = None
 ):
     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
@@ -670,6 +671,7 @@ def log_prob(
     )
 
     div_fn = get_div_fn(reverse_drift_ode, hutchinson_type)
+    @jax.jit
     def logp_wrapper(t, carry, static_args):
         yt, _ = carry
         eps, x = static_args
@@ -699,7 +701,8 @@ def log_prob(
         stepsize_controller=stepsize_controller,
     )
     yT, delta_logp = sol.ys
+    nfe = sol.stats['num_steps']
     yT, delta_logp = yT.squeeze(0), delta_logp.squeeze(0)
     logp_prior = sde.log_prob_prior(x, yT)
 
-    return logp_prior + delta_logp
+    return logp_prior + delta_logp, nfe

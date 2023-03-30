@@ -38,6 +38,7 @@ beta_schedule:
 optim:
   # batch_size: 30
   batch_size: 10
+  eval_batch_size: 1
   num_steps: 30_000
   lr: 1e-3
   ema_rate: 0.999
@@ -65,8 +66,10 @@ data:
   num_samples_test:  64
   # num_samples_test: 20_000
   seed: 0
-  min_context: 5
-  max_context: 50
+  # min_context: 5
+  # max_context: 50
+  min_context: 20
+  max_context: ${data.min_context}
   # n_points: 50
   n_points: -1
 
