@@ -6,18 +6,8 @@ import dataclasses
 @dataclasses.dataclass
 class DataConfig:
     seed: int = 0
-    kernel: str = "rbf"
-    num_samples: int = 10_000
-    num_points: int = 100
-    hyperparameters: Mapping[str, float] = dataclasses.field(
-        default_factory=lambda: {
-            "variance": 1.0,
-            "lengthscale": 0.2,
-        }
-    )
-
-    seed_test: int = 1
-    num_samples_test: int = 64
+    dataset: str = "se"
+    num_samples_in_epoch: int = int(2**14)
 
 
 @dataclasses.dataclass
@@ -33,7 +23,8 @@ class SdeConfig:
 @dataclasses.dataclass
 class OptimizationConfig:
     batch_size: int = 16
-    num_steps: int = 100_000
+    num_epochs: int = 20
+    ema_rate: float = 0.999
 
 
 @dataclasses.dataclass
@@ -56,7 +47,7 @@ class Config:
 toy_config = Config(
     seed=666,
     data=DataConfig(
-        num_samples=1_000,
+        num_samples_in_epoch=32
     ),
 )
 

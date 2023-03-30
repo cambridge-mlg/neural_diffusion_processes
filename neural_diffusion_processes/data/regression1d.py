@@ -16,6 +16,7 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 from neural_diffusion_processes.kernels import sample_prior_gp
+from neural_diffusion_processes.data.data import DataBatch
 
 
 @dataclass
@@ -64,32 +65,32 @@ _LENGTHSCALE = .25  # figure out correct lengthscale - samples in Fong et al loo
 
 _DATASET_CONFIGS = {
     "se": DatasetConfig(
-        train_num_context=UniformDiscrete(0, 50),
-        train_num_target=UniformDiscrete(50, 50),
+        train_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(60, 60),
         eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "matern": DatasetConfig(
-        train_num_context=UniformDiscrete(0, 50),
-        train_num_target=UniformDiscrete(50, 50),
+        train_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(60, 60),
         eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "weaklyperiodic": DatasetConfig(
-        train_num_context=UniformDiscrete(0, 50),
-        train_num_target=UniformDiscrete(50, 50),
+        train_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(60, 60),
         eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "noisymixture": DatasetConfig(
-        train_num_context=UniformDiscrete(0, 50),
-        train_num_target=UniformDiscrete(50, 50),
+        train_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(60, 60),
         eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "sawtooth": DatasetConfig(
-        train_num_context=UniformDiscrete(0, 100),
-        train_num_target=UniformDiscrete(100, 100),
+        train_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(110, 110),
         eval_num_context=UniformDiscrete(0, 10),
         eval_num_target=UniformDiscrete(100, 100),
     ),
@@ -251,7 +252,12 @@ def get_batch(key, batch_size: int, name: str, task: str):
 
     keys = jax.random.split(key, batch_size)
     y = jax.vmap(_DATASET_FACTORIES[name].sample)(keys, x)
-    return x_context, y[:, :n_context, :], x_target, y[:, n_context:, :]
+    return DataBatch(
+        xs=x_target,
+        ys=y[:, n_context:, :],
+        xc=x_context,
+        yc=y[:, :n_context, :]
+    )
 
 
 #%%

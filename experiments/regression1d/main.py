@@ -1,18 +1,27 @@
-from typing import Tuple, Mapping, Iterator, List
+from typing import Tuple, Mapping, Iterator, List, Optional
+from jaxtyping import Float, Array
+
+import os
 import dataclasses
 from absl import app
 
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+
+import numpy as np
 import functools
 import tqdm
 import pathlib
 import haiku as hk
 import jaxkern
+import gpjax
 import jax
 import jax.numpy as jnp
 import pandas as pd
 import optax
 import datetime
 import matplotlib.pyplot as plt
+from simple_pytree import Pytree
 
 from ml_collections import config_dict, config_flags
 from jax.config import config as jax_config
@@ -22,6 +31,8 @@ import neural_diffusion_processes as ndp
 from neural_diffusion_processes.ml_tools.state import TrainingState
 from neural_diffusion_processes.ml_tools import config_utils
 from neural_diffusion_processes import ml_tools
+from neural_diffusion_processes.data import regression1d
+
 
 try:
     from .config import Config, toy_config
@@ -35,6 +46,23 @@ _LOG_DIR = 'logs'
 
 
 _CONFIG = config_flags.DEFINE_config_dict("config", config_utils.to_configdict(Config()))
+
+
+def data_generator(key, dataset, task, total_num_samples, batch_size, num_epochs: Optional[int] = None):
+    assert total_num_samples % batch_size == 0
+
+    def batch(key) -> ndp.data.DataBatch:
+        return regression1d.get_batch(key, batch_size, dataset, task)
+
+    if num_epochs is None:
+        num_epochs = np.inf
+    
+    count_epochs = 0
+    while count_epochs < num_epochs:
+        count_epochs += 1
+        for _ in range(total_num_samples // batch_size):
+            key, bkey = jax.random.split(key)
+            yield batch(bkey)
 
 
 def get_experiment_name(config: Config):
@@ -57,21 +85,6 @@ def get_experiment_dir(config: Config, output: str = "root", exist_ok: bool = Tr
     return dir_
 
 
-def get_kernel(kernel_type: str) -> jaxkern.base.AbstractKernel:
-    if kernel_type == "matern12":
-        return jaxkern.stationary.Matern12(active_dims=list(range(1)))
-    elif kernel_type == "matern32":
-        return jaxkern.stationary.Matern32(active_dims=list(range(1)))
-    elif kernel_type == "matern52":
-        return jaxkern.stationary.Matern52(active_dims=list(range(1)))
-    elif kernel_type == "rbf":
-        return jaxkern.stationary.RBF(active_dims=list(range(1)))
-    elif kernel_type == "white":
-        return jaxkern.stationary.White(active_dims=list(range(1)))
-    else:
-        raise NotImplementedError("Unknown kernel: %s" % kernel_type)
-
-
 def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
     while True:
         init_key, next_key = jax.random.split(init_key)
@@ -90,45 +103,62 @@ def main(_):
 
     ####### init relevant diffusion classes
     beta = ndp.sde.LinearBetaSchedule()
-    limiting_kernel = get_kernel(config.sde.limiting_kernel)
-    hyps = config.sde.limiting_kernel_hyperparameters
-    sde = ndp.sde.SDE(limiting_kernel, hyps, beta)
+    limiting_kernel = ndp.kernels.get_kernel(config.sde.limiting_kernel, active_dims=[0])
+    hyps = {
+        "mean_function": {},
+        "kernel": config.sde.limiting_kernel_hyperparameters,
+    }
+    sde = ndp.sde.SDE(
+        limiting_kernel,
+        gpjax.mean_functions.Zero(),
+        hyps,
+        beta
+    )
 
     ####### prepare data
-    data_kernel = get_kernel(config.data.kernel)
-    data = ndp.data.get_gp_data(
-        jax.random.PRNGKey(config.data.seed),
-        data_kernel,
-        num_samples=config.data.num_samples,
-        num_points=config.data.num_points,
-        params=config.data.hyperparameters,
-    )
-    dataloader = ndp.data.dataloader(
-        data,
-        batch_size=config.optimization.batch_size,
-        key=next(key_iter)
-    )
-    batch0 = next(dataloader)
-    plt.plot(batch0.function_inputs[..., 0].T, batch0.function_outputs[..., 0].T, ".")
+    # data_kernel = ndp.kernels.get_kernel(config.data.kernel)
+    # data = ndp.data.get_gp_data(
+    #     jax.random.PRNGKey(config.data.seed),
+    #     data_kernel,
+    #     num_samples=config.data.num_samples,
+    #     num_points=config.data.num_points,
+    #     params=config.data.hyperparameters,
+    # )
+    # dataloader = ndp.data.dataloader(
+    #     data,
+    #     batch_size=config.optimization.batch_size,
+    #     key=next(key_iter)
+    # )
+
+    batch0 = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "training")
+    _, ax = plt.subplots()
+    ax.plot(batch0.xc[..., 0].T, batch0.yc[..., 0].T, "C0.", label="context")
+    ax.plot(batch0.xs[..., 0].T, batch0.ys[..., 0].T, "C1.", label="target")
+    handles, labels = ax.get_legend_handles_labels()
+    labels, ids = np.unique(labels, return_index=True)
+    handles = [handles[i] for i in ids]
+    ax.legend(handles, labels, loc='best')
     plt.savefig(str(get_experiment_dir(config, "plots") / "data.png"))
 
-    data_test = ndp.data.get_gp_data(
-        jax.random.PRNGKey(config.data.seed_test),
-        data_kernel,
-        num_samples=config.data.num_samples_test,
-        num_points=config.data.num_points,
-        params=config.data.hyperparameters,
-    )
-    dataloader_test = ndp.data.dataloader(
-        data_test,
-        batch_size=config.optimization.batch_size,
-        key=next(key_iter),
-        run_forever=False  # only run once
-    )
-    data_test: List[ndp.data.DataBatch] = [
-        ndp.data.split_dataset_in_context_and_target(batch, next(key_iter))
-        for batch in dataloader_test
-    ]
+    # test_batch = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "interpolation")
+    # data_test = ndp.data.get_gp_data(
+    #     jax.random.PRNGKey(config.data.seed_test),
+    #     data_kernel,
+    #     num_samples=config.data.num_samples_test,
+    #     num_points=config.data.num_points,
+    #     params=config.data.hyperparameters,
+    # )
+    # dataloader_test = ndp.data.dataloader(
+    #     data_test,
+    #     batch_size=config.optimization.batch_size,
+    #     key=next(key_iter),
+    #     run_forever=False  # only run once
+    # )
+    # data_test: List[ndp.data.DataBatch] = [
+    #     ndp.data.split_dataset_in_context_and_target(batch, next(key_iter))
+    #     for batch in dataloader_test
+    # ]
+
 
     ####### Forward haiku model
     def network(t, y, x):
@@ -147,8 +177,10 @@ def main(_):
         key = hk.next_rng_key()
         return ndp.sde.loss(sde, network_, batch, key)
 
+    num_steps_per_epoch = config.data.num_samples_in_epoch // config.optimization.batch_size
+    num_steps = num_steps_per_epoch * config.optimization.num_epochs
     learning_rate_schedule = optax.warmup_cosine_decay_schedule(
-        init_value=1e-4, peak_value=1e-3, warmup_steps=1000, decay_steps=config.optimization.num_steps, end_value=1e-4
+        init_value=1e-4, peak_value=1e-3, warmup_steps=1000, decay_steps=num_steps, end_value=1e-4
     )
 
     optimizer = optax.chain(
@@ -178,8 +210,15 @@ def main(_):
         loss_value, grads = loss_and_grad_fn(state.params, loss_key, batch)
         updates, new_opt_state = optimizer.update(grads, state.opt_state)
         new_params = optax.apply_updates(state.params, updates)
+        new_params_ema = jax.tree_util.tree_map(
+            lambda p_ema, p: p_ema * config.optim.ema_rate
+            + p * (1.0 - config.optimization.ema_rate),
+            state.params_ema,
+            new_params,
+        )
         new_state = TrainingState(
             params=new_params,
+            params_ema=new_params_ema,
             opt_state=new_opt_state,
             key=new_key,
             step=state.step + 1
@@ -194,13 +233,12 @@ def main(_):
 
     # state = restore_if_exists(state, path)
 
-    progress_bar = tqdm.tqdm(list(range(1, config.optimization.num_steps + 1)), miniters=1)
     exp_root_dir = get_experiment_dir(config)
     
     ########## Plotting
     net_ = hk.without_apply_rng(hk.transform(network))
     net = lambda params, t, yt, x, *, key: net_.apply(params, t[None], yt[None], x[None])[0]
-    x_plt = jnp.linspace(-1, 1, 100)[:, None]
+    x_plt = jnp.linspace(-2, 2, 100)[:, None]
     x_context = jnp.array([-0.5, 0.2, 0.4]).reshape(-1, 1)
     y_context = x_context * 0.0
 
@@ -283,16 +321,28 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
         )
     ]
+    train_dataloader = data_generator(
+        next(key_iter),
+        config.data.dataset,
+        "training",
+        total_num_samples=config.data.num_samples_in_epoch,
+        batch_size=config.optimization.batch_size,
+        num_epochs=config.optimization.num_epochs,
+    )
 
-    for step, batch, key in zip(progress_bar, dataloader, key_iter):
+    progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
+
+    for step, batch, key in zip(progress_bar, train_dataloader, key_iter):
         state, metrics = update_step(state, batch)
         metrics["lr"] = learning_rate_schedule(step)
 
-        for action in actions:
-            action(step, t=None, metrics=metrics, state=state, key=key)
+        # for action in actions:
+        #     action(step, t=None, metrics=metrics, state=state, key=key)
 
         if step % 100 == 0:
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")
+
+
 
 if __name__ == "__main__":
     app.run(main)
