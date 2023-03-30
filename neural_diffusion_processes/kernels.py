@@ -257,10 +257,33 @@ def promote_compute_engines(engine1: Type[jaxkern.computations.AbstractKernelCom
     if engine1 == jaxkern.computations.DenseKernelComputation or engine2 == jaxkern.computations.DenseKernelComputation:
         return jaxkern.computations.DenseKernelComputation
 
+    if engine1 == MultiOutputDenseKernelComputation or engine2 == MultiOutputDenseKernelComputation:
+        return MultiOutputDenseKernelComputation
+
     raise NotImplementedError(
         "Add rule for optimal compute engine sum kernel for types %s and %s." % (
             engine1, engine2
         ))
+
+
+class SumKernel(jaxkern.base.CombinationKernel):
+    """A kernel that is the sum of a set of kernels."""
+
+    def __init__(
+        self,
+        kernel_set: List[AbstractKernel],
+        compute_engine: AbstractKernelComputation = DenseKernelComputation,
+        active_dims: Optional[List[int]] = None,
+        stationary: Optional[bool] = False,
+        spectral: Optional[bool] = False,
+        name: Optional[str] = "Sum kernel",
+    ) -> None:
+        super().__init__(
+            kernel_set, compute_engine, active_dims, stationary, spectral, name
+        )
+        # NOTE: default jaxkern.SumKernel sums over all dims!
+        self.combination_fn: Optional[Callable] = partial(jnp.sum, axis=0)
+
 
 @dataclasses.dataclass
 class DiagMultiOutputKernel(AbstractKernel):

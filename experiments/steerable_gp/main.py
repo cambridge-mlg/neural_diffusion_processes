@@ -54,7 +54,6 @@ def run(config):
     key_iter = _get_key_iter(key)
 
     ####### init relevant diffusion classes
-    beta_schedule = instantiate(config.beta_schedule)
     limiting_kernel = instantiate(config.kernel.cls)
     limiting_mean_fn = instantiate(config.sde.limiting_mean_fn)
     limiting_params = {
@@ -62,8 +61,9 @@ def run(config):
         "mean_function": limiting_mean_fn.init_params(key),
     }
     limiting_params["kernel"].update(OmegaConf.to_container(config.kernel.params, resolve=True)) # NOTE: breaks RFF?
-    log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params}")
-    sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
+    log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params['kernel']}")
+    # sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
+    sde = instantiate(config.sde, limiting_params=limiting_params, beta_schedule=config.beta_schedule)
 
     ####### prepare data
     data = call(
@@ -129,7 +129,7 @@ def run(config):
         initial_opt_state = optimizer.init(initial_params)
         return TrainingState(
             params=initial_params,
-            # kernel_params=kernel_params,
+            params_ema=initial_params,
             opt_state=initial_opt_state,
             key=key,
             step=0,
@@ -144,8 +144,14 @@ def run(config):
         loss_value, grads = loss_and_grad_fn(state.params, loss_key, batch)
         updates, new_opt_state = optimizer.update(grads, state.opt_state)
         new_params = optax.apply_updates(state.params, updates)
+        new_params_ema = jax.tree_util.tree_map(
+                lambda p_ema, p: p_ema * config.optim.ema_rate
+                + p * (1.0 - config.optim.ema_rate),
+                state.params_ema,
+                new_params,
+        )
         new_state = TrainingState(
-            params=new_params, opt_state=new_opt_state, key=new_key, step=state.step + 1
+            params=new_params, params_ema=new_params_ema,opt_state=new_opt_state, key=new_key, step=state.step + 1
         )
         metrics = {"loss": loss_value, "step": state.step}
         return new_state, metrics
@@ -179,7 +185,7 @@ def run(config):
     def plot_cond(key, x_plt, params, x_context, y_context):
         net_ = partial(net, params)
         x_context = x_context.astype(float) + 1.0e-2 #NOTE: to avoid context overlapping with grid
-        return ndp.sde.conditional_sample(sde, net_, x_context, y_context, x_plt, key=key)
+        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_plt, key=key)
 
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
@@ -195,8 +201,8 @@ def run(config):
             plot_cov(x, covariances, ax=axes[1])
             axes[0].set_title(title)
 
-        batch = next(iter(data_test))
-        batch = plot_batch
+        # batch = next(iter(data_test))
+        batch = next(iter(plot_batch))
         idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
 
         # define grid over x space
@@ -215,7 +221,7 @@ def run(config):
         # plot generated samples
         # TODO: start from same limiting samples as above with yT argument
         y_model = jax.vmap(plot_reverse, in_axes=[0, None, None, 0])(
-            jax.random.split(keys[3], n_samples), x_plt, state.params, y_ref
+            jax.random.split(keys[3], n_samples), x_plt, state.params_ema, y_ref
         ).squeeze()
         # ax.plot(x_plt, y_model[:, -1, :, 0].T, "C0", alpha=0.3)
         plot_vf_and_cov(x_plt, y_model, axes[:, 2], rf"$p_{{model}}$")
@@ -227,7 +233,8 @@ def run(config):
         axes[0][3].set_title(rf"$p_{{data}}$")
         
         # plot conditional samples
-        y_cond = jax.vmap(lambda key: plot_cond(key, x_plt, state.params, batch.xc[idx], batch.yc[idx]))(jax.random.split(keys[3], n_samples)).squeeze()
+        xc = batch.xc[idx]
+        y_cond = jax.vmap(lambda key: plot_cond(key, x_plt, state.params_ema, xc, batch.yc[idx]))(jax.random.split(keys[3], n_samples)).squeeze()
             # ax.plot(x_plt, y_cond[:, -1, :, 0].T, "C0", alpha=0.3)
         plot_vf_and_cov(x_plt, y_cond, axes[:, 4], rf"$p_{{model}}$")
         plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][4])
@@ -266,7 +273,7 @@ def run(config):
         @partial(jax.vmap, in_axes=[None, 0])
         @partial(jax.vmap, in_axes=[0, None])
         def model_sample(x_target, key):
-            net_ = partial(net, state.params)
+            net_ = partial(net, state.params_ema)
             return ndp.sde.reverse_solve(
                 sde, net_, x_target, key=key
             )
@@ -274,14 +281,14 @@ def run(config):
         @partial(jax.vmap, in_axes=[None, None, None, 0])
         @partial(jax.vmap, in_axes=[0, 0, 0, None])
         def conditional_sample(x_context, y_context, x_target, key):
-            net_ = partial(net, state.params)
+            net_ = partial(net, state.params_ema)
             return ndp.sde.conditional_sample(
                 sde, net_, x_context, y_context, x_target, key=key
             )
 
         @partial(jax.vmap, in_axes=[0, 0, None])
         def prior_log_prob(x, y, key):
-            net_ = partial(net, state.params)
+            net_ = partial(net, state.params_ema)
             return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian")
 
         @partial(jax.vmap, in_axes=[None, None, None, 0])
@@ -320,15 +327,15 @@ def run(config):
             # augmented_logp = prior_log_prob(x_augmented, y_augmented, key)
             # context_logp = prior_log_prob(batch.xc, batch.yc, key)
             # metrics["cond_log_prob2"].append(jnp.mean(augmented_logp - context_logp))
-            # logp = prior_log_prob(batch.xs, batch.ys, key)
-            # metrics["log_prob"].append(jnp.mean(logp))
+            logp = prior_log_prob(batch.xs, batch.ys, key)
+            metrics["log_prob"].append(jnp.mean(logp))
 
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
         v = {k: jnp.mean(jnp.stack(v)) for k, v in metrics.items()}
-        samples = model_sample(batch.xs, jnp.stack(keys)).squeeze()
-        logp = data_log_prob(batch.xs, samples)
-        v["data_log_prob"] = jnp.mean(jnp.mean(logp, axis=-1))
+        # samples = model_sample(batch.xs, jnp.stack(keys)).squeeze()
+        # logp = data_log_prob(batch.xs, samples)
+        # v["data_log_prob"] = jnp.mean(jnp.mean(logp, axis=-1))
         
         return v
 
@@ -339,14 +346,14 @@ def run(config):
                 kwargs["metrics"], step
             ),
         ),
-        # ml_tools.actions.PeriodicCallback(
-        #     every_steps=config.optim.num_steps // 20,
-        #     callback_fn=lambda step, t, **kwargs: logger.log_metrics(
-        #         eval(kwargs["state"], kwargs["key"], step), step
-        #     ),
-        # ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=config.optim.num_steps // 20,
+            every_steps=config.optim.num_steps // 10,
+            callback_fn=lambda step, t, **kwargs: logger.log_metrics(
+                eval(kwargs["state"], kwargs["key"], step), step
+            ),
+        ),
+        ml_tools.actions.PeriodicCallback(
+            every_steps=config.optim.num_steps // 10,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"], step), step
             ),
@@ -362,7 +369,7 @@ def run(config):
     # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
     
-    logger.log_plot("process", plots(state, key, 0), 0)
+    # logger.log_plot("process", plots(state, key, 0), 0)
     # logger.log_metrics(eval(state, key, 0), 0)
     # logger.save()
 

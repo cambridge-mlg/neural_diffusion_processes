@@ -40,6 +40,7 @@ optim:
   batch_size: 10
   num_steps: 30_000
   lr: 1e-3
+  ema_rate: 0.999
 
 data:
   _target_: neural_diffusion_processes.data.get_vec_gp_data
@@ -72,13 +73,14 @@ data:
 kernel:
   params:
     variance: ${data.variance}
-    lengthscale: 1.
+    lengthscale: 2.
 
 sde:
+  _target_: neural_diffusion_processes.sde.SDE
   # limiting_kernel_hyperparameters: 
   #   variance: 1.0
   #   lengthscale: 1.0
-  # limiting_kernel:
+  limiting_kernel: ${kernel.cls}
     # _target_: neural_diffusion_processes.kernels.RBFVec
     # _target_: neural_diffusion_processes.kernels.WhiteVec
     # output_dim: 2
@@ -91,4 +93,5 @@ now: ${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 # resume: false
 # mode: all
-PROJECT_NAME: neural_diffusion_processes
+PROJECT_NAME: score-sde
+# PROJECT_NAME: neural_diffusion_processes
