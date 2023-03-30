@@ -38,7 +38,7 @@ def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
 log = logging.getLogger(__name__)
 
 def run(config):
-    # jax.config.update("jax_enable_x64", True)
+    jax.config.update("jax_enable_x64", True)
     log.info("Stage : Startup")
     log.info(f"Jax devices: {jax.devices()}")
     run_path = os.getcwd()
@@ -177,22 +177,22 @@ def run(config):
     )[0]
 
     @jax.jit
-    def plot_reverse(key, x_plt, params, yT=None):
+    def plot_reverse(key, x_grid, params, yT=None):
         net_ = partial(net, params)
-        return ndp.sde.reverse_solve(sde, net_, x_plt, key=key, yT=yT)
+        return ndp.sde.reverse_solve(sde, net_, x_grid, key=key, yT=yT, prob_flow=False)
 
     @jax.jit
-    def plot_cond(key, x_plt, params, x_context, y_context):
+    def plot_cond(key, x_grid, params, x_context, y_context):
         net_ = partial(net, params)
         x_context = x_context.astype(float) + 1.0e-2 #NOTE: to avoid context overlapping with grid
-        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_plt, key=key)
+        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key)
 
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
         n_samples = 30
         keys = jax.random.split(key, 6)
         plot_vf = partial(plot_vector_field, scale=50*math.sqrt(config.data.variance), width=0.005)
-        plot_cov = partial(plot_covariances, scale=0.1, zorder=-1)
+        plot_cov = partial(plot_covariances, scale=0.3/math.sqrt(config.data.variance), zorder=-1)
         def plot_vf_and_cov(x, ys, axes, title="", cov=True):
             # print(title, x.shape, ys.shape)
             plot_vf(x, ys[0], ax=axes[0])
@@ -202,12 +202,12 @@ def run(config):
             axes[0].set_title(title)
 
         # batch = next(iter(data_test))
-        batch = next(iter(plot_batch))
+        batch = plot_batch
         idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
 
         # define grid over x space
-        x_plt = jnp.linspace(-1, 1, 100)[:, None]
-        x_plt = radial_grid_2d(config.data.x_radius, config.data.num_points)
+        # x_grid = jnp.linspace(-1, 1, 100)[:, None]
+        x_grid = radial_grid_2d(config.data.x_radius, config.data.num_points)
 
         fig_backward, axes = plt.subplots(2, 5, figsize=(8*5, 8*2), sharex=True, sharey=True)
         fig_backward.subplots_adjust(wspace=0, hspace=0.)
@@ -215,28 +215,29 @@ def run(config):
         plot_vf_and_cov(batch.xs[idx], batch.ys, axes[:, 0], rf"$p_{{data}}$")
 
         # plot limiting
-        y_ref = jax.vmap(sde.sample_prior, in_axes=[0, None])(jax.random.split(keys[3], n_samples), x_plt).squeeze()
-        plot_vf_and_cov(x_plt, y_ref, axes[:, 1], rf"$p_{{ref}}$")
+        y_ref = jax.vmap(sde.sample_prior, in_axes=[0, None])(jax.random.split(keys[3], n_samples), x_grid).squeeze()
+        plot_vf_and_cov(x_grid, y_ref, axes[:, 1], rf"$p_{{ref}}$")
 
         # plot generated samples
         # TODO: start from same limiting samples as above with yT argument
         y_model = jax.vmap(plot_reverse, in_axes=[0, None, None, 0])(
-            jax.random.split(keys[3], n_samples), x_plt, state.params_ema, y_ref
+            jax.random.split(keys[3], n_samples), x_grid, state.params_ema, y_ref
         ).squeeze()
-        # ax.plot(x_plt, y_model[:, -1, :, 0].T, "C0", alpha=0.3)
-        plot_vf_and_cov(x_plt, y_model, axes[:, 2], rf"$p_{{model}}$")
+        # ax.plot(x_grid, y_model[:, -1, :, 0].T, "C0", alpha=0.3)
+        plot_vf_and_cov(x_grid, y_model, axes[:, 2], rf"$p_{{model}}$")
         
         # plot conditional data
         plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][3])
         plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][3])
-        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[1][3])
         axes[0][3].set_title(rf"$p_{{data}}$")
+        axes[1][3].set_aspect('equal')
         
         # plot conditional samples
-        xc = batch.xc[idx]
-        y_cond = jax.vmap(lambda key: plot_cond(key, x_plt, state.params_ema, xc, batch.yc[idx]))(jax.random.split(keys[3], n_samples)).squeeze()
-            # ax.plot(x_plt, y_cond[:, -1, :, 0].T, "C0", alpha=0.3)
-        plot_vf_and_cov(x_plt, y_cond, axes[:, 4], rf"$p_{{model}}$")
+        # x_grid_w_contxt = jnp.array([x for x in set(tuple(x) for x in x_grid.tolist()).difference(set(tuple(x) for x in batch.xc[idx].tolist()))])
+        x_grid_w_contxt = x_grid
+        y_cond = jax.vmap(lambda key: plot_cond(key, x_grid_w_contxt, state.params_ema, batch.xc[idx], batch.yc[idx]))(jax.random.split(keys[3], n_samples)).squeeze()
+            # ax.plot(x_grid, y_cond[:, -1, :, 0].T, "C0", alpha=0.3)
+        plot_vf_and_cov(x_grid_w_contxt, y_cond, axes[:, 4], rf"$p_{{model}}$")
         plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][4])
         plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[1][4])
 
@@ -257,7 +258,7 @@ def run(config):
                 yt = jax.vmap(lambda key: sde.sample_marginal(key,  t * jnp.ones(()), batch.xs[idx], batch.ys[idx]))(jax.random.split(keys[1], n_samples)).squeeze()
                 plot_vf_and_cov(batch.xs[idx], yt, axes[:, k+1], rf"$p_{{t={t}}}$")
 
-            plot_vf_and_cov(x_plt, y_ref, axes[:, -1], rf"$p_{{ref}}$")
+            plot_vf_and_cov(x_grid, y_ref, axes[:, -1], rf"$p_{{ref}}$")
 
             dict_plots["forward"] = fig_forward
         
@@ -369,7 +370,8 @@ def run(config):
     # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
     
-    # logger.log_plot("process", plots(state, key, 0), 0)
+    logger.log_plot("process", plots(state, key, 0), 0)
+    # logger.log_plot("process", plots(state, key, 1), 1)
     # logger.log_metrics(eval(state, key, 0), 0)
     # logger.save()
 
