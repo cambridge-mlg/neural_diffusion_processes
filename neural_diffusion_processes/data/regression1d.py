@@ -6,6 +6,7 @@ import abc
 from dataclasses import dataclass
 import jaxkern
 import jax
+import gpjax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 import distrax
@@ -14,7 +15,7 @@ import matplotlib
 import jax
 jax.config.update("jax_enable_x64", True)
 
-from neural_diffusion_processes.misc import sample_mvn
+from neural_diffusion_processes.kernels import sample_prior_gp
 
 
 @dataclass
@@ -57,6 +58,7 @@ class DatasetConfig:
 
 
 _NOISE_VAR = 1e-8
+# _NOISE_VAR = 0.05**2
 _KERNEL_VAR = 1.0
 _LENGTHSCALE = .25  # figure out correct lengthscale - samples in Fong et al look smoother.
 
@@ -131,10 +133,10 @@ class GPFunctionalDistribution(FuntionalDistribution):
         self.params = params
     
     def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
-        noise_var = self.params["noise_variance"]
-        gram = self.kernel.gram(self.params["kernel"], x).to_dense()
-        return sample_mvn(key, jnp.zeros_like(x), gram, noise_var=noise_var)
-
+        mean = gpjax.mean_functions.Zero()
+        return sample_prior_gp(
+            key, mean, self.kernel, params=self.params, x=x, obs_noise=self.params["noise_variance"]
+        )
 
 DatasetFactory: Callable[[], FuntionalDistribution]
 
@@ -151,6 +153,7 @@ def register_dataset_factory(name: str):
 def _se_dataset_factory():
     kernel = jaxkern.stationary.RBF(active_dims=[0])
     params = {
+        "mean_function": {},
         "kernel": {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR,},
         "noise_variance": _NOISE_VAR
     }
@@ -161,6 +164,7 @@ def _se_dataset_factory():
 def _matern_dataset_factory():
     kernel = jaxkern.stationary.Matern52(active_dims=[0])
     params = {
+        "mean_function": {},
         "kernel": {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR,},
         "noise_variance": _NOISE_VAR
     }
@@ -173,9 +177,10 @@ def _weaklyper_dataset_factory():
     per = jaxkern.stationary.Periodic(active_dims=[0])
     kernel = jaxkern.ProductKernel([rbf, per])
     params = {
+        "mean_function": {},
         "kernel": [
-            {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR},
-            {"lengthscale": 0.25, "variance": _KERNEL_VAR, "period": 1.},
+            {"lengthscale": 0.5, "variance": _KERNEL_VAR},
+            {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR, "period": 1.},
         ],
         "noise_variance": _NOISE_VAR,
     }
@@ -187,13 +192,16 @@ def _weaklyper_dataset_factory():
 def _noisymix_dataset_factory():
     rbf1 = jaxkern.stationary.RBF(active_dims=[0])
     rbf2 = jaxkern.stationary.RBF(active_dims=[0])
-    kernel = jaxkern.SumKernel([rbf1, rbf2])
+    white = jaxkern.stationary.White(active_dims=[0])
+    kernel = jaxkern.SumKernel([rbf1, rbf2, white])
     params = {
+        "mean_function": {},
         "kernel": [
             {"lengthscale": _LENGTHSCALE, "variance": 1.0},
             {"lengthscale": 1.0, "variance": 1.0},
+            {"variance": 1e-3},
         ],
-        "noise_variance": 1e-3,
+        "noise_variance": _NOISE_VAR,
     }
 
     return GPFunctionalDistribution(kernel, params)

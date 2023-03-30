@@ -127,7 +127,11 @@ def run(model: str, dataset: str):
 
     metrics = {}
     err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
-    summary_stats = [("mean", jnp.mean), ("var", jnp.var), ("err", err)]
+    summary_stats = [
+        ("mean", jnp.mean),
+        ("std", jnp.std),
+        ("err", err)
+    ]
 
     for task in regression1d._TASKS:
         if task == "training": continue

@@ -5,7 +5,7 @@ Experiments builds on Convolutional Neural Processes ([Fong et al., 2020](https:
 
 |                | Fong et al. (2020) | Wessel et al. (2021) |
 |----------------|--------------------|----------------------|
-| noise variance | 1e-8               | 2.5e-3               |
+| noise variance | 1e-8               | 0.05^2               |
 | datasets       |                    | Adds Mixture dataset |
 
 
@@ -20,8 +20,8 @@ Experiments builds on Convolutional Neural Processes ([Fong et al., 2020](https:
 | num context evaluation | {10}                | "            | "                               | "             | "                             |
 | num target evaluation  | {50}                | {50}         | {50}                            | {100}         | {100}                         |
 
-- tasks_per_epoch= $2^{14}$
-- how many epochs?
+- tasks_per_epoch = $2^{14}$
+- how many epochs = 20
 
 ## Tasks
 
@@ -42,6 +42,14 @@ Experiments builds on Convolutional Neural Processes ([Fong et al., 2020](https:
  - x_context=Uniform(2, 6)
  - x_target=Uniform(2, 6)
 
+
+### Datasets
+
+![datasets](data2.png)
+
+### Tasks
+
+![datasets](data1.png)
 
 ## Metrics
 

@@ -508,7 +508,7 @@ def posterior_gp(
 
         # Ktt  -  Ktx (Kxx + Iσ²)⁻¹ Kxt, TODO: Take advantage of covariance structure to compute Schur complement more efficiently.
         covariance = Ktt - jnp.matmul(Kxt.T, Sigma_inv_Kxt)
-        covariance = covariance._add_diagonal(identity(n_test) * JITTER)
+        covariance = covariance._add_diagonal(identity(n_test) * (JITTER + obs_noise))
 
         dist = GaussianDistribution(mean, covariance)
         return dist
