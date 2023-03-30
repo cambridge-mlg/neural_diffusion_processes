@@ -2,7 +2,7 @@
 from __future__ import annotations
 from functools import partial
 import os
-
+import math
 # os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 import seaborn as sns
 import matplotlib
@@ -26,7 +26,8 @@ from neural_diffusion_processes.misc import flatten, unflatten
 # %%
 from jax.config import config
 config.update("jax_enable_x64", True)
-JITTER = 1e-12
+# JITTER = 1e-12
+JITTER = 1e-5
 
 def get_2d_grid(num, min_=-1, max_=1):
     x = jnp.linspace(min_, max_, num)
@@ -41,17 +42,20 @@ key = jax.random.PRNGKey(42)
 
 output_dim = 2
 beta_schedule = ndp.sde.LinearBetaSchedule()
-x = get_2d_grid(25, -5, 5)
+x = get_2d_grid(30, -10, 10)
 
 # k0 = ndp.kernels.RBFVec(output_dim)
 k0 = ndp.kernels.RBFCurlFree()
-k0_params = k0.init_params(None)
+# k0_params = k0.init_params(None)
+k0_params = {"variance": 10, "lengthscale": 2.23606797749979}
 
 k1 = ndp.kernels.WhiteVec(output_dim)
+# k1_params = k1.init_params(key)
+k1_params = {"variance": k0_params["variance"], "lengthscale": 2.}
 mean_function = gpjax.Zero(output_dim)
 
 limiting_params = {
-        "kernel": k1.init_params(key),
+        "kernel": k1_params,
         "mean_function": mean_function.init_params(key),
     }
 
@@ -64,6 +68,8 @@ kxx = k0.gram(k0_params, x).to_dense()
 kxx = rearrange(kxx, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=output_dim, p2=output_dim) 
 kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (p1 n1) (p2 n2)') 
 plt.matshow(kxx)
+
+sde = ndp.sde.SDE(k1, mean_function, limiting_params, beta_schedule, True, True)
 
 # %%
 
@@ -92,6 +98,7 @@ def solve(
     # solver: AbstractSolver = dfx.Euler(),
     stepsize_controller: AbstractStepSizeController = ConstantStepSize(),
     solver: AbstractSolver = dfx.Heun(),
+    ts=None
     # stepsize_controller: AbstractStepSizeController = dfx.PIDController(rtol=1e-3, atol=1e-3),
 ):
     key, ykey = jax.random.split(key)
@@ -115,7 +122,8 @@ def solve(
     terms = dfx.MultiTerm(
         dfx.ODETerm(drift_sde), LinOpControlTerm(diffusion, bm)
     )
-    ts = get_timesteps(min(t0, t1), max(t0, t1), num_ts=5)
+    saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
+    
     # TODO: adaptive step?
     out = dfx.diffeqsolve(
         terms,
@@ -127,7 +135,7 @@ def solve(
         args=x,
         adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
-        saveat=dfx.SaveAt(ts=ts)
+        saveat=saveat
     )
     ys = out.ys.squeeze()
     return ts, unflatten(ys, y_dim)
@@ -136,8 +144,6 @@ def solve(
 # %%
 
 from neural_diffusion_processes.kernels import sample_prior_gp
-
-sde = ndp.sde.SDE(k1, mean_function, limiting_params, beta_schedule, True, True)
 
 seed = 1
 key = jax.random.PRNGKey(seed)
@@ -150,7 +156,8 @@ key, subkey = jax.random.split(key)
 y0s = sample_prior_gp(key, mean_function, k0, {"kernel": k0_params, "mean_function": {}}, x)
 print(y0s.shape)
 subkeys = jax.random.split(key, num=num_samples)
-out = jax.vmap(solve, in_axes=[None, None, None, 0])(sde, x, y0s, subkeys)
+ts = get_timesteps(sde.beta_schedule. t0,sde.beta_schedule.t1, num_ts=5)
+out = jax.vmap(lambda key: solve(sde, x, y0s, key, ts=ts))(subkeys)
 # out = solve(sde, x, y0s, key)
 print(out[0].shape)
 print(out[1].shape)
@@ -177,7 +184,7 @@ for j in range(plot_num_timesteps):
                 ys[i, j, :, 0],
                 ys[i, j, :, 1],
                 color=cm(norm(y_norm)),
-                scale=50,
+                scale=50*math.sqrt(k0_params["variance"]),
                 width=0.005,
             )  
         axes[j, 0].set_ylabel(f"t = {ts[0, j]:.2f}")
@@ -199,7 +206,8 @@ def score(sde, t: Array, yt: Array, x: Array) -> Array:
                 # y0=partial(gpjax.Zero(2), {}),
                 y0=jnp.zeros_like(yt),
                 k0=k0,
-                k0_params=k0.init_params(None),
+                k0_params={"variance": 10, "lengthscale": 2.23606797749979},
+                # k0_params=k0_params,
             )
 
         # k0 = RBFCurlFree()
@@ -215,31 +223,36 @@ def score(sde, t: Array, yt: Array, x: Array) -> Array:
         JITTER = 1e-5
         Sigma_t = Sigma_t._add_diagonal(identity(n) * JITTER)
         Sigma_inv_b = Sigma_t.solve(b)
-        # SigmaT = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
-        # out = - (SigmaT @ (SigmaT.T @ Sigma_inv_b))
 
-        # Sigma_t = (1 - cov_coef) * sde.limiting_kernel.gram(sde.limiting_params['kernel'], x).to_dense()
-        # Sigma_t += cov_coef * k0.gram(k0_params, x).to_dense() 
-        # Lt = jnp.linalg.cholesky(Sigma_t + JITTER * jnp.eye(len(Sigma_t)))
-        # Sigma_inv_b = solve_upper_triangular(jnp.transpose(Lt), solve_lower_triangular(Lt, b))
+        Sigma_t2 = (1 - cov_coef) * sde.limiting_kernel.gram(sde.limiting_params['kernel'], x).to_dense()
+        Sigma_t2 += cov_coef * k0.gram(k0_params, x).to_dense()
+        Sigma_t2 += JITTER * jnp.eye(n)
+        Lt = jnp.linalg.cholesky(Sigma_t2)
+        Sigma_inv_b2 = solve_upper_triangular(jnp.transpose(Lt), solve_lower_triangular(Lt, b))
 
-        out = -Sigma_inv_b
+        SigmaT = sde.limiting_kernel.gram(sde.limiting_params["kernel"], x)
+        
+        out = - (SigmaT @ Sigma_inv_b2)
+        # out = - Sigma_inv_b
+
         return unflatten(out, yt.shape[-1])
 
 sde.score = lambda key, t, yt, x, network: score(sde, t, yt, x)
-
+# score(sde, 0.5, ys[0, -1], x)
 #%%
 
 # ts = get_timesteps(sde.beta_schedule.t1, 1e-3, num_ts=5)
-ts = get_timesteps(sde.beta_schedule.t1, sde.beta_schedule.t0+1e-5, num_ts=5)
+ts = get_timesteps(sde.beta_schedule.t1, sde.beta_schedule.t0+1e-8, num_ts=5)
+
+reverse_solve = lambda key, y: ndp.sde.reverse_solve(sde, None, x, key=key, yT=y, ts=ts, solver=dfx.Heun()) #, stepsize_controller=dfx.PIDController(rtol=1e-3, atol=1e-3))
 
 key = jax.random.PRNGKey(0)
 key, *subkeys = jax.random.split(key, 1+num_samples)
-rev_out = jax.vmap(lambda key, y: ndp.sde.reverse_solve(sde, None, x, key=key, yT=y, ts=ts))(np.stack(subkeys), ys[:, -1])
-# rev_out = reverse_solve(sde, x, key, ys[0, -1])
-print(rev_out.shape)
+# rev_out = reverse_solve(key, ys[0, -1])
+rev_out = jax.vmap(reverse_solve)(np.stack(subkeys), ys[:, -1])
+# print(rev_out.shape)
 key, *subkeys = jax.random.split(key, 1+num_samples)
-rev_out2 = jax.vmap(lambda key, y: ndp.sde.reverse_solve(sde, None, x, key=key, yT=y, ts=ts))(np.stack(subkeys), ys[:, -1])
+rev_out2 = jax.vmap(reverse_solve)(np.stack(subkeys), ys[:, -1])
 
 # %%
 
@@ -259,7 +272,7 @@ for t in range(plot_num_timesteps):
                 rev_out[i, t, :, 0],
                 rev_out[i, t, :, 1],
                 color=cm(norm(y_norm)),
-                scale=50,
+                scale=50*math.sqrt(k0_params["variance"]),
                 width=0.005,
             )  
             # axes[t, i].set_ylim(-1, 1)
@@ -285,13 +298,20 @@ elif x.shape[-1] == 2 and output_dim == 2:
 if x.shape[-1] == 1:
     x_test = jnp.linspace(-1, 1, 101)[:, None]
 elif x.shape[-1] == 2:
-    x_test = get_2d_grid(25, -5, 5)
+    x_test = get_2d_grid(30, -10, 10)
+
+idx = jax.random.permutation(key, jnp.arange(len(x_test)))
+x_known = x_test[idx[:43]] + 1e-2
+
+from neural_diffusion_processes.kernels import prior_gp, posterior_gp
+y_known = unflatten(prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}})(x_known).sample(seed=key, sample_shape=()), output_dim)
+y_test = unflatten(posterior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, x_known, y_known)(x_test).sample(seed=key, sample_shape=(num_samples)), output_dim)
+
 
 key = jax.random.PRNGKey(0)
 # num_samples = 100 if x.shape[-1] == 1 else 9
-num_samples = 10
+num_samples = 100
 samples = jax.vmap(lambda key: ndp.sde.conditional_sample2(sde, None, x_known, y_known, x_test, key=key, num_steps=100, num_inner_steps=5))(jax.random.split(key, num_samples))
-
 # %%
 if x.shape[-1] == 1:
     plt.figure()
@@ -301,27 +321,30 @@ if x.shape[-1] == 1:
 
 
 elif x.shape[-1] == 2 and output_dim == 2:
-    fig, ax = plt.subplots(figsize=(5, 5))
-    samples_mean = jnp.mean(samples, 0)
-    s_norm = jnp.linalg.norm(samples_mean, axis=-1)
-    ax.quiver(
-        x_test[:, 0],
-        x_test[:, 1],
-        samples_mean[:, 0],
-        samples_mean[:, 1],
-        color=cm(norm(s_norm)),
-        scale=50,
-        width=0.005,
-    )  
-    ax.quiver(
-        x_known[:, 0],
-        x_known[:, 1],
-        y_known[:, 0],
-        y_known[:, 1],
-        color='r',
-        scale=50,
-        width=0.005,
-    )  
+    fig, axes = plt.subplots(1, 2, figsize=(2*5, 5))
+    # fig, axes = plt.subplots(plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8, 16))
+
+    for ax, ys in zip(axes, [samples, y_test]):
+        samples_mean = jnp.mean(ys, 0)
+        s_norm = jnp.linalg.norm(samples_mean, axis=-1)
+        ax.quiver(
+            x_test[:, 0],
+            x_test[:, 1],
+            samples_mean[:, 0],
+            samples_mean[:, 1],
+            color=cm(norm(s_norm)),
+            scale=50,
+            width=0.005,
+        )  
+        ax.quiver(
+            x_known[:, 0],
+            x_known[:, 1],
+            y_known[:, 0],
+            y_known[:, 1],
+            color='r',
+            scale=50,
+            width=0.005,
+        )  
     # ax.set_ylim(-1, 1)
     # ax.set_xlim(-1, 1)
 
