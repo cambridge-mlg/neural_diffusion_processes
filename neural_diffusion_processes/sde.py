@@ -69,6 +69,8 @@ class SDE:
         limiting_mean_fn: gpjax.mean_functions.AbstractMeanFunction,
         limiting_params: Mapping,
         beta_schedule: LinearBetaSchedule,
+        std_trick: bool = True,
+        residual_trick: bool = True,
     ):
         self.limiting_kernel = limiting_kernel
         self.limiting_mean_fn = limiting_mean_fn
@@ -76,8 +78,8 @@ class SDE:
         self.limiting_params = limiting_params
         self.beta_schedule = beta_schedule
         # self.weighted = True
-        self.std_trick = False
-        self.residual_trick = True
+        self.std_trick = std_trick
+        self.residual_trick = residual_trick
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
@@ -182,27 +184,44 @@ class SDE:
 
     # @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     # def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
+    #     # return 2 * self.drift(t, yt, x) / self.beta_schedule(t)
+    #     # return jnp.zeros_like(yt)
+    #     from neural_diffusion_processes.kernels import RBFCurlFree
     #     def pt(t):
-    #         from neural_diffusion_processes.kernels import RBFCurlFree
-    #         return self.p0t(
+    #         return self.pt(
     #             t,
     #             # y0=partial(gpjax.Zero(2), {}),
     #             y0=jnp.zeros_like(yt),
     #             k0=RBFCurlFree(),
     #             k0_params={"variance": 10, "lengthscale": 2.23606797749979},
+    #             # k0_params=RBFCurlFree().init_params(None),
     #         )
 
+        
     #     mu_t, k_t, params = pt(t)
-    #     b = yt - mu_t({}, x)
+    #     b = yt# - mu_t({}, x)
     #     n = b.shape[0] * b.shape[1]
     #     b = flatten(b)
+        
+    #     # k0 = RBFCurlFree()
+    #     # k0_params={"variance": 10, "lengthscale": 2.23606797749979}
+    #     # solve_lower_triangular = partial(jax.scipy.linalg.solve_triangular, lower=True)  # L⁻¹ x
+    #     # solve_upper_triangular = partial(jax.scipy.linalg.solve_triangular, lower=False)  # U⁻¹ x
+    #     # cov_coef = jnp.exp(self.beta_schedule.B(t))
+    #     # Sigma_t = (1 - cov_coef) * self.limiting_kernel.gram(self.limiting_params['kernel'], x).to_dense()
+    #     # Sigma_t += cov_coef * k0.gram(k0_params, x).to_dense() 
+    #     # Lt = jnp.linalg.cholesky(Sigma_t + JITTER * jnp.eye(len(Sigma_t)))
+    #     # Sigma_inv_b = solve_upper_triangular(jnp.transpose(Lt), solve_lower_triangular(Lt, b))
+
     #     Sigma_t = k_t.gram(params['kernel'], x)
+    #     # JITTER = 1e-3
     #     Sigma_t = Sigma_t._add_diagonal(identity(n) * JITTER)
-    #     # # Σ⁻¹ (yt - m_0(x))
     #     Sigma_inv_b = Sigma_t.solve(b)
-    #     # SigmaT = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
-    #     # out = - (SigmaT @ (SigmaT.T @ Sigma_inv_b))
-    #     out = - Sigma_inv_b
+    #     SigmaT = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
+    #     out = - (SigmaT @ Sigma_inv_b)
+    #     # out = - Sigma_inv_b
+        
+    #     # out = - self.beta_schedule(t) * Sigma_inv_b
     #     return unflatten(out, yt.shape[-1])
 
 
@@ -289,12 +308,13 @@ def reverse_solve(
     *,
     key,
     prob_flow: bool = False,
-    num_steps: int = 200,
+    num_steps: int = 100,
     yT = None,
-    # solver: AbstractSolver = dfx.Euler(),
-    # stepsize_controller: AbstractStepSizeController = ConstantStepSize(),
-    solver: AbstractSolver = dfx.Heun(),
-    stepsize_controller: AbstractStepSizeController = dfx.PIDController(rtol=1e-3, atol=1e-3),
+    solver: AbstractSolver = dfx.Euler(),
+    stepsize_controller: AbstractStepSizeController = ConstantStepSize(),
+    # solver: AbstractSolver = dfx.Heun(),
+    # stepsize_controller: AbstractStepSizeController = dfx.PIDController(rtol=1e-3, atol=1e-3),
+    ts = None
 ):
     key, ykey = jax.random.split(key)
     yT = sde.sample_prior(ykey, x) if yT is None else yT
@@ -307,9 +327,9 @@ def reverse_solve(
     # saveat = dfx.SaveAt(ts=ts)
 
     if prob_flow:
-        reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
-            key, t, yt, arg, network
-        )
+        reverse_drift_ode = lambda t, yt, arg: flatten(sde.reverse_drift_ode(
+            key, t, unflatten(yt, y_dim), arg, network
+        ))
         terms = dfx.ODETerm(reverse_drift_ode)
     else:
         shape = jax.ShapeDtypeStruct(yT.shape, yT.dtype)
@@ -318,12 +338,14 @@ def reverse_solve(
         reverse_drift_sde = lambda t, yt, arg: flatten(
             sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network)
         )
+        # reverse_drift_sde = lambda t, yt, arg: flatten(-sde.drift(t, unflatten(yt, y_dim), x))
         diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
 
         terms = dfx.MultiTerm(
             dfx.ODETerm(reverse_drift_sde), LinOpControlTerm(diffusion, bm)
         )
-    # TODO: adaptive step?
+    
+    saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
     out = dfx.diffeqsolve(
         terms,
         solver=solver,
@@ -333,7 +355,8 @@ def reverse_solve(
         y0=yT,
         args=x,
         adjoint=dfx.NoAdjoint(),
-        stepsize_controller=stepsize_controller
+        stepsize_controller=stepsize_controller,
+        saveat=saveat
     )
     ys = out.ys
     return unflatten(ys, y_dim)
@@ -448,7 +471,7 @@ def conditional_sample2(
     *,
     key,
     num_steps: int = 100,
-    num_inner_steps: int = 10,
+    num_inner_steps: int = 5,
     # prob_flow: bool = False
     prob_flow: bool = True
 ):
