@@ -17,7 +17,7 @@ Experiments builds on Convolutional Neural Processes ([Fong et al., 2020](https:
 | lengthscale            | 0.25                | 0.25         | SE (l = 0.5) * PerEQ (l = 0.25) |               | equal-weighted combination of others |
 | num context training   | {0, ..., 50}        | {0, ..., 50} | {0, ..., 50}                    | {0, ..., 100} | {0, ..., 100}                 |
 | num target training    | {50}                | {50}         | {50}                            | {100}         | {100}                         |
-| num context evaluation | {10}                | "            | "                               | "             | "                             |
+| num context evaluation | {0, ..., 10}                | {0, ..., 10}            | {0, ..., 10}                               | {0, ..., 10}             | {0, ..., 10}                             |
 | num target evaluation  | {50}                | {50}         | {50}                            | {100}         | {100}                         |
 
 - tasks_per_epoch = $2^{14}$
