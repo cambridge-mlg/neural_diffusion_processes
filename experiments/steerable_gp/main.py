@@ -89,7 +89,7 @@ def run(config):
     
     dataloader_test = ndp.data.dataloader(
         data_test,
-        batch_size=config.optim.batch_size,
+        batch_size=config.optim.eval_batch_size,
         key=next(key_iter),
         run_forever=False,  # only run once
         n_points=config.data.n_points
@@ -102,6 +102,7 @@ def run(config):
     ####### Forward haiku model
     def network(t, y, x):
         model = instantiate(config.net)
+        log.info(f"network: {model}")
         return model(x, y, t)
 
     @hk.transform
@@ -267,8 +268,9 @@ def run(config):
     
 
     # #############
-    @partial(jax.jit)
+    # @partial(jax.jit)
     def eval(state: TrainingState, key, t) -> Mapping[str, float]:
+        print("eval")
         num_samples = 32
 
         @partial(jax.vmap, in_axes=[None, 0])
@@ -289,6 +291,7 @@ def run(config):
 
         @partial(jax.vmap, in_axes=[0, 0, None])
         def prior_log_prob(x, y, key):
+            print("log_prob")
             net_ = partial(net, state.params_ema)
             return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian")
 
@@ -307,6 +310,7 @@ def run(config):
             return prior_log_prob(xs, ys)
 
         metrics = defaultdict(list)
+        prior_log_prob = jax.jit(prior_log_prob)
 
         for i, batch in enumerate(data_test):
             key, *keys = jax.random.split(key, num_samples + 1)
@@ -328,8 +332,10 @@ def run(config):
             # augmented_logp = prior_log_prob(x_augmented, y_augmented, key)
             # context_logp = prior_log_prob(batch.xc, batch.yc, key)
             # metrics["cond_log_prob2"].append(jnp.mean(augmented_logp - context_logp))
-            logp = prior_log_prob(batch.xs, batch.ys, key)
+            print(i, batch.xs.shape, batch.ys.shape, key.shape)
+            logp, nfe = prior_log_prob(batch.xs, batch.ys, key)
             metrics["log_prob"].append(jnp.mean(logp))
+            metrics["nfe"].append(jnp.mean(nfe))
 
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
@@ -347,12 +353,12 @@ def run(config):
                 kwargs["metrics"], step
             ),
         ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=config.optim.num_steps // 10,
-            callback_fn=lambda step, t, **kwargs: logger.log_metrics(
-                eval(kwargs["state"], kwargs["key"], step), step
-            ),
-        ),
+        # ml_tools.actions.PeriodicCallback(
+        #     every_steps=config.optim.num_steps // 5,
+        #     callback_fn=lambda step, t, **kwargs: logger.log_metrics(
+        #         eval(kwargs["state"], kwargs["key"], step), step
+        #     ),
+        # ),
         ml_tools.actions.PeriodicCallback(
             every_steps=config.optim.num_steps // 10,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
@@ -370,10 +376,10 @@ def run(config):
     # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
     
-    logger.log_plot("process", plots(state, key, 0), 0)
+    # logger.log_plot("process", plots(state, key, 0), 0)
     # logger.log_plot("process", plots(state, key, 1), 1)
-    # logger.log_metrics(eval(state, key, 0), 0)
-    # logger.save()
+    logger.log_metrics(eval(state, key, 0), 0)
+    logger.save()
 
     for step, batch, key in zip(progress_bar, dataloader, key_iter):
         state, metrics = update_step(state, batch)
