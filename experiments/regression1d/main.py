@@ -21,7 +21,6 @@ import pandas as pd
 import optax
 import datetime
 import matplotlib.pyplot as plt
-from simple_pytree import Pytree
 
 from ml_collections import config_dict, config_flags
 from jax.config import config as jax_config
@@ -106,7 +105,7 @@ def main(_):
     limiting_kernel = ndp.kernels.get_kernel(config.sde.limiting_kernel, active_dims=[0])
     hyps = {
         "mean_function": {},
-        "kernel": config.sde.limiting_kernel_hyperparameters,
+        "kernel": limiting_kernel.init_params(None),
     }
     sde = ndp.sde.SDE(
         limiting_kernel,
@@ -115,21 +114,7 @@ def main(_):
         beta
     )
 
-    ####### prepare data
-    # data_kernel = ndp.kernels.get_kernel(config.data.kernel)
-    # data = ndp.data.get_gp_data(
-    #     jax.random.PRNGKey(config.data.seed),
-    #     data_kernel,
-    #     num_samples=config.data.num_samples,
-    #     num_points=config.data.num_points,
-    #     params=config.data.hyperparameters,
-    # )
-    # dataloader = ndp.data.dataloader(
-    #     data,
-    #     batch_size=config.optimization.batch_size,
-    #     key=next(key_iter)
-    # )
-
+    ##### Plot a training databatch
     batch0 = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "training")
     _, ax = plt.subplots()
     ax.plot(batch0.xc[..., 0].T, batch0.yc[..., 0].T, "C0.", label="context")
@@ -140,30 +125,11 @@ def main(_):
     ax.legend(handles, labels, loc='best')
     plt.savefig(str(get_experiment_dir(config, "plots") / "data.png"))
 
-    # test_batch = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "interpolation")
-    # data_test = ndp.data.get_gp_data(
-    #     jax.random.PRNGKey(config.data.seed_test),
-    #     data_kernel,
-    #     num_samples=config.data.num_samples_test,
-    #     num_points=config.data.num_points,
-    #     params=config.data.hyperparameters,
-    # )
-    # dataloader_test = ndp.data.dataloader(
-    #     data_test,
-    #     batch_size=config.optimization.batch_size,
-    #     key=next(key_iter),
-    #     run_forever=False  # only run once
-    # )
-    # data_test: List[ndp.data.DataBatch] = [
-    #     ndp.data.split_dataset_in_context_and_target(batch, next(key_iter))
-    #     for batch in dataloader_test
-    # ]
-
 
     ####### Forward haiku model
     def network(t, y, x):
         model = ndp.models.attention.BiDimensionalAttentionModel(
-            num_bidim_attention_layers=config.network.num_bidim_attention_layers,
+            n_layers=config.network.num_bidim_attention_layers,
             hidden_dim=config.network.hidden_dim,
             num_heads=config.network.num_heads,
         )
@@ -197,6 +163,7 @@ def main(_):
         initial_opt_state = optimizer.init(initial_params)
         return TrainingState(
             params=initial_params,
+            params_ema=initial_params,
             opt_state=initial_opt_state,
             key=key,
             step=0,
@@ -211,7 +178,7 @@ def main(_):
         updates, new_opt_state = optimizer.update(grads, state.opt_state)
         new_params = optax.apply_updates(state.params, updates)
         new_params_ema = jax.tree_util.tree_map(
-            lambda p_ema, p: p_ema * config.optim.ema_rate
+            lambda p_ema, p: p_ema * config.optimization.ema_rate
             + p * (1.0 - config.optimization.ema_rate),
             state.params_ema,
             new_params,
@@ -238,30 +205,34 @@ def main(_):
     ########## Plotting
     net_ = hk.without_apply_rng(hk.transform(network))
     net = lambda params, t, yt, x, *, key: net_.apply(params, t[None], yt[None], x[None])[0]
-    x_plt = jnp.linspace(-2, 2, 100)[:, None]
-    x_context = jnp.array([-0.5, 0.2, 0.4]).reshape(-1, 1)
-    y_context = x_context * 0.0
+    # x_context = jnp.array([-0.5, 0.2, 0.4]).reshape(-1, 1) + 1.6e-6
+    # y_context = x_context * 0.0
+
+    test_batch = regression1d.get_batch(next(key_iter), 16, config.data.dataset, "interpolation")
+    x_plt = jnp.linspace(-2, 2, 50)[:, None]
+    x_context_plt = test_batch.xc[0]
+    y_context_plt = test_batch.yc[0]
 
     @jax.jit
-    def plot_reverse(key, params):
+    def plot_prior(key, params):
         net_ = functools.partial(net, params)
         return ndp.sde.reverse_solve(sde, net_, x_plt, key=key)
 
     @jax.jit
     def plot_cond(key, params):
         net_ = functools.partial(net, params)
-        return ndp.sde.conditional_sample(sde, net_, x_context, y_context, x_plt, key=key)
+        return ndp.sde.conditional_sample2(sde, net_, x_context_plt, y_context_plt, x_plt, key=key)
 
     def plots(state: TrainingState, key) -> Mapping[str, plt.Figure]:
         fig_reverse, ax = plt.subplots()
-        out = jax.vmap(plot_reverse, in_axes=[0, None])(jax.random.split(key, 100), state.params)
+        out = jax.vmap(plot_prior, in_axes=[0, None])(jax.random.split(key, 100), state.params_ema)
         ax.plot(x_plt, out[:, -1, :, 0].T, "C0", alpha=.3)
 
         fig_cond, ax = plt.subplots()
         key = jax.random.PRNGKey(0)
-        samples = jax.vmap(plot_cond, in_axes=[0, None])(jax.random.split(key, 100), state.params)
+        samples = jax.vmap(plot_cond, in_axes=[0, None])(jax.random.split(key, 100), state.params_ema)
         ax.plot(x_plt, samples[..., 0].T, "C0", alpha=.3)
-        ax.plot(x_context, y_context, "ko")
+        ax.plot(x_context_plt, y_context_plt, "ko")
         ax.set_ylim(-3, 3)
         
         return {
@@ -306,14 +277,14 @@ def main(_):
             every_steps=1,
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
+        # ml_tools.actions.PeriodicCallback(
+        #     every_steps=2_000,
+        #     callback_fn=lambda step, t, **kwargs: writer.write_scalars(
+        #         step, eval(kwargs["state"], kwargs["key"])
+        #     )
+        # ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=2_000,
-            callback_fn=lambda step, t, **kwargs: writer.write_scalars(
-                step, eval(kwargs["state"], kwargs["key"])
-            )
-        ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=2_000,
+            every_steps=1_000,
             callback_fn=lambda step, t, **kwargs: writer.write_figures(step, plots(kwargs["state"], kwargs["key"]))
         ),
         ml_tools.actions.PeriodicCallback(
@@ -336,8 +307,8 @@ def main(_):
         state, metrics = update_step(state, batch)
         metrics["lr"] = learning_rate_schedule(step)
 
-        # for action in actions:
-        #     action(step, t=None, metrics=metrics, state=state, key=key)
+        for action in actions:
+            action(step, t=None, metrics=metrics, state=state, key=key)
 
         if step % 100 == 0:
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")

@@ -1,4 +1,6 @@
 from typing import ClassVar, Dict, Protocol, Mapping, Optional
+
+import jax.numpy as jnp
 import dataclasses
 
 # from ml_collections import config_dict
@@ -13,11 +15,6 @@ class DataConfig:
 @dataclasses.dataclass
 class SdeConfig:
     limiting_kernel: str = "white"
-    limiting_kernel_hyperparameters: Mapping[str, float] = dataclasses.field(
-        default_factory=lambda: {
-            "variance": 1.0,
-        },
-    )
 
 
 @dataclasses.dataclass
@@ -29,9 +26,9 @@ class OptimizationConfig:
 
 @dataclasses.dataclass
 class NetworkConfig:
-    num_bidim_attention_layers: int = 2
+    num_bidim_attention_layers: int = 5
     hidden_dim: int = 16
-    num_heads: int = 4
+    num_heads: int = 8
 
 
 @dataclasses.dataclass

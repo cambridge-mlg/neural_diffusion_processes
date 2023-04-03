@@ -354,7 +354,6 @@ def reverse_solve(
         dt0=-dt,
         y0=yT,
         args=x,
-        adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
         saveat=saveat
     )
