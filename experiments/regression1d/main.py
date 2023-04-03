@@ -105,10 +105,6 @@ class Task:
         @functools.partial(jax.vmap, in_axes=[None, None, None, None, 0])
         @functools.partial(jax.vmap, in_axes=[None, 0, 0, 0, None])
         def vmapped_sampler(params, x_context, y_context, x_target, key):
-            print("Compiling sampler...")
-            print(x_context.shape)
-            print(y_context.shape)
-            print(x_target.shape)
             return conditional_sampler(params, x_context, y_context, x_target, key)
         
         self._sampler = jax.jit(vmapped_sampler)
@@ -153,7 +149,6 @@ class Task:
             ("err", err)
         ]
         metrics = {f"{k}_{n}": s(jnp.stack(v)) for k, v in metrics.items() for n, s in summary_stats}
-        print(metrics)
         return metrics
 
 
@@ -333,7 +328,7 @@ def main(_):
         xx = jnp.linspace(-2, 2, 60)[:, None]
         samples = prior(params, xx, jax.random.split(key, 16))
         fig, ax = plt.subplots()
-        ax.plot(xx, samples[..., 0].T, "C0", alpha=.3)
+        ax.plot(xx, samples[:, -1, :, 0].T, "C0", alpha=.3)
         return {"prior": fig}
 
 
@@ -343,13 +338,13 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=5,
+            every_steps=num_steps_per_epoch,
             callback_fn=lambda step, t, **kwargs: [
                 cb(step, t, **kwargs) for cb in callbacks
             ]
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=5,
+            every_steps=5000,
             callback_fn=lambda step, t, **kwargs: writer.write_figures(
                 step, callback_plot_prior(kwargs["state"], kwargs["key"])
             )

@@ -32,7 +32,7 @@ class NetworkConfig:
 @dataclasses.dataclass
 class EvalConfig:
     batch_size: int = 16
-    num_samples_in_epoch: int = 64
+    num_samples_in_epoch: int = int(2**14)
 
 
 @dataclasses.dataclass
