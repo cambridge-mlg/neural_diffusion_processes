@@ -272,12 +272,15 @@ class SumKernel(jaxkern.base.CombinationKernel):
     def __init__(
         self,
         kernel_set: List[AbstractKernel],
-        compute_engine: AbstractKernelComputation = DenseKernelComputation,
+        # compute_engine: AbstractKernelComputation = DenseKernelComputation,
+        compute_engine: AbstractKernelComputation = None,
         active_dims: Optional[List[int]] = None,
         stationary: Optional[bool] = False,
         spectral: Optional[bool] = False,
         name: Optional[str] = "Sum kernel",
     ) -> None:
+        if compute_engine is None:
+            compute_engine = promote_compute_engines(*[k.compute_engine for k in kernel_set])
         super().__init__(
             kernel_set, compute_engine, active_dims, stationary, spectral, name
         )
@@ -539,6 +542,8 @@ def posterior_gp(
     return predict
 
 
+_SQUARED_EXPONENTIAL_NAMES = ["rbf", "se", "squared_exponential"]
+
 def get_kernel(kernel_type: str, active_dims = Optional[List[int]]) -> jaxkern.base.AbstractKernel:
     if kernel_type.lower() == "matern12":
         return jaxkern.stationary.Matern12(active_dims=active_dims)
@@ -546,13 +551,18 @@ def get_kernel(kernel_type: str, active_dims = Optional[List[int]]) -> jaxkern.b
         return jaxkern.stationary.Matern32(active_dims=active_dims)
     elif kernel_type.lower() == "matern52":
         return jaxkern.stationary.Matern52(active_dims=active_dims)
-    elif kernel_type.lower() in ["rbf", "se", "squared_exponential"]:
-        return jaxkern.stationary.RBF(active_dims=active_dims)
     elif kernel_type.lower() == "white":
         return jaxkern.stationary.White(active_dims=active_dims)
+    elif "white" in kernel_type.lower() \
+        and any([se in kernel_type.lower() for se in _SQUARED_EXPONENTIAL_NAMES]):
+        return SumKernel([
+            jaxkern.stationary.White(active_dims=active_dims),
+            jaxkern.stationary.RBF(active_dims=active_dims),
+        ])
+    elif kernel_type.lower() in _SQUARED_EXPONENTIAL_NAMES:
+        return jaxkern.stationary.RBF(active_dims=active_dims)
     else:
         raise NotImplementedError("Unknown kernel: %s" % kernel_type)
-
 
 def get_mean_fn(mean_fn_type: str) -> gpjax.mean_functions.AbstractMeanFunction:
     if mean_fn_type.lower() == "zero":

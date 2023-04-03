@@ -62,37 +62,32 @@ class LinearBetaSchedule:
         )
 
 
+@dataclasses.dataclass
 class SDE:
-    def __init__(
-        self,
-        limiting_kernel: jaxkern.base.AbstractKernel,
-        limiting_mean_fn: gpjax.mean_functions.AbstractMeanFunction,
-        limiting_params: Mapping,
-        beta_schedule: LinearBetaSchedule,
-        std_trick: bool = True,
-        residual_trick: bool = True,
-    ):
-        self.limiting_kernel = limiting_kernel
-        self.limiting_mean_fn = limiting_mean_fn
-        assert isinstance(self.limiting_mean_fn, (Zero, Constant))
-        self.limiting_params = limiting_params
-        self.beta_schedule = beta_schedule
-        # self.weighted = True
-        self.std_trick = std_trick
-        self.residual_trick = residual_trick
+    limiting_kernel: jaxkern.base.AbstractKernel
+    limiting_mean_fn: gpjax.mean_functions.AbstractMeanFunction
+    limiting_params: Mapping
+    beta_schedule: LinearBetaSchedule
+    std_trick: bool = True
+    residual_trick: bool = True
+    precond: bool = True
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
         return sample_prior_gp(
             key, self.limiting_mean_fn, self.limiting_kernel, self.limiting_params, x
         )
-        # return gpjax.Prior(jaxkern.RBF()).predict(self.limiting_params)(x).sample(seed=key, sample_shape=(2,)).T
 
     @check_shapes("x: [N, x_dim]", "y: [N, y_dim]", "return: []")
     def log_prob_prior(self, x, y):
         return log_prob_prior_gp(
             self.limiting_mean_fn, self.limiting_kernel, self.limiting_params, x, y
         )
+
+    @check_shapes("x: [N, x_dim]")
+    def limiting_gram(self, x) -> LinearOperator:
+        K = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
+        return K
 
     def p0t(
         self,
@@ -112,7 +107,11 @@ class SDE:
         cov_coef = jnp.exp(-self.beta_schedule.B(t))
         k0t = self.limiting_kernel
         k0t_params = copy.deepcopy(self.limiting_params["kernel"])
-        k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
+        if isinstance(k0t_params, list):
+            for k in k0t_params:
+                k["variance"] = k["variance"] * (1.0 - cov_coef)
+        else:
+            k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
         params = {"mean_function": {}, "kernel": k0t_params}
         return μ0t, k0t, params
     
@@ -138,10 +137,7 @@ class SDE:
         k0_params["variance"] = k0_params["variance"] * cov_coef
         kt_param = copy.deepcopy(self.limiting_params["kernel"])
         kt_param["variance"] = kt_param["variance"] * (1. - cov_coef)
-        k0t = SumKernel(
-            [k0, self.limiting_kernel],
-            compute_engine=promote_compute_engines(k0.compute_engine, self.limiting_kernel.compute_engine)
-        )
+        k0t = SumKernel([k0, self.limiting_kernel],)
         params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
         return μ0t, k0t, params
 
@@ -160,7 +156,7 @@ class SDE:
     def diffusion(self, t, yt, x) -> LinearOperator:
         np = yt.shape[-2] * yt.shape[-1]
         del yt
-        Ktt = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
+        Ktt = self.limiting_gram(x)
         Ktt = Ktt._add_diagonal(JITTER * identity(np))
         sqrt_K = Ktt.to_root()
         beta_term = jnp.sqrt(self.beta_schedule(t))
@@ -176,9 +172,8 @@ class SDE:
             score = score / (std + 1e-3)
         if self.residual_trick:
             # NOTE: s.t. bwd SDE = fwd SDE
-            # NOTE: wrong sign?
             fwd_drift = self.drift(t, yt, x)
-            residual = 2 * fwd_drift / self.beta_schedule(t)
+            residual = 2 * fwd_drift / (self.beta_schedule(t) + 1e-3)
             score += residual
         return score
 
@@ -208,7 +203,7 @@ class SDE:
     #     # solve_lower_triangular = partial(jax.scipy.linalg.solve_triangular, lower=True)  # L⁻¹ x
     #     # solve_upper_triangular = partial(jax.scipy.linalg.solve_triangular, lower=False)  # U⁻¹ x
     #     # cov_coef = jnp.exp(self.beta_schedule.B(t))
-    #     # Sigma_t = (1 - cov_coef) * self.limiting_kernel.gram(self.limiting_params['kernel'], x).to_dense()
+    #     # Sigma_t = (1 - cov_coef) * self.limiting_kernel.gram(self.limiting_params["kernel"], x).to_dense()
     #     # Sigma_t += cov_coef * k0.gram(k0_params, x).to_dense() 
     #     # Lt = jnp.linalg.cholesky(Sigma_t + JITTER * jnp.eye(len(Sigma_t)))
     #     # Sigma_inv_b = solve_upper_triangular(jnp.transpose(Lt), solve_lower_triangular(Lt, b))
@@ -219,23 +214,22 @@ class SDE:
     #     Sigma_inv_b = Sigma_t.solve(b)
     #     SigmaT = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
     #     out = - (SigmaT @ Sigma_inv_b)
-    #     # out = - Sigma_inv_b
-        
-    #     # out = - self.beta_schedule(t) * Sigma_inv_b
     #     return unflatten(out, yt.shape[-1])
 
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_ode(self, key, t: Array, yt: Array, x: Array, network) -> Array:
-        return self.drift(t, yt, x) - 0.5 * self.beta_schedule(t) * self.score(
-            key, t, yt, x, network
-        )
+        second_term = 0.5 * self.beta_schedule(t) * self.score(key, t, yt, x, network)
+        if not self.precond:
+            second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
+        return self.drift(t, yt, x) - second_term
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_sde(self, key, t: Array, yt: Array, x: Array, network) -> Array:
-        return self.drift(t, yt, x) - self.beta_schedule(t) * self.score(
-            key, t, yt, x, network
-        )
+        second_term = self.beta_schedule(t) * self.score(key, t, yt, x, network)
+        if not self.precond:
+            second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
+        return self.drift(t, yt, x) - second_term
 
     @check_shapes("t: []", "y: [N, y_dim]", "x: [N, x_dim]", "return: []")
     def loss(self, key, t: Array, y: Array, x: Array, network: ScoreNetwork) -> Array:
@@ -260,7 +254,11 @@ class SDE:
         yt = unflatten(affine_transformation(Z), y.shape[-1])
 
         precond_score_net = self.score(nkey, t, yt, x, network)
-        loss = jnp.mean(jnp.sum(jnp.square(std * precond_score_net + unflatten(sqrt @ Z, y.shape[-1])), -1))
+        precond_noise = sqrt @ Z
+        if not self.precond:
+            precond_noise = self.limiting_gram(x).solve(precond_noise)
+        loss = jnp.square(std * precond_score_net + unflatten(precond_noise, y.shape[-1]))
+        loss = jnp.mean(jnp.sum(loss, -1))
         return loss
 
         yt = sample_prior_gp(ekey, μ0t, k0t, params, x)
@@ -269,7 +267,6 @@ class SDE:
         loss = jnp.mean(jnp.sum(jnp.square(precond_score - factor * precond_score_net), -1))
         # return factor * loss
         return loss / factor
-
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
