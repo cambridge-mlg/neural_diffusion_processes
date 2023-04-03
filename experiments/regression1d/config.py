@@ -1,9 +1,7 @@
-from typing import ClassVar, Dict, Protocol, Mapping, Optional
-
-import jax.numpy as jnp
 import dataclasses
 
 # from ml_collections import config_dict
+
 
 @dataclasses.dataclass
 class DataConfig:
@@ -20,7 +18,7 @@ class SdeConfig:
 @dataclasses.dataclass
 class OptimizationConfig:
     batch_size: int = 16
-    num_epochs: int = 20
+    num_epochs: int = 100
     ema_rate: float = 0.999
 
 
@@ -32,8 +30,15 @@ class NetworkConfig:
 
 
 @dataclasses.dataclass
+class EvalConfig:
+    batch_size: int = 16
+    num_samples_in_epoch: int = 64
+
+
+@dataclasses.dataclass
 class Config:
     seed: int = 42
+    eval: EvalConfig = EvalConfig()
     data: DataConfig = DataConfig()
     sde: SdeConfig = SdeConfig()
     optimization: OptimizationConfig = OptimizationConfig()

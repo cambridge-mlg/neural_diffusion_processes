@@ -67,31 +67,31 @@ _DATASET_CONFIGS = {
     "se": DatasetConfig(
         train_num_context=UniformDiscrete(10, 10),
         train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(0, 10),
+        eval_num_context=UniformDiscrete(1, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "matern": DatasetConfig(
         train_num_context=UniformDiscrete(10, 10),
         train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(0, 10),
+        eval_num_context=UniformDiscrete(1, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "weaklyperiodic": DatasetConfig(
         train_num_context=UniformDiscrete(10, 10),
         train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(0, 10),
+        eval_num_context=UniformDiscrete(1, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "noisymixture": DatasetConfig(
         train_num_context=UniformDiscrete(10, 10),
         train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(0, 10),
+        eval_num_context=UniformDiscrete(1, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "sawtooth": DatasetConfig(
         train_num_context=UniformDiscrete(10, 10),
         train_num_target=UniformDiscrete(110, 110),
-        eval_num_context=UniformDiscrete(0, 10),
+        eval_num_context=UniformDiscrete(1, 10),
         eval_num_target=UniformDiscrete(100, 100),
     ),
 }
@@ -132,11 +132,11 @@ class GPFunctionalDistribution(FuntionalDistribution):
     def __init__(self, kernel: jaxkern.base.AbstractKernel, params: Mapping):
         self.kernel = kernel
         self.params = params
+        self.mean = gpjax.mean_functions.Zero()
     
     def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
-        mean = gpjax.mean_functions.Zero()
         return sample_prior_gp(
-            key, mean, self.kernel, params=self.params, x=x, obs_noise=self.params["noise_variance"]
+            key, self.mean, self.kernel, params=self.params, x=x, obs_noise=self.params["noise_variance"]
         )
 
 DatasetFactory: Callable[[], FuntionalDistribution]

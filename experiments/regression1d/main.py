@@ -1,4 +1,4 @@
-from typing import Tuple, Mapping, Iterator, List, Optional
+from typing import Tuple, Mapping, Iterator, List, Optional, Callable
 from jaxtyping import Float, Array
 
 import os
@@ -90,6 +90,87 @@ def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
         yield next_key
 
 
+
+class Task:
+    def __init__(self, key, task: str, dataset: str, batch_size: int, num_data: int, conditional_sampler: Callable):
+        self._key = key
+        self._dataset = dataset
+        self._task = task
+        self._batch_size = batch_size
+        self._num_data = num_data
+        key = jax.random.PRNGKey(0)
+        # just for plotting - it doesn't matter that we use the same key across tasks/datasets.
+        self._test_batch = regression1d.get_batch(key, 4, dataset, task)
+
+        @functools.partial(jax.vmap, in_axes=[None, None, None, None, 0])
+        @functools.partial(jax.vmap, in_axes=[None, 0, 0, 0, None])
+        def vmapped_sampler(params, x_context, y_context, x_target, key):
+            print("Compiling sampler...")
+            print(x_context.shape)
+            print(y_context.shape)
+            print(x_target.shape)
+            return conditional_sampler(params, x_context, y_context, x_target, key)
+        
+        self._sampler = jax.jit(vmapped_sampler)
+    
+    def plot(self, params, key):
+        fig, axes = plt.subplots(4, 1, figsize=(8, 8), sharex=True, sharey=True, tight_layout=True)
+        keys = jax.random.split(key, 10)
+        samples = self._sampler(params, self._test_batch.xc, self._test_batch.yc, self._test_batch.xs, keys)
+        means = jnp.mean(samples, axis=0)
+        stds = jnp.std(samples, axis=0)
+
+        for i, ax in enumerate(axes):
+            ax.plot(self._test_batch.xc[i], self._test_batch.yc[i], 'kx')
+            ax.plot(self._test_batch.xs[i], self._test_batch.ys[i], 'rx')
+            ax.errorbar(
+                jnp.reshape(self._test_batch.xs[i], (-1,)),
+                means[i].ravel(),
+                yerr=stds[i].ravel() * 2,
+                ecolor='C0',
+                ls='none',
+            )
+            ax.plot(self._test_batch.xs[i], means[i], 'C0.')
+
+        return fig
+    
+    def eval(self, params, key):
+        num_samples = 16
+        # uses same key to keep test data fixed across evaluations
+        generator = data_generator(self._key, self._dataset, self._task, self._num_data, self._batch_size, num_epochs=1)
+        metrics = {"mse": []}
+        for i, batch in enumerate(generator):
+            key, *keys = jax.random.split(key, num_samples + 1)
+            samples = self._sampler(params, batch.xc, batch.yc, batch.xs, jnp.stack(keys))
+            y_pred = jnp.mean(samples, axis=0)  # [batch_size, num_points, y_dim]
+            mse = jnp.mean((batch.ys - y_pred) ** 2)
+            metrics["mse"].append(mse)
+        
+        err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
+        summary_stats = [
+            ("mean", jnp.mean),
+            ("std", jnp.std),
+            ("err", err)
+        ]
+        metrics = {f"{k}_{n}": s(jnp.stack(v)) for k, v in metrics.items() for n, s in summary_stats}
+        print(metrics)
+        return metrics
+
+
+    def get_callback(self, writer: ml_tools.writers._MetricWriter):
+
+        def callback(step, t, **kwargs):
+            del t
+            params = kwargs["state"].params_ema
+            key = kwargs["key"]
+            fig = self.plot(params, key)
+            writer.write_figures(step, {f"{self._task}_conditional": fig})
+            metrics = self.eval(params, key)
+            writer.write_scalars(step, {f"{self._task}_{k}": v for k, v in metrics.items()})
+            
+        return callback
+
+
 def main(_):
     config = config_utils.to_dataclass(Config, _CONFIG.value)
 
@@ -111,8 +192,16 @@ def main(_):
         limiting_kernel,
         gpjax.mean_functions.Zero(),
         hyps,
-        beta
+        beta,
+        is_score_preconditioned=False,
+        std_trick=False,
+        residual_trick=False,
     )
+
+    factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
+    assert isinstance(factory, regression1d.GPFunctionalDistribution)
+    mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
+    true_score_network = sde.get_exact_score(mean0, kernel0, params0)
 
     ##### Plot a training databatch
     batch0 = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "training")
@@ -203,89 +292,67 @@ def main(_):
     exp_root_dir = get_experiment_dir(config)
     
     ########## Plotting
-    net_ = hk.without_apply_rng(hk.transform(network))
-    net = lambda params, t, yt, x, *, key: net_.apply(params, t[None], yt[None], x[None])[0]
-    # x_context = jnp.array([-0.5, 0.2, 0.4]).reshape(-1, 1) + 1.6e-6
-    # y_context = x_context * 0.0
-
-    test_batch = regression1d.get_batch(next(key_iter), 16, config.data.dataset, "interpolation")
-    x_plt = jnp.linspace(-2, 2, 50)[:, None]
-    x_context_plt = test_batch.xc[0]
-    y_context_plt = test_batch.yc[0]
+    network_apply = hk.without_apply_rng(hk.transform(network)).apply
+    net = lambda params, t, yt, x, *, key: network_apply(params, t[None], yt[None], x[None])[0]
 
     @jax.jit
-    def plot_prior(key, params):
-        net_ = functools.partial(net, params)
-        return ndp.sde.reverse_solve(sde, net_, x_plt, key=key)
-
-    @jax.jit
-    def plot_cond(key, params):
-        net_ = functools.partial(net, params)
-        return ndp.sde.conditional_sample2(sde, net_, x_context_plt, y_context_plt, x_plt, key=key)
-
-    def plots(state: TrainingState, key) -> Mapping[str, plt.Figure]:
-        fig_reverse, ax = plt.subplots()
-        out = jax.vmap(plot_prior, in_axes=[0, None])(jax.random.split(key, 100), state.params_ema)
-        ax.plot(x_plt, out[:, -1, :, 0].T, "C0", alpha=.3)
-
-        fig_cond, ax = plt.subplots()
-        key = jax.random.PRNGKey(0)
-        samples = jax.vmap(plot_cond, in_axes=[0, None])(jax.random.split(key, 100), state.params_ema)
-        ax.plot(x_plt, samples[..., 0].T, "C0", alpha=.3)
-        ax.plot(x_context_plt, y_context_plt, "ko")
-        ax.set_ylim(-3, 3)
-        
-        return {
-            "reverse": fig_reverse,
-            "conditional": fig_cond,
-        }
-
-    #############
-    @functools.partial(jax.jit)
-    def eval(state: TrainingState, key) -> Mapping[str, float]:
-        num_samples = 32
-        
-        @functools.partial(jax.vmap, in_axes=[None, None, None, 0])
-        @functools.partial(jax.vmap, in_axes=[0, 0, 0, None])
-        def f(x_context, y_context, x_target, key):
-            net_ = functools.partial(net, state.params)
-            return ndp.sde.conditional_sample(sde, net_, x_context, y_context, x_target, key=key)
-        
-        metrics = {"mse": [], "mse_median": []}
-        
-        for i, batch in enumerate(data_test):
-            key, *keys = jax.random.split(key, num_samples+1)
-            samples = f(batch.context_inputs, batch.context_outputs, batch.function_inputs, jnp.stack(keys))
-            f_pred = jnp.mean(samples, axis=0)
-            mse_mean_pred = jnp.mean((batch.function_outputs - f_pred) ** 2)
-            metrics["mse"].append(mse_mean_pred)
-            # ignore outliers
-            f_pred = jnp.median(samples, axis=0)
-            mse_med_pred = jnp.mean((batch.function_outputs - f_pred) ** 2)
-            metrics["mse_median"].append(mse_med_pred)
-        
-        v = {k: jnp.mean(jnp.stack(v)) for k, v in metrics.items()}
-        return v
-
+    def conditional(params, xc, yc, xs, key):
+        # net_ = functools.partial(net, params)
+        net_ = true_score_network
+        return ndp.sde.conditional_sample2(sde, net_, xc, yc, xs, key=key)
 
     local_writer = ml_tools.writers.LocalWriter(exp_root_dir, flush_every_n=100)
     tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))
     writer = ml_tools.writers.MultiWriter([tb_writer, local_writer])
+
+    tasks = [
+        Task(
+            next(key_iter),
+            task,
+            config.data.dataset,
+            config.eval.batch_size,
+            config.eval.num_samples_in_epoch,
+            conditional
+        )
+        for task in ["interpolation", "extrapolation", "generalization"]
+    ]
+
+    callbacks = [
+        task.get_callback(writer) for task in tasks
+    ]
+
+    
+    @functools.partial(jax.vmap, in_axes=[None, None, 0])
+    def prior(params, x_target, key):
+        # net_ = functools.partial(net, params)
+        net_ = true_score_network
+        return ndp.sde.reverse_solve(sde, net_, x_target, key=key)
+    
+    def callback_plot_prior(state: TrainingState, key):
+        params = state.params_ema
+        xx = jnp.linspace(-2, 2, 60)[:, None]
+        samples = prior(params, xx, jax.random.split(key, 16))
+        fig, ax = plt.subplots()
+        ax.plot(xx, samples[..., 0].T, "C0", alpha=.3)
+        return {"prior": fig}
+
 
     actions = [
         ml_tools.actions.PeriodicCallback(
             every_steps=1,
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
-        # ml_tools.actions.PeriodicCallback(
-        #     every_steps=2_000,
-        #     callback_fn=lambda step, t, **kwargs: writer.write_scalars(
-        #         step, eval(kwargs["state"], kwargs["key"])
-        #     )
-        # ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=1_000,
-            callback_fn=lambda step, t, **kwargs: writer.write_figures(step, plots(kwargs["state"], kwargs["key"]))
+            every_steps=5,
+            callback_fn=lambda step, t, **kwargs: [
+                cb(step, t, **kwargs) for cb in callbacks
+            ]
+        ),
+        ml_tools.actions.PeriodicCallback(
+            every_steps=5,
+            callback_fn=lambda step, t, **kwargs: writer.write_figures(
+                step, callback_plot_prior(kwargs["state"], kwargs["key"])
+            )
         ),
         ml_tools.actions.PeriodicCallback(
             every_steps=500,
@@ -304,7 +371,8 @@ def main(_):
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
     for step, batch, key in zip(progress_bar, train_dataloader, key_iter):
-        state, metrics = update_step(state, batch)
+        # state, metrics = update_step(state, batch)
+        metrics = {'loss': 0.0, 'step': step}
         metrics["lr"] = learning_rate_schedule(step)
 
         for action in actions:

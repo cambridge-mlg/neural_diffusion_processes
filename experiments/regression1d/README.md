@@ -65,7 +65,7 @@ Some of the likelihoods reported in Fong et al., and Wessel et al. are lower bou
 
 
 ## TODO:
-- [] masking
+- [ ]  allow for empty context... currently mimimum number of context points is 1.
 
 
 ## References
