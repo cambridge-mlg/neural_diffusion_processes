@@ -12,8 +12,7 @@ import matplotlib.pyplot as plt
 import jax
 import jax.numpy as jnp
 import diffrax as dfx
-from diffrax import AbstractStepSizeController, PIDController, ConstantStepSize
-from diffrax import AbstractSolver, Dopri5, Tsit5
+from diffrax import AbstractSolver, AbstractStepSizeController, PIDController, ConstantStepSize
 import numpy as np
 from einops import rearrange
 import gpjax
@@ -27,6 +26,7 @@ from neural_diffusion_processes.sde import LinearBetaSchedule, SDE, LinOpControl
 from neural_diffusion_processes.utils.misc import flatten, unflatten
 from neural_diffusion_processes.data import radial_grid_2d
 from neural_diffusion_processes.utils.vis import plot_scalar_field, plot_vector_field, plot_covariances
+from neural_diffusion_processes.kernels import sample_prior_gp
 
 # %%
 from jax.config import config
@@ -48,23 +48,26 @@ key = jax.random.PRNGKey(42)
 key, subkey = jax.random.split(key)
 
 output_dim = 2
-beta_schedule = ndp.sde.LinearBetaSchedule(t0 = 5e-4, beta0 = 1e-4, beta1 = 15.0)
+beta_schedule = ndp.sde.LinearBetaSchedule(t0 = 1e-5, beta0 = 1e-4, beta1 = 20.0)
 x = radial_grid_2d(10, 30)
 
 # k0 = ndp.kernels.RBFVec(output_dim)
 k0 = ndp.kernels.RBFCurlFree()
 # k0 = ndp.kernels.RBFDivFree()
 # k0_params = k0.init_params(None)
-k0_params = {"variance": 10, "lengthscale": 2.23606797749979}
+k0_variance = 10
+k0_params = {"variance": k0_variance, "lengthscale": 2.23606797749979}
+# k0 = SumKernel([k0, ndp.kernels.WhiteVec(output_dim)])
+# k0_params = [k0_params, {"variance": 0.02}]
 
 k1 = ndp.kernels.WhiteVec(output_dim)
 # # k1 = ndp.kernels.RBFVec(output_dim)
-k1_params = {"variance": k0_params["variance"], "lengthscale": 2.}
+k1_params = {"variance": k0_variance, "lengthscale": 2.}
 
-k1 = SumKernel([ndp.kernels.RBFVec(output_dim), ndp.kernels.WhiteVec(output_dim)])
-# k1_params = k1.init_params(key)
-k1_params = [{"variance": k0_params["variance"], "lengthscale": 2.}, {"variance": 5.}]
-# k1_params = [{"variance": 0., "lengthscale": 2.}, {"variance": 10.}]
+# k1 = SumKernel([ndp.kernels.RBFVec(output_dim), ndp.kernels.WhiteVec(output_dim)])
+# # k1_params = k1.init_params(key)
+# k1_params = [{"variance": k0_params["variance"], "lengthscale": 2.}, {"variance": 5.}]
+# # k1_params = [{"variance": 0., "lengthscale": 2.}, {"variance": 10.}]
 
 mean_function = gpjax.Zero(output_dim)
 
@@ -73,20 +76,20 @@ limiting_params = {
         "mean_function": mean_function.init_params(key),
     }
 
-# kxx = k0.gram(k0_params, x).to_dense()
-# kxx = rearrange(kxx, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=output_dim, p2=output_dim) 
-# kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (p1 n1) (p2 n2)') 
-# plt.matshow(kxx)
+kxx = k0.gram(k0_params, x).to_dense()
+kxx = rearrange(kxx, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=output_dim, p2=output_dim) 
+kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (p1 n1) (p2 n2)') 
+plt.matshow(kxx)
 
-# kxx = k1.gram(limiting_params["kernel"], x).to_dense()
-# kxx = rearrange(kxx, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=output_dim, p2=output_dim) 
-# kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (p1 n1) (p2 n2)') 
-# plt.matshow(kxx)
+kxx = k1.gram(limiting_params["kernel"], x).to_dense()
+kxx = rearrange(kxx, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=output_dim, p2=output_dim) 
+kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (p1 n1) (p2 n2)') 
+plt.matshow(kxx)
 
 sde = ndp.sde.SDE(k1, mean_function, limiting_params, beta_schedule, True, True)
 
-plot_vf = partial(plot_vector_field, scale=50*math.sqrt(k0_params["variance"]), width=0.005)
-plot_cov = partial(plot_covariances, scale=0.3/math.sqrt(k0_params["variance"]), zorder=-1)
+plot_vf = partial(plot_vector_field, scale=50*math.sqrt(k0_variance), width=0.005)
+plot_cov = partial(plot_covariances, scale=0.3/math.sqrt(k0_variance), zorder=-1)
 
 
 from jaxlinop import identity
@@ -146,63 +149,8 @@ def get_timesteps(t0, t1, num_ts):
     return ts
 
 
-def solve(
-    sde: SDE,
-    # network,
-    x,
-    y0,
-    # *,
-    key,
-    num_steps: int = 100,
-    # solver: AbstractSolver = dfx.Euler(),
-    stepsize_controller: AbstractStepSizeController = ConstantStepSize(),
-    solver: AbstractSolver = dfx.Heun(),
-    ts=None
-    # stepsize_controller: AbstractStepSizeController = dfx.PIDController(rtol=1e-3, atol=1e-3),
-):
-    key, ykey = jax.random.split(key)
-    # yT = sde.sample_prior(ykey, x) if yT is None else yT
-    y_dim = y0.shape[-1]
-    y0 = flatten(y0)
-
-    t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
-    dt = (t1 - t0) / num_steps  # TODO: dealing properly with endpoint?
-    # ts = jnp.linspace(t0, t1, 9)[::-1]
-    # saveat = dfx.SaveAt(ts=ts)
-
-    shape = jax.ShapeDtypeStruct(y0.shape, y0.dtype)
-    key, subkey = jax.random.split(key)
-    bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
-    drift_sde = lambda t, yt, arg: flatten(
-        # sde.drift(key, t, unflatten(yt, y_dim), arg, network)
-        sde.drift(t, unflatten(yt, y_dim), arg)
-    )
-    diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
-    terms = dfx.MultiTerm(
-        dfx.ODETerm(drift_sde), LinOpControlTerm(diffusion, bm)
-    )
-    saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
-    
-    # TODO: adaptive step?
-    out = dfx.diffeqsolve(
-        terms,
-        solver=solver,
-        t0=t0,
-        t1=t1,
-        dt0=dt,
-        y0=y0,
-        args=x,
-        adjoint=dfx.NoAdjoint(),
-        stepsize_controller=stepsize_controller,
-        saveat=saveat
-    )
-    ys = out.ys.squeeze()
-    return ts, unflatten(ys, y_dim)
-
-
 # %%
-
-from neural_diffusion_processes.kernels import sample_prior_gp
+# Forward process
 
 seed = 1
 key = jax.random.PRNGKey(seed)
@@ -212,16 +160,14 @@ num_samples = 2
 key, subkey = jax.random.split(key)
 # y0s= sample_gp(subkey, k0, mean_function, x, num_samples=num_samples)
 # y0s = sde.sample_prior(subkey, x)
-y0s = sample_prior_gp(key, mean_function, k0, {"kernel": k0_params, "mean_function": {}}, x)
+y0s = sample_prior_gp(key, mean_function, k0, {"kernel": k0_params, "mean_function": {}}, x, num_samples=num_samples)
 print(y0s.shape)
 subkeys = jax.random.split(key, num=num_samples)
 ts = get_timesteps(sde.beta_schedule. t0,sde.beta_schedule.t1, num_ts=5)
-out = jax.vmap(lambda key: solve(sde, x, y0s, key, ts=ts))(subkeys)
-# out = solve(sde, x, y0s, key)
-print(out[0].shape)
-print(out[1].shape)
+
+solve = jax.jit(lambda y, key: ndp.sde.sde_solve(sde, None, x, y=y, key=key, ts=ts, prob_flow=False, atol=None, rtol=None, num_steps=100, forward=True))
+ys = jax.vmap(solve)(y0s, subkeys)
 #%%
-ts, ys = out
 plot_num_timesteps = ys.shape[1]
 fig, axes = plt.subplots(
     plot_num_timesteps, num_samples, sharex=True, sharey=True, figsize=(8*num_samples, 8*plot_num_timesteps)
@@ -235,24 +181,30 @@ for j in range(plot_num_timesteps):
                 axes[j, i].plot(x, ys[i, j, :, o], '-', ms=2)
         elif x.shape[-1] == 2:
             plot_vf(x, ys[i, j], axes[j, i])
-        axes[j, 0].set_ylabel(f"t = {ts[0, j]:.2f}")
+        axes[j, 0].set_ylabel(f"t = {ts[j]:.2f}")
 plt.tight_layout()
 plt.show()
 
 #%%
+# Backward
 
 # ts = get_timesteps(sde.beta_schedule.t1, 1e-3, num_ts=5)
 ts = get_timesteps(sde.beta_schedule.t1, sde.beta_schedule.t0+1e-8, num_ts=5)
 
-reverse_solve = lambda key, y: ndp.sde.reverse_solve(sde, None, x, key=key, yT=y, ts=ts, solver=dfx.Heun()) #, stepsize_controller=dfx.PIDController(rtol=1e-3, atol=1e-3))
+reverse_solve = lambda key, y: ndp.sde.sde_solve(sde, None, x, key=key, y=y, ts=ts, prob_flow=False,
+# solver=dfx.Heun(), rtol=1e-3, atol=1e-3, num_steps=100)
+solver=dfx.Euler(), rtol=None, atol=None, num_steps=100)
 
 key = jax.random.PRNGKey(0)
 key, *subkeys = jax.random.split(key, 1+num_samples)
 # rev_out = reverse_solve(key, ys[0, -1])
-rev_out = jax.vmap(reverse_solve)(np.stack(subkeys), ys[:, -1])
+yT = sample_prior_gp(key, mean_function, k1, {"kernel": k1_params, "mean_function": {}}, x, num_samples=num_samples)
+# yT = ys[:, -1]
+
+rev_out = jax.vmap(reverse_solve)(np.stack(subkeys), yT)
 # print(rev_out.shape)
 key, *subkeys = jax.random.split(key, 1+num_samples)
-rev_out2 = jax.vmap(reverse_solve)(np.stack(subkeys), ys[:, -1])
+rev_out2 = jax.vmap(reverse_solve)(np.stack(subkeys), yT)
 
 # %%
 
@@ -320,8 +272,6 @@ plt.tight_layout()
 plt.show()
 # plt.savefig('conditional_ndp.png', dpi=300, facecolor='white', edgecolor='none')
 
-# %%
-
 #%%
 # Equivariant posterior
 
@@ -361,79 +311,106 @@ def log_prob(
     *,
     key,
     num_steps: int = 100,
-    # solver: AbstractSolver = dfx.Euler(),
-    # solver: AbstractSolver = dfx.Heun(),
-    # solver: AbstractSolver = Dopri5(),
-    solver: AbstractSolver = Tsit5(),
+    solver: AbstractSolver = dfx.Tsit5(),
     rtol: float = 1e-3,
     atol: float = 1e-3,
     # stepsize_controller: AbstractStepSizeController = dfx.PIDController(rtol=1e-3, atol=1e-3)
-    hutchinson_type = 'None'
+    hutchinson_type = 'None',
+    t0: bool = None,
+    t1: bool = None,
+    ts = None
 ):
+    y_dim = y.shape[-1]
+    y = flatten(y)
+
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
     else:
         stepsize_controller =  dfx.PIDController(rtol=rtol, atol=atol)
 
-    reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
+
+    # reverse_drift_ode = lambda t, yt, arg: flatten(sde.reverse_drift_ode(
+    #     key, t, unflatten(yt, y_dim), arg, network
+    # ))
+    reverse_drift_ode = lambda t, yt, arg: -sde.reverse_drift_ode(
         key, t, yt, arg, network
     )
-
     div_fn = get_div_fn(reverse_drift_ode, hutchinson_type)
     @jax.jit
     def logp_wrapper(t, carry, static_args):
         yt, _ = carry
         eps, x = static_args
+        yt = unflatten(yt, y_dim)
 
-        drift = reverse_drift_ode(t, yt, x)
+        drift = flatten(reverse_drift_ode(t, yt, x))
         logp = div_fn(t, yt, x, eps)
         # drift = jnp.zeros_like(yt)
         # logp = jnp.zeros(())
-
         return drift, logp
 
-    t0 = sde.beta_schedule.t0
-    t1 = sde.beta_schedule.t1
+    terms = dfx.ODETerm(logp_wrapper)
+    #NOTE: should we resample?
+    eps = div_noise(key, y.shape, hutchinson_type)
+
+    t0 = sde.beta_schedule.t0 if t0 is None else t0
+    t1 = sde.beta_schedule.t1 if t1 is None else t1
     dt = (t1 - t0) / num_steps
 
-    term = dfx.ODETerm(logp_wrapper)
-    # #NOTE: should we resample?
-    eps = div_noise(key, y.shape, hutchinson_type)
+    # reverse_drift_ode = lambda t, yt, arg: flatten(sde.reverse_drift_ode(
+    #     key, t, unflatten(yt, y_dim), arg, network
+    # ))
+    # terms = dfx.ODETerm(reverse_drift_ode)
+
+    saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
     sol = dfx.diffeqsolve(
-        term,
+        terms,
         solver,
-        t1,
-        t0,
-        -dt,
-        (y, 0.0),
-        (eps, x),
+        t0=t0,
+        t1=t1,
+        dt0=dt,
+        y0=(y, 0.0),
+        args=(eps, x),
+        # y0=y,
+        # args=x,
+        # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
+        saveat=saveat
     )
     yT, delta_logp = sol.ys
+    # yT = sol.ys
+    # print(yT)
+    yT = unflatten(yT, y_dim)
+    # delta_logp = jnp.zeros(())
     nfe = sol.stats['num_steps']
-    yT, delta_logp = yT.squeeze(0), delta_logp.squeeze(0)
-    logp_prior = sde.log_prob_prior(x, yT)
+    # yT, delta_logp = yT.squeeze(0), delta_logp.squeeze(0)
+    logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
 
-    return logp_prior, delta_logp, nfe
+    return logp_prior, delta_logp, nfe, yT
 
 key = jax.random.PRNGKey(1)
 
 # Solves forward SDE for multiple initia states using vmap.
-num_samples = 10
+num_samples = 20
 key, subkey = jax.random.split(key)
-dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}})(x)
+# dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.02)(x)
+dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.)(x)
 y0s = dist.sample(seed=subkey, sample_shape=(num_samples))
-true_logp = jax.vmap(dist.log_prob)(y0s)
+print("mean var", (jnp.std(y0s, 0) ** 2).mean())
+true_logp = jax.vmap(dist.log_prob)(y0s).squeeze()
 print("true_logp", true_logp.shape, true_logp)
 
+dist_T = prior_gp(mean_function, k1, {"kernel": k1_params, "mean_function": {}}, obs_noise=0.)(x)
+log_prior = jax.vmap(dist_T.log_prob)(y0s).squeeze()
+print("log_prior", log_prior.shape, log_prior)
+#%%
 num_steps = 100
-solver: AbstractSolver = dfx.Tsit5()
-# solver: AbstractSolver = dfx.Euler()
-# solver: AbstractSolver = dfx.Dopri5()
+solver = dfx.Tsit5()
+# solver = dfx.Euler()
+# solver = dfx.Dopri5()
 rtol: float = 1e-3
 atol: float = 1e-4
 # rtol = atol = None
-print(solver, atol)
+print(solver, rtol, atol)
 
 key = jax.random.PRNGKey(4)
 subkeys = jax.random.split(key, num=num_samples)
@@ -441,16 +418,38 @@ subkeys = jax.random.split(key, num=num_samples)
 # hutchinson_type="Gaussian"
 hutchinson_type="None"
 
-y0s = unflatten(y0s, output_dim)
-log_prior, delta_logp, nfe = jax.vmap(lambda y, key: log_prob(sde, None, x, y, key=key, 
-num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type))(y0s, subkeys)
-model_logp = log_prior - delta_logp
-print("log_prior", log_prior.shape, log_prior)
-print("delta_logp", delta_logp.shape, delta_logp)
-print("model_logp", model_logp.shape, model_logp)
-print("nfe", nfe)
-print("norm diff", jnp.linalg.norm(model_logp-true_logp) / num_samples)
-# out = jax.vmap(lambda key: solve(sde, x, y0s, key, ts=ts))(subkeys)
-# out = solve(sde, x, y0s, key)
-# print(out[0].shape)
-# print(out[1].shape)
+ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1, num_ts=5)
+# ts = None
+log_prior, delta_logp, nfe, yT = jax.vmap(lambda y, key: log_prob(sde, None, x, y, key=key, 
+num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts))(unflatten(y0s, output_dim), subkeys)
+
+#%%
+plot_num_timesteps = yT.shape[1]
+fig, axes = plt.subplots(
+    plot_num_timesteps, 2, sharex=True, sharey=True, figsize=(8*2, 8*plot_num_timesteps)
+)
+fig.subplots_adjust(wspace=0, hspace=0.)
+
+for j in range(plot_num_timesteps):
+    for i in range(2):
+        if x.shape[-1] == 1:
+            for o in range(output_dim):
+                axes[j, i].plot(x, yT[i, j, :, o], '-', ms=2)
+        elif x.shape[-1] == 2:
+            plot_vf(x, yT[i, j], axes[j, i])
+        axes[j, 0].set_ylabel(f"t = {ts[j]:.2f}")
+plt.tight_layout()
+plt.show()
+
+print("mean var yT", (jnp.std(yT, 0) ** 2).mean())
+# log_prior = log_prior[:, -1]
+# delta_logp = delta_logp[:, -1]
+
+# model_logp = log_prior + delta_logp
+# print("log_prior ode", log_prior.shape, log_prior)
+# print("delta_logp", delta_logp.shape, delta_logp)
+# print("model_logp", model_logp.shape, model_logp)
+# print("nfe", nfe)
+# print("norm diff", jnp.linalg.norm(model_logp-true_logp) / num_samples)
+
+# %%
