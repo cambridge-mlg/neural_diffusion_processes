@@ -5,7 +5,6 @@ defaults:
   - _self_
 
   - server: base
-
   - logger: csv
 
   - net: mattn
@@ -26,20 +25,21 @@ defaults:
 #   hidden_dim: 64
 
 name: steerable_gp
-
+mode: train
 seed: 0
 
 beta_schedule:
   # t0: 3e-4
-  t0: 5e-4
-  beta0: 0.001
+  t0: 1e-4
+  t1: 1.0
+  beta0: 1e-4
   beta1: 15.0
 
 optim:
   # batch_size: 30
-  batch_size: 10
-  eval_batch_size: 1
-  num_steps: 30_000
+  batch_size: 30
+  eval_batch_size: ${eval:${optim.batch_size}//8}
+  num_steps: 50_000
   lr: 1e-3
   ema_rate: 0.999
 
@@ -92,6 +92,11 @@ sde:
   limiting_mean_fn:
     _target_: gpjax.Zero
     output_dim: 2
+
+net:
+  n_layers: 5
+  hidden_dim: 64
+  num_heads: 4
 
 # eval_batch_size: ${batch_size}
 now: ${now:%Y-%m-%d}/${now:%H-%M-%S}
