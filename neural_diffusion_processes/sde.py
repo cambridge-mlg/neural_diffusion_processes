@@ -20,11 +20,11 @@ from jaxlinop import LinearOperator, DenseLinearOperator, DiagonalLinearOperator
 from jaxtyping import Array, Float, PyTree
 from check_shapes import check_shapes
 
-from .types import Tuple, Callable, Mapping, Sequence
+from .utils.types import Tuple, Callable, Mapping, Sequence
 from .data import DataBatch
 from .kernels import prior_gp, sample_prior_gp, log_prob_prior_gp, promote_compute_engines, SumKernel
-from .constants import JITTER
-from .misc import flatten, unflatten
+from .utils.constants import JITTER
+from .utils.misc import flatten, unflatten
 
 class AbstractMeanFunction(gpjax.mean_functions.AbstractMeanFunction):
     def init_params(self, key):

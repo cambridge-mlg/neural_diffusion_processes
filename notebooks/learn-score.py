@@ -18,7 +18,7 @@ import datetime
 from check_shapes import check_shape, check_shapes
 
 import neural_diffusion_processes as ndp
-from neural_diffusion_processes.types import Array
+from neural_diffusion_processes.utils import Array
 
 
 from jax.config import config

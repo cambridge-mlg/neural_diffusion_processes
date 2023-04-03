@@ -21,9 +21,9 @@ from jaxkern.computations import (
 from jaxlinop import LinearOperator, DenseLinearOperator, ConstantDiagonalLinearOperator, DiagonalLinearOperator, identity
 from jaxlinop.dense_linear_operator import _check_matrix
 
-from .constants import JITTER
-from .types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable, Float, Type
-from .misc import flatten, unflatten, check_shape, jax_unstack
+from .utils.constants import JITTER
+from .utils.types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable, Float, Type
+from .utils.misc import flatten, unflatten, check_shape, jax_unstack
 
 
 class BlockDiagonalLinearOperator(DenseLinearOperator):

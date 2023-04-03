@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jaxkern
 from einops import rearrange
 
-from neural_diffusion_processes.misc import sample_mvn, flatten, unflatten
+from neural_diffusion_processes.utils import sample_mvn
 from neural_diffusion_processes.kernels import sample_prior_gp, prior_gp, posterior_gp
 
 
