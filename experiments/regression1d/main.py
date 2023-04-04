@@ -92,7 +92,7 @@ def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
 
 
 class Task:
-    def __init__(self, key, task: str, dataset: str, batch_size: int, num_data: int, conditional_sampler: Callable):
+    def __init__(self, key, task: str, dataset: str, batch_size: int, num_data: int, conditional_sampler: Callable, logp: Callable):
         self._key = key
         self._dataset = dataset
         self._task = task
@@ -106,8 +106,13 @@ class Task:
         @functools.partial(jax.vmap, in_axes=[None, 0, 0, 0, None])
         def vmapped_sampler(params, x_context, y_context, x_target, key):
             return conditional_sampler(params, x_context, y_context, x_target, key)
+
+        @functools.partial(jax.vmap, in_axes=[None, 0, 0, None])
+        def vmapped_logp(params, x, y, key):
+            return logp(params, x, y, key)
         
-        self._sampler = jax.jit(vmapped_sampler)
+        self._sampler = vmapped_sampler
+        self._logp = vmapped_logp
     
     def plot(self, params, key):
         fig, axes = plt.subplots(4, 1, figsize=(8, 8), sharex=True, sharey=True, tight_layout=True)
@@ -116,6 +121,7 @@ class Task:
         means = jnp.mean(samples, axis=0)
         stds = jnp.std(samples, axis=0)
 
+        fig.suptitle(self._task)
         for i, ax in enumerate(axes):
             ax.plot(self._test_batch.xc[i], self._test_batch.yc[i], 'kx')
             ax.plot(self._test_batch.xs[i], self._test_batch.ys[i], 'rx')
@@ -139,8 +145,18 @@ class Task:
             key, *keys = jax.random.split(key, num_samples + 1)
             samples = self._sampler(params, batch.xc, batch.yc, batch.xs, jnp.stack(keys))
             y_pred = jnp.mean(samples, axis=0)  # [batch_size, num_points, y_dim]
-            mse = jnp.mean((batch.ys - y_pred) ** 2)
+            mse = jnp.mean((batch.ys - y_pred) ** 2, axis=[1, 2])  # [batch_size]
             metrics["mse"].append(mse)
+
+            x = jnp.concatenate([batch.xc, batch.xs], axis=1)
+            y = jnp.concatenate([batch.yc, batch.ys], axis=1)
+            print(x.shape, y.shape)
+            key, jkey, ckey = jax.random.split(key, num=3)
+            logp_joint = self._logp(params, x, y, jkey)
+            logp_context = self._logp(params, batch.xc, batch.yc, ckey)
+            logp_cond = (logp_joint - logp_context) / batch.xs.shape[1]
+            print("logp_cond.shape", logp_cond.shape)
+
         
         err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
         summary_stats = [
@@ -151,17 +167,16 @@ class Task:
         metrics = {f"{k}_{n}": s(jnp.stack(v)) for k, v in metrics.items() for n, s in summary_stats}
         return metrics
 
-
     def get_callback(self, writer: ml_tools.writers._MetricWriter):
 
         def callback(step, t, **kwargs):
             del t
             params = kwargs["state"].params_ema
             key = kwargs["key"]
-            fig = self.plot(params, key)
-            writer.write_figures(step, {f"{self._task}_conditional": fig})
             metrics = self.eval(params, key)
             writer.write_scalars(step, {f"{self._task}_{k}": v for k, v in metrics.items()})
+            fig = self.plot(params, key)
+            writer.write_figures(step, {f"{self._task}_conditional": fig})
             
         return callback
 
@@ -290,11 +305,15 @@ def main(_):
     network_apply = hk.without_apply_rng(hk.transform(network)).apply
     net = lambda params, t, yt, x, *, key: network_apply(params, t[None], yt[None], x[None])[0]
 
-    @jax.jit
     def conditional(params, xc, yc, xs, key):
         # net_ = functools.partial(net, params)
         net_ = true_score_network
         return ndp.sde.conditional_sample2(sde, net_, xc, yc, xs, key=key)
+
+    def logp(params, x, y, key):
+        # net_ = functools.partial(net, params)
+        net_ = true_score_network
+        return ndp.sde.log_prob(sde, net_, x, y, key=key)
 
     local_writer = ml_tools.writers.LocalWriter(exp_root_dir, flush_every_n=100)
     tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))
@@ -307,7 +326,8 @@ def main(_):
             config.data.dataset,
             config.eval.batch_size,
             config.eval.num_samples_in_epoch,
-            conditional
+            conditional_sampler=conditional,
+            logp=logp
         )
         for task in ["interpolation", "extrapolation", "generalization"]
     ]
@@ -338,7 +358,8 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=num_steps_per_epoch,
+            # every_steps=num_steps_per_epoch,
+            every_steps=1,
             callback_fn=lambda step, t, **kwargs: [
                 cb(step, t, **kwargs) for cb in callbacks
             ]
