@@ -673,7 +673,6 @@ def get_exact_div_fn(fn):
 def get_div_fn(drift_fn, hutchinson_type):
     """Divergence of the drift function."""
     if hutchinson_type == "None":
-        print("EXACT")
         return lambda y, t, context, eps: get_exact_div_fn(drift_fn)(y, t, context)
     else:
         return lambda y, t, context, eps: get_estimate_div_fn(drift_fn)(
@@ -705,7 +704,7 @@ def log_prob(
     y,
     *,
     key,
-    num_steps: int = 100,
+    dt=1e-3/2,
     solver: AbstractSolver = Tsit5(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
@@ -724,7 +723,9 @@ def log_prob(
         t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
     else:
         t1, t0 = sde.beta_schedule.t0, sde.beta_schedule.t1
-    dt = (t1 - t0) / num_steps
+        dt = -1.0 * abs(dt)
+    # dt = (t1 - t0) / num_steps
+    # dt = 1e-3/2.
 
     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
         key, t, yt, arg, network
@@ -749,7 +750,6 @@ def log_prob(
     #NOTE: should we resample?
     saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
 
-    print(t0,t1,dt)
     sol = dfx.diffeqsolve(
         terms,
         solver,

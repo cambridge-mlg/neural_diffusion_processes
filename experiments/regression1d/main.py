@@ -140,7 +140,7 @@ class Task:
         num_samples = 16
         # uses same key to keep test data fixed across evaluations
         generator = data_generator(self._key, self._dataset, self._task, self._num_data, self._batch_size, num_epochs=1)
-        metrics = {"mse": []}
+        metrics = {"mse": [], "loglik": []}
         for i, batch in enumerate(generator):
             key, *keys = jax.random.split(key, num_samples + 1)
             samples = self._sampler(params, batch.xc, batch.yc, batch.xs, jnp.stack(keys))
@@ -150,47 +150,11 @@ class Task:
 
             x = jnp.concatenate([batch.xc, batch.xs], axis=1)
             y = jnp.concatenate([batch.yc, batch.ys], axis=1)
-            print(x.shape, y.shape)
             key, jkey, ckey = jax.random.split(key, num=3)
             logp_joint, _ = self._logp(params, x, y, jkey)
             logp_context, _ = self._logp(params, batch.xc, batch.yc, ckey)
             logp_cond = (logp_joint - logp_context) / batch.xs.shape[1]
-            print("logp_cond.shape", logp_cond.shape)
-
-            factory = regression1d._DATASET_FACTORIES[self._dataset] 
-            mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
-
-            @jax.vmap
-            def logp_cond_gp(xc, yc, xt, yt):
-                post = ndp.kernels.posterior_gp(
-                    mean0,
-                    kernel0,
-                    params0,
-                    xc,
-                    yc,
-                    obs_noise=params0["noise_variance"]
-                )
-                post_x = post(xt)
-                return post_x.log_prob(jnp.reshape(yt, (-1,))).squeeze() / len(xt) 
-
-            @jax.vmap
-            def logp_prior_gp(xc, yc):
-                return ndp.kernels.log_prob_prior_gp(
-                    mean0,
-                    kernel0,
-                    params0,
-                    xc,
-                    yc,
-                    obs_noise=params0["noise_variance"]
-                )
-
-            logp_gp_ = logp_cond_gp(batch.xc, batch.yc, batch.xs, batch.ys)
-            logp_gp_prior = logp_prior_gp(x, y)
-            print("GP", logp_gp_)
-            print("NDP", logp_cond)
-            print("Joint")
-            print("NDP", logp_joint)
-            print("GP", logp_gp_prior)
+            metrics["loglik"].append(jnp.reshape(logp_cond, (-1)))
         
         err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
         summary_stats = [
@@ -344,12 +308,11 @@ def main(_):
         net_ = true_score_network
         return ndp.sde.conditional_sample2(sde, net_, xc, yc, xs, key=key)
 
-    import diffrax as dfx
 
     def logp(params, x, y, key):
         # net_ = functools.partial(net, params)
         net_ = true_score_network
-        return ndp.sde.log_prob(sde, net_, x, y, key=key, solver=dfx.Euler(), rtol=None)
+        return ndp.sde.log_prob(sde, net_, x, y, key=key)
 
     local_writer = ml_tools.writers.LocalWriter(exp_root_dir, flush_every_n=100)
     tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))

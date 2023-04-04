@@ -9,7 +9,7 @@ from check_shapes import check_shapes
 from einops import rearrange
 
 from .types import Array
-from .constants import JITTER
+from ..config import get_config
 
 from jaxtyping import Float, jaxtyped
 from typeguard import typechecked as typechecker
@@ -27,7 +27,7 @@ def sample_mvn(key, mean: Array, cov: Array, num_samples: Optional[int] = None, 
     """Returns samples from a GP(mean, kernel) at x."""
     num_samples_was_none = num_samples is None
     num_samples = num_samples or 1
-    diag = noise_var or JITTER
+    diag = noise_var or get_config().jitter
     L = jnp.linalg.cholesky(cov + noise_var * jnp.eye(len(mean)))
     eps = jax.random.normal(key, (len(mean), num_samples), dtype=mean.dtype)
     s = mean + L @ eps
