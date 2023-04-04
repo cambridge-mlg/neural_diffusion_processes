@@ -31,7 +31,7 @@ class NetworkConfig:
 
 @dataclasses.dataclass
 class EvalConfig:
-    batch_size: int = 16
+    batch_size: int = 8
     num_samples_in_epoch: int = 32
 
 

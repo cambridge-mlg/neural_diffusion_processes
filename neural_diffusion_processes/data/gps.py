@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jaxkern
 from einops import rearrange
 
-from neural_diffusion_processes.misc import sample_mvn, flatten, unflatten
+from neural_diffusion_processes.utils import sample_mvn
 from neural_diffusion_processes.kernels import sample_prior_gp, prior_gp, posterior_gp
 
 
@@ -99,23 +99,23 @@ def get_vec_gp_data(
     x = jnp.repeat(x[None, ...], y.shape[0], 0)
     return x, y
 
-def get_vec_gp_prior_log_prob(
+def get_vec_gp_prior(
     kernel: jaxkern.base.AbstractKernel,
     mean_function,
     obs_noise: float,
     params: Optional[Mapping[str, float]] = None,
     **kwargs,
     ):
-    return lambda xs, ys: prior_gp(mean_function, kernel, params, obs_noise)(xs).log_prob(flatten(ys))
+    return lambda xs: prior_gp(mean_function, kernel, params, obs_noise)(xs)
 
-def get_vec_gp_cond_log_prob(
+def get_vec_gp_cond(
     kernel: jaxkern.base.AbstractKernel,
     mean_function,
     obs_noise: float,
     params: Optional[Mapping[str, float]] = None,
     **kwargs,
     ):
-    return lambda xc, yc, xs, ys: posterior_gp(mean_function, kernel, params, xc, yc, obs_noise)(xs).log_prob(flatten(ys))
+    return lambda xc, yc, xs: posterior_gp(mean_function, kernel, params, xc, yc, obs_noise)(xs)
 
 def get_gp_data(
     key,

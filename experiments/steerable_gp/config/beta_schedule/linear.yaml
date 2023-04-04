@@ -1,5 +1,5 @@
 _target_: neural_diffusion_processes.sde.LinearBetaSchedule
-t0: 1e-5
-t1: 1.0
-beta0: 0.0
-beta1: 20.0
+# t0: 1e-5
+# t1: 1.0
+# beta0: 0.0
+# beta1: 20.0

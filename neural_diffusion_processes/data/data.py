@@ -51,10 +51,7 @@ def dataloader(
         while end < dataset_size:
             batch_perm = perm[start:end]
             (key,) = jax.random.split(key, 1)
-            # print("n_points", n_points)
             points_perm = jax.random.permutation(key, indices_points)[:n_points]
-            # print("indices_points", indices_points.shape)
-            # print("points_perm", points_perm.shape)
             yield DataBatch(
                 xs=jnp.take(x[batch_perm], axis=1, indices=points_perm),
                 ys=jnp.take(y[batch_perm], axis=1, indices=points_perm),

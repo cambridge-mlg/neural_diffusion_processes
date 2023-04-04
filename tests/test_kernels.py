@@ -1,7 +1,7 @@
 #%%
 import jax.numpy as jnp
 from neural_diffusion_processes.kernels import WhiteKernel
-from neural_diffusion_processes.types import Array, Scalar
+from neural_diffusion_processes.utils import Array, Scalar
 
 from check_shapes import check_shapes
 
