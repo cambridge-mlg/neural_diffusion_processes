@@ -32,6 +32,14 @@ class AbstractMeanFunction(gpjax.mean_functions.AbstractMeanFunction):
     def init_params(self, key):
         return {}
 
+def scale_kernel_variance(params, coeff):
+    if isinstance(params, list):
+        for k in params:
+            k["variance"] = k["variance"] * coeff
+    else:
+        params["variance"] = params["variance"] * coeff
+    return params
+
 class ScoreNetwork(Callable):
     @abstractmethod
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
@@ -73,6 +81,7 @@ class SDE:
     std_trick: bool = True
     residual_trick: bool = True
     precond: bool = True
+    exact: bool = False
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
@@ -109,6 +118,7 @@ class SDE:
         cov_coef = jnp.exp(-self.beta_schedule.B(t))
         k0t = self.limiting_kernel
         k0t_params = copy.deepcopy(self.limiting_params["kernel"])
+        # k0t_params = scale_kernel_variance(k0t_params, 1.0 - cov_coef)
         if isinstance(k0t_params, list):
             for k in k0t_params:
                 k["variance"] = k["variance"] * (1.0 - cov_coef)
@@ -136,9 +146,9 @@ class SDE:
 
         # Cov[Y_t|Y_0]
         cov_coef = jnp.exp(-self.beta_schedule.B(t))
-        k0_params["variance"] = k0_params["variance"] * cov_coef
+        k0_params = scale_kernel_variance(k0_params, cov_coef)
         kt_param = copy.deepcopy(self.limiting_params["kernel"])
-        kt_param["variance"] = kt_param["variance"] * (1. - cov_coef)
+        kt_param = scale_kernel_variance(kt_param, 1.0 - cov_coef)
         k0t = SumKernel([k0, self.limiting_kernel])
         params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
         return μ0t, k0t, params
@@ -168,55 +178,55 @@ class SDE:
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
         """ This parametrise the preconditioned score K(x,x) grad log p(y_t|x) """
-        score = network(t, yt, x, key=key)
-        if self.std_trick:
-            std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
-            score = score / (std + 1e-3)
-        if self.residual_trick:
-            # NOTE: s.t. bwd SDE = fwd SDE
-            fwd_drift = self.drift(t, yt, x)
-            residual = 2 * fwd_drift / (self.beta_schedule(t) + 1e-3)
-            score += residual
-        return score
+        if self.exact:
+            return self.exact_score(key, t, yt, x, network)
+        else:
+            score = network(t, yt, x, key=key)
+            if self.std_trick:
+                std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
+                score = score / (std + 1e-3)
+            if self.residual_trick:
+                # NOTE: s.t. bwd SDE = fwd SDE
+                fwd_drift = self.drift(t, yt, x)
+                residual = 2 * fwd_drift / (self.beta_schedule(t) + 1e-3)
+                score += residual
+            return score
 
-    # @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    # def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
-    #     # return 2 * self.drift(t, yt, x) / self.beta_schedule(t)
-    #     # return jnp.zeros_like(yt)
-    #     from neural_diffusion_processes.kernels import RBFCurlFree
-    #     def pt(t):
-    #         return self.pt(
-    #             t,
-    #             # y0=partial(gpjax.Zero(2), {}),
-    #             y0=jnp.zeros_like(yt),
-    #             k0=RBFCurlFree(),
-    #             k0_params={"variance": 10, "lengthscale": 2.23606797749979},
-    #             # k0_params=RBFCurlFree().init_params(None),
-    #         )
-
+    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
+    def exact_score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
+        from neural_diffusion_processes.kernels import RBFCurlFree, WhiteVec
+        solve_lower_triangular = partial(jax.scipy.linalg.solve_triangular, lower=True)  # L⁻¹ x
+        solve_upper_triangular = partial(jax.scipy.linalg.solve_triangular, lower=False)  # U⁻¹ x
+        k0 = RBFCurlFree()
+        k0_params = {"variance": 10, "lengthscale": 2.23606797749979}
+        k0 = SumKernel([k0, WhiteVec(2)])
+        k0_params = [k0_params, {"variance": 0.02}]
+        def pt(t):
+            return self.pt(t, y0=jnp.zeros_like(yt), k0=k0, k0_params=k0_params)
         
-    #     mu_t, k_t, params = pt(t)
-    #     b = yt# - mu_t({}, x)
-    #     n = b.shape[0] * b.shape[1]
-    #     b = flatten(b)
+        # mu_t, k_t, params = pt(t)
+        b = yt# - mu_t({}, x)
+        n = b.shape[0] * b.shape[1]
+        b = flatten(b)
         
-    #     # k0 = RBFCurlFree()
-    #     # k0_params={"variance": 10, "lengthscale": 2.23606797749979}
-    #     # solve_lower_triangular = partial(jax.scipy.linalg.solve_triangular, lower=True)  # L⁻¹ x
-    #     # solve_upper_triangular = partial(jax.scipy.linalg.solve_triangular, lower=False)  # U⁻¹ x
-    #     # cov_coef = jnp.exp(self.beta_schedule.B(t))
-    #     # Sigma_t = (1 - cov_coef) * self.limiting_kernel.gram(self.limiting_params["kernel"], x).to_dense()
-    #     # Sigma_t += cov_coef * k0.gram(k0_params, x).to_dense() 
-    #     # Lt = jnp.linalg.cholesky(Sigma_t + JITTER * jnp.eye(len(Sigma_t)))
-    #     # Sigma_inv_b = solve_upper_triangular(jnp.transpose(Lt), solve_lower_triangular(Lt, b))
+        SigmaT = self.limiting_gram(x)
+        # Sigma_t = k_t.gram(params['kernel'], x)
+        # Sigma_t = Sigma_t._add_diagonal(identity(n) * JITTER)
+        # Sigma_inv_b = Sigma_t.solve(b)
+        # out = - (SigmaT @ Sigma_inv_b)
+    
+        # k0 = RBFCurlFree()
+        # k0_params={"variance": 10, "lengthscale": 2.23606797749979}
 
-    #     Sigma_t = k_t.gram(params['kernel'], x)
-    #     # JITTER = 1e-3
-    #     Sigma_t = Sigma_t._add_diagonal(identity(n) * JITTER)
-    #     Sigma_inv_b = Sigma_t.solve(b)
-    #     SigmaT = self.limiting_kernel.gram(self.limiting_params["kernel"], x)
-    #     out = - (SigmaT @ Sigma_inv_b)
-    #     return unflatten(out, yt.shape[-1])
+        cov_coef = jnp.exp(-self.beta_schedule.B(t))
+        Sigma_t = (1 - cov_coef) * SigmaT.to_dense()
+        Sigma0 = k0.gram(k0_params, x)
+        Sigma_t += cov_coef * Sigma0.to_dense() 
+        Lt = jnp.linalg.cholesky(Sigma_t + JITTER * jnp.eye(n))
+        Sigma_inv_b = solve_upper_triangular(jnp.transpose(Lt), solve_lower_triangular(Lt, b))
+        out = - (SigmaT @ Sigma_inv_b)
+
+        return unflatten(out, yt.shape[-1])
 
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
@@ -638,13 +648,28 @@ def conditional_sample2(
 def get_estimate_div_fn(fn):
     """Create the divergence function of `fn` using the Hutchinson-Skilling trace estimator."""
 
-    @check_shapes("t: []", "y: [N, y_dim]", "eps: [N, y_dim]", "return: []")
+    @check_shapes("t: []", "y: [N, y_dim]", "eps: [K, N, y_dim]", "return: []")
     def div_fn(t, y: jnp.ndarray, arg, eps: jnp.ndarray) -> jnp.ndarray:
         y_dim = y.shape[-1]
         flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
         _, vjp_fn = jax.vjp(flattened_fn, flatten(y))
-        (eps_dfdy,) = vjp_fn(flatten(eps))
-        return jnp.sum(eps_dfdy * flatten(eps), axis=-1)
+
+        # NOTE: sequential
+        # def f(carry, eps):
+        #     (eps_dfdy,) = vjp_fn(flatten(eps))
+        #     trace_estimate = jnp.sum(eps_dfdy * flatten(eps), axis=-1)
+        #     return carry + trace_estimate, None
+        
+        # sums, _ = jax.lax.scan(f, 0., eps)
+        # return sums / eps.shape[0]
+
+        # NOTE: parallel
+        def f(eps):
+            (eps_dfdy,) = vjp_fn(flatten(eps))
+            trace_estimate = jnp.sum(eps_dfdy * flatten(eps), axis=-1)
+            return trace_estimate
+        
+        return jax.vmap(f)(eps).mean(axis=0)
 
     return div_fn
 
@@ -700,21 +725,32 @@ def log_prob(
     solver: AbstractSolver = Tsit5(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
-    hutchinson_type = 'None'
+    hutchinson_type: str = 'None',
+    hutchinson_samples: int = 1,
+    forward: bool = True,
+    ts = None
 ):
-    y_dim = y.shape[-1]
-    y = flatten(y)
 
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
     else:
         stepsize_controller =  dfx.PIDController(rtol=rtol, atol=atol)
 
+    if forward:
+        t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
+    else:
+        t1, t0 = sde.beta_schedule.t0, sde.beta_schedule.t1
+    dt = (t1 - t0) / num_steps
+
     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
         key, t, yt, arg, network
     )
-
     div_fn = get_div_fn(reverse_drift_ode, hutchinson_type)
+    # eps = div_noise(key, y.shape, hutchinson_type)
+    eps = div_noise(key, (hutchinson_samples, *y.shape), hutchinson_type)
+    y_dim = y.shape[-1]
+    y = flatten(y)
+
     @jax.jit
     def logp_wrapper(t, carry, static_args):
         yt, _ = carry
@@ -725,12 +761,9 @@ def log_prob(
         logp = div_fn(t, yt, x, eps)
         return drift, logp
 
-    t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
-    dt = (t1 - t0) / num_steps
-
     terms = dfx.ODETerm(logp_wrapper)
-    # #NOTE: should we resample?
-    eps = div_noise(key, y.shape, hutchinson_type)
+    #NOTE: should we resample?
+    saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
 
     sol = dfx.diffeqsolve(
         terms,
@@ -740,7 +773,9 @@ def log_prob(
         dt0=dt,
         y0=(y, 0.0),
         args=(eps, x),
+        adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
+        saveat=saveat
     )
     yT, delta_logp = sol.ys
     yT = unflatten(yT, y_dim)
