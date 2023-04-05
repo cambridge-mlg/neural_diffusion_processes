@@ -30,7 +30,7 @@ from neural_diffusion_processes import ml_tools
 from neural_diffusion_processes.ml_tools.state import TrainingState, load_checkpoint, save_checkpoint
 from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
 from neural_diffusion_processes.utils.vis import plot_scalar_field, plot_vector_field, plot_covariances
-from neural_diffusion_processes.utils import flatten
+from neural_diffusion_processes.utils import flatten, unflatten
 from neural_diffusion_processes.data import radial_grid_2d, DataBatch
 
 
@@ -190,13 +190,14 @@ def run(config):
     def reverse_sample(key, x_grid, params, yT=None):
         print("reverse_sample", x_grid.shape)
         net_ = partial(net, params)
-        return ndp.sde.sde_solve(sde, net_, x_grid, key=key, yT=yT, prob_flow=False)
+        return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=False)
 
     @jit
     def cond_sample(key, x_grid, x_context, y_context, params):
         net_ = partial(net, params)
-        x_context += 1.0e-2 #NOTE: to avoid context overlapping with grid
-        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_inner_steps=50)
+        x_context += 1.0e-5 #NOTE: to avoid context overlapping with grid
+        # return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_inner_steps=50)
+        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_steps=100, num_inner_steps=50)
     
     #TODO: data as a class with such methods?
     # @jit
@@ -239,15 +240,6 @@ def run(config):
         y_model = vmap(reverse_sample, in_axes=[0, None, None, 0])(
             jax.random.split(keys[3], n_samples), x_grid, state.params_ema, y_ref
         ).squeeze()
-        # def curl(vf):
-        #     vf = rearrange(vf, "(n n2) d -> n n2 d", n=math.sqrt(vf.shape[0]))
-        #     x_grid = rearrange(x_grid, "(n n2) d -> n n2 d", n=math.sqrt(vf.shape[0]))
-        #     u = vf[..., 0]
-        #     v = vf[..., 1]
-        #     delta_x = delta_y = x_grid[0, -1, 0] - x_grid[0, -2, 0]
-        #     print("delta_x", delta_x)
-        #     return (v[1:, :] - v[:-1, :]) / delta_x - (u[:, 1:] - u[:, :-1]) / delta_y
-        # print("curl", vmap(curl)(y_model).shape)
 
         # ax.plot(x_grid, y_model[:, -1, :, 0].T, "C0", alpha=0.3)
         plot_vf_and_cov(x_grid, y_model, axes[:, 2], rf"$p_{{model}}$")
@@ -257,9 +249,18 @@ def run(config):
         x_grid_w_contxt = x_grid
         
         posterior_gp = cond_log_prob(batch.xc[idx], batch.yc[idx], x_grid_w_contxt)
-        y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(n_samples))
+        # y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(n_samples))
+        # y_cond = rearrange(y_cond, "k (n d) -> k n d", d=y_dim)
+        # plot_vf_and_cov(x_grid_w_contxt, y_cond, axes[:, 3], rf"$p_{{model}}$")
+        y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(1))
         y_cond = rearrange(y_cond, "k (n d) -> k n d", d=y_dim)
-        plot_vf_and_cov(x_grid_w_contxt, y_cond, axes[:, 3], rf"$p_{{model}}$")
+        plot_vf(x_grid_w_contxt, y_cond.squeeze(), ax=axes[0, 3])
+        plot_vf(x_grid_w_contxt, unflatten(posterior_gp.mean(), y_dim), ax=axes[1, 3])
+        ktt = rearrange(posterior_gp.covariance(), '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=y_dim, p2=y_dim) 
+        covariances = ktt[jnp.diag_indices(ktt.shape[0])]
+        plot_cov(x_grid_w_contxt, covariances, ax=axes[1, 3])
+        axes[0, 3].set_title(rf"$p_{{model}}$")
+    
         # plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][3])
         plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][3])
         plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[1][3])
@@ -303,8 +304,12 @@ def run(config):
         print("log_prob")
         net_ = partial(net, params)
         # return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian")
+        # return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="None", rtol=1e-6, atol=1e-6)
+        # return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian", rtol=1e-6, atol=1e-6, hutchinson_samples=1)
+        return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian", rtol=None, atol=None, hutchinson_samples=1)
+        # return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian", rtol=None, atol=None)
         return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="None")
-    prior_log_prob = jit(vmap(partial(prior_log_prob, params=state.params_ema), in_axes=[None, 0, 0]))
+    prior_log_prob = jit(vmap(partial(prior_log_prob, params=state.params_ema)))
 
     # @partial(jax.vmap, in_axes=[None, None, None, 0])
     # @partial(jax.vmap)
@@ -313,33 +318,41 @@ def run(config):
     #     posterior_log_prob = call(config.data)
     #     return posterior_log_prob(xc, yc, xs, ys)
 
-    # @partial(jax.vmap,    in_axes=[None, 0])
-    @partial(jax.vmap)
-    @jit
-    def data_log_prob(xs, ys):
-        config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_prior"
-        prior = call(config.data)
-        # return vmap(lambda x, y: prior(x).log_prob(y))(xs, ys)
-        return prior(xs).log_prob(flatten(ys))
-
+    config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_prior"
+    prior = call(config.data)
+   
     # @jit
-    def eval(state: TrainingState, key, t) -> Mapping[str, float]:
-        # num_samples = 32
-        num_samples = 10
+    def eval(state: TrainingState, key, step) -> Mapping[str, float]:
+        num_samples = 32
+        # num_samples = 20
         metrics = defaultdict(list)
-        
+
         for i, batch in enumerate(data_test):
             key, *keys = jax.random.split(key, num_samples + 1)
+            # print(step, i, batch.xs.shape, batch.ys.shape, key.shape)
 
-            # if i <= 1:
-            #     samples = vmap(lambda key: vmap(lambda xs, xc, yc: cond_sample(key, xs, xc, yc, state.params_ema))(batch.xs, batch.xc, batch.yc))(jnp.stack(keys)).squeeze()
-            #     f_pred = jnp.mean(samples, axis=0)
-            #     mse_mean_pred = jnp.sum((batch.ys - f_pred) ** 2, -1).mean(1).mean(0)
-            #     metrics["cond_mse"].append(mse_mean_pred)
-            #     # ignore outliers
-            #     f_pred = jnp.median(samples, axis=0)
-            #     mse_med_pred = jnp.sum((batch.ys - f_pred) ** 2, -1).mean(1).mean(0)
-            #     metrics["cond_mse_median"].append(mse_med_pred)
+            if step != config.optim.num_steps and i < 1:
+                # true_mean = batch.ys
+                true_mean = vmap(lambda x: unflatten(prior(x).mean(), y_dim))(batch.xs)
+                def f(x):
+                    ktt = prior(x).covariance()
+                    ktt = rearrange(ktt, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=y_dim, p2=y_dim)
+                    return ktt[jnp.diag_indices(ktt.shape[0])]
+                true_cov = vmap(f)(batch.xs)
+                
+                ys = jit(vmap(lambda key: vmap(lambda xs, xc, yc: cond_sample(key, xs, xc, yc, state.params_ema))(batch.xs, batch.xc, batch.yc)))(jnp.stack(keys)).squeeze()
+                f_pred = jnp.mean(ys, axis=0)
+                mse_mean_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
+                metrics["cond_mse"].append(mse_mean_pred)
+                f_pred = jnp.median(ys, axis=0)
+                mse_med_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
+                metrics["cond_mse_median"].append(mse_med_pred)
+
+                f_pred = vmap(vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1]), in_axes=[2])(ys).transpose(1,0,2,3)
+                mse_cov_pred = jnp.sum((true_cov - f_pred).reshape(*true_cov.shape[:-2], -1) ** 2, -1)
+                mse_cov_pred = mse_cov_pred.mean(1).mean(0)
+                metrics["mse_cov_pred"].append(mse_cov_pred)
+
             
             # #TODO: clean
             # logp = cond_log_prob(batch.xc, batch.yc, batch.xs, samples)
@@ -351,32 +364,25 @@ def run(config):
             # context_logp = prior_log_prob(batch.xc, batch.yc, key)
             # metrics["cond_log_prob2"].append(jnp.mean(augmented_logp - context_logp))
 
-            if i > 0:
-                continue
-            print(i, batch.xs.shape, batch.ys.shape, key.shape)
-            from neural_diffusion_processes.kernels import prior_gp
-            k0 = ndp.kernels.RBFCurlFree()
-            k0_params = {"variance": 10, "lengthscale": 2.23606797749979}
-            dist = prior_gp(lambda params, x: jnp.zeros_like(x), k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.02)(batch.xs[0])
-            # y0s = dist.sample(seed=key, sample_shape=(batch.xs.shape[0]))
-            # true_logp = jax.vmap(dist.log_prob)(y0s)
-            true_logp = jax.vmap(dist.log_prob)(flatten(batch.ys))
-            # true_logp = data_log_prob(batch.xs, batch.ys)
-            # metrics["true_bpd"].append(jnp.mean(true_logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
-            metrics["true_logp"].append(jnp.mean(true_logp))
-            # logp, nfe = prior_log_prob(key, batch.xs, batch.ys)
-            logp_prior, delta_logp, nfe, yT = prior_log_prob(key, batch.xs, batch.ys)
-            print("yT", yT.shape)
-            print("mean var yT", (jnp.std(yT, 0) ** 2).mean())
-            print("logp_prior bis", sde.log_prob_prior(batch))
-            print("logp_prior, delta_logp", logp_prior.shape, delta_logp.shape)
-            logp = logp_prior + delta_logp
-            print(jnp.mean(logp_prior), jnp.mean(delta_logp), jnp.mean(logp_prior + delta_logp))
-            # metrics["bpd"].append(jnp.mean(logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
-            metrics["logp"].append(jnp.mean(logp))
-            metrics["nfe"].append(jnp.mean(nfe))
-            # print(i, batch.ys.shape, metrics["true_bpd"][-1], metrics["bpd"][-1], metrics["nfe"][-1])
-            print(i, batch.ys.shape, metrics["true_logp"][-1], metrics["logp"][-1], metrics["nfe"][-1])
+            # if i > 0:
+                # continue
+            # true_logp = jax.vmap(dist.log_prob)(flatten(batch.ys))
+            # # metrics["true_bpd"].append(jnp.mean(true_logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
+            # metrics["true_logp"].append(jnp.mean(true_logp))
+            # # logp, nfe = prior_log_prob(key, batch.xs, batch.ys)
+            # subkeys = jax.random.split(key, num=batch.ys.shape[0])
+            # # logp_prior, delta_logp, nfe, yT = prior_log_prob(subkeys, batch.xs, batch.ys)
+            # # logp = logp_prior + delta_logp
+            # # print("logp_prior, delta_logp", logp_prior.shape, delta_logp.shape)
+            # # print("true_logp", true_logp)
+            # # print(logp_prior.squeeze())
+            # # print(delta_logp.squeeze())
+            # # print(logp.squeeze())
+            # # metrics["bpd"].append(jnp.mean(logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
+            # logp, nfe = prior_log_prob(subkeys, batch.xs, batch.ys)
+            # metrics["logp"].append(jnp.mean(logp))
+            # metrics["nfe"].append(jnp.mean(nfe))
+            # print(metrics["logp"][-1], metrics["nfe"][-1])
 
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
@@ -397,6 +403,7 @@ def run(config):
             ),
         ),
         ml_tools.actions.PeriodicCallback(
+            # every_steps=config.optim.num_steps // 10,
             every_steps=config.optim.num_steps // 10,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 eval(kwargs["state"], kwargs["key"], step), step
@@ -412,6 +419,10 @@ def run(config):
 
     # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
+
+    # x = radial_grid_2d(10, 30)
+    # print(sde.score(None, 0.5, jnp.ones_like(x), x, None))
+    # raise
     
     # logger.log_plot("process", plots(state, key, 0), 0)
     # logger.log_plot("process", plots(state, key, 1), 1)

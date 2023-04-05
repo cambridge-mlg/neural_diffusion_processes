@@ -553,8 +553,8 @@ def conditional_sample2(
 
     key, subkey = jax.random.split(key)
     shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
-    # bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
-    bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
+    bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
+    # bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
     langevin_terms = dfx.MultiTerm(
         dfx.ODETerm(reverse_drift_langevin),
         LinOpControlTerm(diffusion_langevin, bm)

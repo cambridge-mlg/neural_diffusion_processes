@@ -37,7 +37,7 @@ beta_schedule:
 
 optim:
   # batch_size: 30
-  batch_size: 30
+  batch_size: 20
   eval_batch_size: ${eval:${optim.batch_size}//8}
   num_steps: 50_000
   lr: 1e-3
@@ -68,7 +68,7 @@ data:
   seed: 0
   # min_context: 5
   # max_context: 50
-  min_context: 20
+  min_context: 30
   max_context: ${data.min_context}
   # n_points: 50
   n_points: -1
