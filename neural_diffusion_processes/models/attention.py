@@ -192,8 +192,9 @@ def efficient_dot_product_attention(query, key, value,
     "q: [batch..., seq_len_q, depth]",
     "k: [batch..., seq_len_k, depth]",
     "v: [batch..., seq_len_k, depth_v]",
-    "return[0]: [batch..., seq_len_q, depth_v]",
-    "return[1]: [batch..., seq_len_q, seq_len_k]",
+    # "return[0]: [batch..., seq_len_q, depth_v]",
+    # "return[1]: [batch..., seq_len_q, seq_len_k]",
+    "return: [batch..., seq_len_q, depth_v]",
 )
 def scaled_dot_product_attention(
     q: jnp.ndarray, k: jnp.ndarray, v: jnp.ndarray, mask: jnp.ndarray
