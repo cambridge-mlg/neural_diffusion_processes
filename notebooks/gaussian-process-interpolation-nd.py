@@ -45,7 +45,7 @@ key = jax.random.PRNGKey(42)
 key, subkey = jax.random.split(key)
 
 output_dim = 2
-beta_schedule = ndp.sde.LinearBetaSchedule(t0 = 1e-5, beta0 = 1e-4, beta1 = 15.0)
+beta_schedule = ndp.sde.LinearBetaSchedule(t0 = 1e-4, beta0 = 1e-4, beta1 = 15.0)
 x = radial_grid_2d(10, 30)
 
 # k0 = ndp.kernels.RBFVec(output_dim)
@@ -61,8 +61,8 @@ k0_params = [k0_params, {"variance": 0.02}]
 k1 = ndp.kernels.RBFVec(output_dim)
 k1_params = {"variance": k0_variance, "lengthscale": 2.}
 
-# k1 = SumKernel([k1, ndp.kernels.WhiteVec(output_dim)])
-# k1_params = [k1_params, {"variance": 1.}]
+k1 = SumKernel([k1, ndp.kernels.WhiteVec(output_dim)])
+k1_params = [k1_params, {"variance": 1.}]
 
 mean_function = gpjax.Zero(output_dim)
 
@@ -409,21 +409,21 @@ hutchinson_type = "None"
 ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1, num_ts=5)
 # ts = None
 
-log_prior, delta_logp, nfe, yT = jax.vmap(jax.jit(lambda y, key: log_prob(sde, None, x, y, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=True)))(y0s, subkeys)
+model_logp, nfe = jax.vmap(jax.jit(lambda y, key: log_prob(sde, None, x, y, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=True)))(y0s, subkeys)
 # log_prior, delta_logp, nfe, yT = jax.vmap(jax.jit(lambda y, key: log_prob(sde, None, x, y, key=key, hutchinson_type=hutchinson_type, ts=ts)))(y0s, subkeys)
 
 # ys = unflatten(y0s, output_dim)[:, None, ...]
 # ys = yT
 plot(yT, ts)
 
-print("mean var ys", (jnp.std(yT, 0) ** 2).mean())
-print("mean mean ys", (jnp.mean(yT, 0) ** 2).mean())
-log_prior = log_prior[:, -1]
-delta_logp = delta_logp[:, -1]
+# print("mean var ys", (jnp.std(yT, 0) ** 2).mean())
+# print("mean mean ys", (jnp.mean(yT, 0) ** 2).mean())
+# log_prior = log_prior[:, -1]
+# delta_logp = delta_logp[:, -1]
 
-model_logp = log_prior + delta_logp
-print("log_prior ode", log_prior.shape, log_prior)
-print("delta_logp", delta_logp.shape, delta_logp)
+# model_logp = log_prior + delta_logp
+# print("log_prior ode", log_prior.shape, log_prior)
+# print("delta_logp", delta_logp.shape, delta_logp)
 print("model_logp", model_logp.shape, model_logp)
 print("true_logp", true_logp.shape, true_logp)
 print("nfe", nfe)
