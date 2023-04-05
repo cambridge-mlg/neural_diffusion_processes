@@ -197,7 +197,7 @@ def run(config):
         net_ = partial(net, params)
         x_context += 1.0e-5 #NOTE: to avoid context overlapping with grid
         # return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_inner_steps=50)
-        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_steps=100, num_inner_steps=50)
+        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_steps=50, num_inner_steps=100, tau=0.5, psi=2., lambda0=1.5, prob_flow=False)
     
     #TODO: data as a class with such methods?
     # @jit

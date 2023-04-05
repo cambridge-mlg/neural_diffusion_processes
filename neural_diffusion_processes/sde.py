@@ -494,7 +494,9 @@ def conditional_sample2(
     num_inner_steps: int = 5,
     prob_flow: bool = True,
     langevin_kernel = True,
-    alpha: float = 1.
+    psi: float = 1.,
+    lambda0: float = 1.,
+    tau: float = None,
 ):
     # TODO: Langevin dynamics option
 
@@ -508,6 +510,7 @@ def conditional_sample2(
     t1 = sde.beta_schedule.t1
     ts = jnp.linspace(t1, t0, num_steps, endpoint=True)
     dt = ts[0] - ts[1]
+    tau = tau if tau is not None else t1
 
     solver = dfx.Euler()
 
@@ -587,8 +590,8 @@ def conditional_sample2(
         # )
 
         yt_m_dt = yt_augmented
-        yt_m_dt += alpha * dt * reverse_drift_langevin(t - dt, yt_augmented, x_augmented)
-        noise = jnp.sqrt(alpha) * jnp.sqrt(dt) * jax.random.normal(key, shape=yt_augmented.shape)
+        yt_m_dt += lambda0 * psi * dt * reverse_drift_langevin(t - dt, yt_augmented, x_augmented)
+        noise = jnp.sqrt(psi) * jnp.sqrt(dt) * jax.random.normal(key, shape=yt_augmented.shape)
         yt_m_dt += diffusion_langevin(t - dt, yt_augmented, x_augmented) @ noise
         # yt_m_dt += langevin_terms.contr(t, t)[0] * langevin_terms.vf(t, yt_augmented, x_augmented)[0]
         # yt_m_dt += langevin_terms.vf(t, yt_augmented, x_augmented)[1] @ noise
@@ -603,7 +606,7 @@ def conditional_sample2(
 
         # yt_context = sde.sample_marginal(key, t, x_context, y_context)
         yt_context = sample_marginal(key, t, x_context, y_context)
-        # yt_context = y_context #NOTE: doesn't need to be moised?
+        # yt_context = y_context #NOTE: doesn't need to be noised?
         yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
 
         yt_m_dt, *_ = solver.step(
@@ -621,16 +624,21 @@ def conditional_sample2(
         # noise = jax.random.normal(key, shape=yt_augmented.shape)
         # yt_m_dt += jnp.sqrt(dt) * sde.diffusion(t, yt_augmented, x_augmented) @ noise
 
-        yt = yt_m_dt[num_context * y_dim :]
-        if num_inner_steps > 0:
-            ys = (yt, yt_context)
+        def corrector(key, yt, yt_context, t):
             _, yt_m_dt = jax.lax.scan(
                 lambda ys, key: inner_loop(key, ys, t),
-                ys,
+                (yt, yt_context),
                 jax.random.split(key, num_inner_steps),
             )
-            yt = yt_m_dt[-1]
-            yt = yt[num_context * y_dim :]
+            yt = yt_m_dt[-1][num_context * y_dim :]
+            return yt
+    
+        yt = jax.lax.cond(
+            tau > t,
+            corrector,
+            lambda key, yt, yt_context, t: yt,
+            key, yt, yt_context, t
+        )
         return yt, yt
 
     key, subkey = jax.random.split(key)
