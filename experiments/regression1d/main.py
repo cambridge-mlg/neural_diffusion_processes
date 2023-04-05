@@ -17,6 +17,7 @@ import jaxkern
 import gpjax
 import jax
 import jax.numpy as jnp
+import jmp
 import pandas as pd
 import optax
 import datetime
@@ -24,7 +25,6 @@ import matplotlib.pyplot as plt
 
 from ml_collections import config_dict, config_flags
 from jax.config import config as jax_config
-jax_config.update("jax_enable_x64", True)
 
 import neural_diffusion_processes as ndp
 from neural_diffusion_processes.ml_tools.state import TrainingState
@@ -142,6 +142,7 @@ class Task:
         generator = data_generator(self._key, self._dataset, self._task, self._num_data, self._batch_size, num_epochs=1)
         metrics = {"mse": [], "loglik": []}
         for i, batch in enumerate(generator):
+            print(".", end='')
             key, *keys = jax.random.split(key, num_samples + 1)
             samples = self._sampler(params, batch.xc, batch.yc, batch.xs, jnp.stack(keys))
             y_pred = jnp.mean(samples, axis=0)  # [batch_size, num_points, y_dim]
@@ -155,6 +156,8 @@ class Task:
             logp_context, _ = self._logp(params, batch.xc, batch.yc, ckey)
             logp_cond = (logp_joint - logp_context) / batch.xs.shape[1]
             metrics["loglik"].append(jnp.reshape(logp_cond, (-1)))
+
+        print("")
         
         err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
         summary_stats = [
@@ -174,12 +177,15 @@ class Task:
             metrics = self.eval(params, key)
             writer.write_scalars(step, {f"{self._task}_{k}": v for k, v in metrics.items()})
             fig = self.plot(params, key)
-            writer.write_figures(step, {f"{self._task}_conditional": fig})
+            writer.write_figures(step, {f"{self._task}": fig})
             
         return callback
 
 
 def main(_):
+    jax_config.update("jax_enable_x64", True)
+    policy = jmp.get_policy('params=float32,compute=float32,output=float32')
+
     config = config_utils.to_dataclass(Config, _CONFIG.value)
 
     path = get_experiment_dir(config, 'root') / 'config.yaml'
@@ -201,9 +207,9 @@ def main(_):
         gpjax.mean_functions.Zero(),
         hyps,
         beta,
-        is_score_preconditioned=False,
-        std_trick=False,
-        residual_trick=False,
+        # is_score_preconditioned=False,
+        # std_trick=False,
+        # residual_trick=False,
     )
 
     factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
@@ -224,7 +230,11 @@ def main(_):
 
 
     ####### Forward haiku model
+    @hk.without_apply_rng
+    @hk.transform
     def network(t, y, x):
+        t, y, x = policy.cast_to_compute((t, y, x))
+        print(x.dtype)
         model = ndp.models.attention.BiDimensionalAttentionModel(
             n_layers=config.network.num_bidim_attention_layers,
             hidden_dim=config.network.hidden_dim,
@@ -232,13 +242,15 @@ def main(_):
         )
         return model(x, y, t)
 
+    @jax.jit
+    def net(params, t, yt, x, *, key):
+        del key  # the network is deterministic
+        #NOTE: Network awkwardly requires a batch dimension for the inputs
+        return network.apply(params, t[None], yt[None], x[None])[0]
 
-    @hk.transform
-    def loss_fn(batch: ndp.data.DataBatch):
-        # Network awkwardly requires a batch dimension for the inputs
-        network_ = lambda t, yt, x, *, key: network(t[None], yt[None], x[None])[0]
-        key = hk.next_rng_key()
-        return ndp.sde.loss(sde, network_, batch, key)
+    def loss_fn(params, batch: ndp.data.DataBatch, key):
+        net_params = functools.partial(net, params)
+        return ndp.sde.loss(sde, net_params, batch, key)
 
     num_steps_per_epoch = config.data.num_samples_in_epoch // config.optimization.batch_size
     num_steps = num_steps_per_epoch * config.optimization.num_epochs
@@ -256,7 +268,9 @@ def main(_):
     @jax.jit
     def init(batch: ndp.data.DataBatch, key) -> TrainingState:
         key, init_rng = jax.random.split(key)
-        initial_params = loss_fn.init(init_rng, batch)
+        t = 1. * jnp.zeros((batch.ys.shape[0]))
+        initial_params = network.init(init_rng, t=t, y=batch.ys, x=batch.xs)
+        initial_params = policy.cast_to_param((initial_params))
         initial_opt_state = optimizer.init(initial_params)
         return TrainingState(
             params=initial_params,
@@ -266,12 +280,11 @@ def main(_):
             step=0,
         )
 
-
     @jax.jit
     def update_step(state: TrainingState, batch: ndp.data.DataBatch) -> Tuple[TrainingState, Mapping]:
         new_key, loss_key = jax.random.split(state.key)
-        loss_and_grad_fn = jax.value_and_grad(loss_fn.apply)
-        loss_value, grads = loss_and_grad_fn(state.params, loss_key, batch)
+        loss_and_grad_fn = jax.value_and_grad(loss_fn)
+        loss_value, grads = loss_and_grad_fn(state.params, batch, loss_key)
         updates, new_opt_state = optimizer.update(grads, state.opt_state)
         new_params = optax.apply_updates(state.params, updates)
         new_params_ema = jax.tree_util.tree_map(
@@ -300,19 +313,17 @@ def main(_):
     exp_root_dir = get_experiment_dir(config)
     
     ########## Plotting
-    network_apply = hk.without_apply_rng(hk.transform(network)).apply
-    net = lambda params, t, yt, x, *, key: network_apply(params, t[None], yt[None], x[None])[0]
 
     def conditional(params, xc, yc, xs, key):
-        # net_ = functools.partial(net, params)
-        net_ = true_score_network
-        return ndp.sde.conditional_sample2(sde, net_, xc, yc, xs, key=key)
+        net_params = true_score_network
+        # net_params = functools.partial(net, params)
+        return ndp.sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key)
 
 
     def logp(params, x, y, key):
-        # net_ = functools.partial(net, params)
-        net_ = true_score_network
-        return ndp.sde.log_prob(sde, net_, x, y, key=key)
+        # net_params = functools.partial(net, params)
+        net_params = true_score_network
+        return ndp.sde.log_prob(sde, net_params, x, y, key=key)
 
     local_writer = ml_tools.writers.LocalWriter(exp_root_dir, flush_every_n=100)
     tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))
@@ -338,9 +349,9 @@ def main(_):
     
     @functools.partial(jax.vmap, in_axes=[None, None, 0])
     def prior(params, x_target, key):
-        # net_ = functools.partial(net, params)
-        net_ = true_score_network
-        return ndp.sde.reverse_solve(sde, net_, x_target, key=key)
+        # net_params = functools.partial(net, params)
+        net_params = true_score_network
+        return ndp.sde.reverse_solve(sde, net_params, x_target, key=key)
     
     def callback_plot_prior(state: TrainingState, key):
         params = state.params_ema
@@ -386,8 +397,8 @@ def main(_):
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
     for step, batch, key in zip(progress_bar, train_dataloader, key_iter):
-        # state, metrics = update_step(state, batch)
-        metrics = {'loss': 0.0, 'step': step}
+        state, metrics = update_step(state, batch)
+        # metrics = {'loss': 0.0, 'step': step}
         metrics["lr"] = learning_rate_schedule(step)
 
         for action in actions:
@@ -395,7 +406,6 @@ def main(_):
 
         if step % 100 == 0:
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")
-
 
 
 if __name__ == "__main__":

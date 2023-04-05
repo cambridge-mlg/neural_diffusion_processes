@@ -59,9 +59,8 @@ class DatasetConfig:
 
 
 _NOISE_VAR = 1e-8
-# _NOISE_VAR = 0.05**2
 _KERNEL_VAR = 1.0
-_LENGTHSCALE = .25  # figure out correct lengthscale - samples in Fong et al look smoother.
+_LENGTHSCALE = .25
 
 _DATASET_CONFIGS = {
     "se": DatasetConfig(

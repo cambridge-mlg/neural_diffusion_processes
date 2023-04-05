@@ -726,6 +726,7 @@ def log_prob(
         dt = -1.0 * abs(dt)
     # dt = (t1 - t0) / num_steps
     # dt = 1e-3/2.
+    print(t0,t1,dt)
 
     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
         key, t, yt, arg, network

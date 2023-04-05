@@ -25,14 +25,14 @@ class OptimizationConfig:
 @dataclasses.dataclass
 class NetworkConfig:
     num_bidim_attention_layers: int = 5
-    hidden_dim: int = 16
+    hidden_dim: int = 64
     num_heads: int = 8
 
 
 @dataclasses.dataclass
 class EvalConfig:
-    batch_size: int = 8
-    num_samples_in_epoch: int = 32
+    batch_size: int = 16
+    num_samples_in_epoch: int = 128
 
 
 @dataclasses.dataclass
