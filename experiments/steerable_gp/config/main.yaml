@@ -24,7 +24,7 @@ defaults:
 #   n_layers: 5
 #   hidden_dim: 64
 
-name: steerable_gp
+name: steerable_gp2
 mode: train
 seed: 0
 
