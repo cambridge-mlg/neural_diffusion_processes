@@ -190,6 +190,7 @@ def main(_):
     policy = jmp.get_policy('params=float32,compute=float32,output=float32')
 
     config = config_utils.to_dataclass(Config, _CONFIG.value)
+    print(config.data.dataset)
 
     path = get_experiment_dir(config, 'root') / 'config.yaml'
     with open(str(path), 'w') as f:

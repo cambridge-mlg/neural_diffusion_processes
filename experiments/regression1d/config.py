@@ -19,7 +19,7 @@ class SdeConfig:
 @dataclasses.dataclass
 class OptimizationConfig:
     batch_size: int = 16
-    num_epochs: int = 100
+    num_epochs: int = 50
     ema_rate: float = 0.999
 
 
