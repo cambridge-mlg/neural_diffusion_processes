@@ -39,6 +39,9 @@ except:
     from config import Config, toy_config
 
 
+USE_TRUE_SCORE = False
+
+
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
 _HERE = pathlib.Path(__file__).parent
 _LOG_DIR = 'logs'
@@ -196,7 +199,7 @@ def main(_):
     key_iter = _get_key_iter(key)
 
     ####### init relevant diffusion classes
-    beta = ndp.sde.LinearBetaSchedule()
+    beta = ndp.sde.LinearBetaSchedule(t0=config.sde.t0)
     limiting_kernel = ndp.kernels.get_kernel(config.sde.limiting_kernel, active_dims=[0])
     hyps = {
         "mean_function": {},
@@ -207,9 +210,10 @@ def main(_):
         gpjax.mean_functions.Zero(),
         hyps,
         beta,
-        # is_score_preconditioned=False,
-        # std_trick=False,
-        # residual_trick=False,
+        # Below parameterisations are all set to False if we use the true score.
+        is_score_preconditioned=not USE_TRUE_SCORE,
+        std_trick=not USE_TRUE_SCORE,
+        residual_trick=False,
     )
 
     factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
@@ -234,7 +238,6 @@ def main(_):
     @hk.transform
     def network(t, y, x):
         t, y, x = policy.cast_to_compute((t, y, x))
-        print(x.dtype)
         model = ndp.models.attention.BiDimensionalAttentionModel(
             n_layers=config.network.num_bidim_attention_layers,
             hidden_dim=config.network.hidden_dim,
@@ -315,16 +318,19 @@ def main(_):
     ########## Plotting
 
     def conditional(params, xc, yc, xs, key):
-        net_params = true_score_network
-        # net_params = functools.partial(net, params)
+        net_params = (
+            true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
+        )
         return ndp.sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key)
 
 
+    @jax.jit
     def logp(params, x, y, key):
-        # net_params = functools.partial(net, params)
-        net_params = true_score_network
+        net_params = (
+            true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
+        )
         return ndp.sde.log_prob(sde, net_params, x, y, key=key)
-
+    
     local_writer = ml_tools.writers.LocalWriter(exp_root_dir, flush_every_n=100)
     tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))
     writer = ml_tools.writers.MultiWriter([tb_writer, local_writer])
@@ -349,9 +355,10 @@ def main(_):
     
     @functools.partial(jax.vmap, in_axes=[None, None, 0])
     def prior(params, x_target, key):
-        # net_params = functools.partial(net, params)
-        net_params = true_score_network
-        return ndp.sde.reverse_solve(sde, net_params, x_target, key=key)
+        net_params = (
+            true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
+        )
+        return ndp.sde.sde_solve(sde, net_params, x_target, key=key)
     
     def callback_plot_prior(state: TrainingState, key):
         params = state.params_ema
@@ -368,14 +375,14 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
         ml_tools.actions.PeriodicCallback(
-            # every_steps=num_steps_per_epoch,
-            every_steps=1,
+            every_steps=num_steps_per_epoch,
+            # every_steps=1,
             callback_fn=lambda step, t, **kwargs: [
                 cb(step, t, **kwargs) for cb in callbacks
             ]
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=5000,
+            every_steps=num_steps_per_epoch,
             callback_fn=lambda step, t, **kwargs: writer.write_figures(
                 step, callback_plot_prior(kwargs["state"], kwargs["key"])
             )

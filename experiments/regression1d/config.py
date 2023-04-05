@@ -13,6 +13,7 @@ class DataConfig:
 @dataclasses.dataclass
 class SdeConfig:
     limiting_kernel: str = "white"
+    t0: float = 5e-4
 
 
 @dataclasses.dataclass

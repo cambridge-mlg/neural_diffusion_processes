@@ -66,7 +66,7 @@ _DATASET_CONFIGS = {
     "se": DatasetConfig(
         train_num_context=UniformDiscrete(10, 10),
         train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(1, 10),
+        eval_num_context=UniformDiscrete(10, 10),
         eval_num_target=UniformDiscrete(50, 50),
     ),
     "matern": DatasetConfig(

@@ -38,7 +38,7 @@ DATASET = "se"  # squared exponential
 key = jax.random.PRNGKey(0)
 
 ############ Limiting process
-beta = ndp.sde.LinearBetaSchedule()
+beta = ndp.sde.LinearBetaSchedule(t0=5e-4)
 meanT = gpjax.mean_functions.Zero()
 kernelT = ndp.kernels.get_kernel("white", active_dims=[0])
 paramsT = {
@@ -69,7 +69,7 @@ true_score_network = sde.get_exact_score(mean0, kernel0, params0)
 key, bkey = jax.random.split(key)
 
 def log_prob(x, y, key):
-    return ndp.sde.log_prob(sde, true_score_network, x, y, key=key)[0][0]
+    return ndp.sde.log_prob(sde, true_score_network, x, y, key=key, rtol=None)[0][0]
 
 
 values = []

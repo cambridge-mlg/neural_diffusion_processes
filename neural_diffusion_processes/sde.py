@@ -83,6 +83,15 @@ class SDE:
     std_trick: bool = True
     residual_trick: bool = True
     is_score_preconditioned: bool = True
+    exact_score: bool = False
+
+    def __post_init__(self):
+        if self.exact_score:
+            assert (
+                not self.std_trick and
+                not self.residual_trick and
+                not self.is_score_preconditioned
+            ), "Exact score. Do not apply re-parameterizations or preconditioning"
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
@@ -552,7 +561,6 @@ def conditional_sample2(
 
 
     def inner_loop(key, ys, t):
-        print("compiling Langevin inner_loop")
         # reverse step
         yt, yt_context = ys
         yt_context = sample_marginal(key, t, x_context, y_context) # NOTE: should resample?
@@ -581,7 +589,6 @@ def conditional_sample2(
         return (yt, yt_context), yt_m_dt
 
     def outer_loop(key, yt, t):
-        print("compiling Euler-Maruyama outer_loop")
         # jax.debug.print("time {t}", t=t)
 
         # yt_context = sde.sample_marginal(key, t, x_context, y_context)
@@ -726,7 +733,6 @@ def log_prob(
         dt = -1.0 * abs(dt)
     # dt = (t1 - t0) / num_steps
     # dt = 1e-3/2.
-    print(t0,t1,dt)
 
     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
         key, t, yt, arg, network
