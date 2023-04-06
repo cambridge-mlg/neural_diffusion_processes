@@ -89,8 +89,8 @@ class SDE:
         if self.exact_score:
             assert (
                 not self.std_trick and
-                not self.residual_trick and
-                not self.is_score_preconditioned
+                not self.residual_trick# and
+                # not self.is_score_preconditioned
             ), "Exact score. Do not apply re-parameterizations or preconditioning"
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
@@ -132,9 +132,10 @@ class SDE:
         if isinstance(k0t_params, list):
             for k in k0t_params:
                 k["variance"] = k["variance"] * (1.0 - cov_coef)
+                params = {"mean_function": {}, "kernel": [*k0t_params]}
         else:
             k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
-        params = {"mean_function": {}, "kernel": k0t_params}
+            params = {"mean_function": {}, "kernel": k0t_params}
         return μ0t, k0t, params
     
     def pt(
@@ -161,7 +162,12 @@ class SDE:
         kt_param = copy.deepcopy(self.limiting_params["kernel"])
         kt_param = scale_kernel_variance(kt_param, 1.0 - cov_coef)
         k0t = SumKernel([k0, self.limiting_kernel])
-        params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
+        # params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
+        
+        k0_params = k0_params if isinstance(k0_params, list) else [k0_params]
+        kt_param = kt_param if isinstance(kt_param, list) else [kt_param]
+        params = {"mean_function": {}, "kernel": [*k0_params, *kt_param]}
+
         return μ0t, k0t, params
 
 
@@ -209,39 +215,33 @@ class SDE:
             def __call__(self2, t: Array, yt: Array, x: Array, *, key) -> Array:
                 y0 = mean0(params0["mean_function"], x)
                 mu_t, k_t, params = self.pt(t, y0, k0, params0["kernel"])
-                b = yt - mu_t(params['mean_function'], x)
-                Sigma_t = k_t.gram(params['kernel'], x) + identity(len(x)) * get_config().jitter
+                b = flatten(yt - mu_t(params['mean_function'], x))
+                Sigma_t = k_t.gram(params['kernel'], x) + identity(np.prod(x.shape).item()) * get_config().jitter
                 # Σ⁻¹ (yt - m_0(x))
                 Sigma_inv_b = Sigma_t.solve(b)
-                return - Sigma_inv_b
+                out = - Sigma_inv_b
+                if self.is_score_preconditioned:
+                   out = self.limiting_gram(x) @ out
+                return unflatten(out, yt.shape[-1])
 
         return _ExactScoreNetwork()
         
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_ode(self, key, t: Array, yt: Array, x: Array, network) -> Array:
-        score = self.score(key, t, yt, x, network)
+        second_term = 0.5 * self.beta_schedule(t) * self.score(key, t, yt, x, network)
+        if not self.is_score_preconditioned:
+            second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
+        return self.drift(t, yt, x) - second_term
 
-        if self.is_score_preconditioned:
-            diffusion_term = self.beta_schedule(t) * score
-        else:
-            sigma = self.diffusion(t, yt, x).to_dense()
-            sigma2 = sigma @ sigma.T
-            diffusion_term = sigma2 @ score
-
-        return self.drift(t, yt, x) - 0.5 * diffusion_term
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_sde(self, key, t: Array, yt: Array, x: Array, network) -> Array:
-        score = self.score(key, t, yt, x, network)
-        if self.is_score_preconditioned:
-            diffusion_term = self.beta_schedule(t) * score
-        else:
-            sigma = self.diffusion(t, yt, x).to_dense()
-            sigma2 = sigma @ sigma.T
-            diffusion_term = sigma2 @ score
+        second_term = self.beta_schedule(t) * self.score(key, t, yt, x, network)
+        if not self.is_score_preconditioned:
+            second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
+        return self.drift(t, yt, x) - second_term
 
-        return self.drift(t, yt, x) - diffusion_term
 
     @check_shapes("t: []", "y: [N, y_dim]", "x: [N, x_dim]", "return: []")
     def loss(self, key, t: Array, y: Array, x: Array, network: ScoreNetwork) -> Array:
@@ -307,6 +307,7 @@ class LinOpControlTerm(dfx.ControlTerm):
 #     def prod(vf: PyTree, control: PyTree) -> PyTree:
 #         return jtu.tree_map(lambda a, b: a @ b, vf, control)
 
+
 def sde_solve(
     sde: SDE,
     network: ScoreNetwork,
@@ -369,6 +370,7 @@ def sde_solve(
         dt0=dt,
         y0=y,
         args=x,
+        # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
         saveat=saveat
     )
@@ -719,14 +721,16 @@ def log_prob(
     y,
     *,
     key,
-    dt=1e-3/2,
+    # dt=1e-3/2,
+    num_steps: int = 100,
     solver: AbstractSolver = Tsit5(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
     hutchinson_type: str = 'None',
     hutchinson_samples: int = 1,
     forward: bool = True,
-    ts = None
+    ts = None,
+    return_all: bool = False,
 ):
 
     if rtol is None or atol is None:
@@ -738,8 +742,8 @@ def log_prob(
         t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
     else:
         t1, t0 = sde.beta_schedule.t0, sde.beta_schedule.t1
-        dt = -1.0 * abs(dt)
-    # dt = (t1 - t0) / num_steps
+        # dt = -1.0 * abs(dt)
+    dt = (t1 - t0) / num_steps
     # dt = 1e-3/2.
 
     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
@@ -782,5 +786,7 @@ def log_prob(
     nfe = sol.stats['num_steps']
     logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
 
-    return logp_prior + delta_logp, nfe
-    # return logp_prior, delta_logp, nfe, yT
+    if return_all:
+        return logp_prior, delta_logp, nfe, yT
+    else:
+        return logp_prior + delta_logp, nfe
