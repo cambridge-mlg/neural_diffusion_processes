@@ -4,6 +4,7 @@ from functools import partial
 import os
 import math
 # os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import seaborn as sns
 import matplotlib
@@ -21,11 +22,13 @@ tfd = tfp.distributions
 
 import neural_diffusion_processes as ndp
 from neural_diffusion_processes.sde import LinearBetaSchedule, SDE, LinOpControlTerm, SumKernel
-from neural_diffusion_processes.utils import flatten, unflatten, JITTER
+from neural_diffusion_processes.utils import flatten, unflatten
 from neural_diffusion_processes.data import radial_grid_2d
 from neural_diffusion_processes.utils.vis import plot_scalar_field, plot_vector_field, plot_covariances
 from neural_diffusion_processes.kernels import sample_prior_gp, prior_gp
 from neural_diffusion_processes.sde import log_prob
+from neural_diffusion_processes.config import get_config
+JITTER = get_config().jitter
 
 # %%
 from jax.config import config
@@ -45,7 +48,7 @@ key = jax.random.PRNGKey(42)
 key, subkey = jax.random.split(key)
 
 output_dim = 2
-beta_schedule = ndp.sde.LinearBetaSchedule(t0 = 1e-3, beta0 = 1e-4, beta1 = 4.0)
+beta_schedule = ndp.sde.LinearBetaSchedule(t0 = 1e-5, beta0 = 1e-4, beta1 = 15.0)
 x = radial_grid_2d(10, 30)
 
 # k0 = ndp.kernels.RBFVec(output_dim)
@@ -53,21 +56,26 @@ k0 = ndp.kernels.RBFCurlFree()
 # k0 = ndp.kernels.RBFDivFree()
 # k0_params = k0.init_params(None)
 k0_variance = 10
-k0_params = {"variance": k0_variance, "lengthscale": 2.23606797749979}
+lengthscale = 2.23606797749979
+k0_params = {"variance": k0_variance, "lengthscale": lengthscale}
 k0 = SumKernel([k0, ndp.kernels.WhiteVec(output_dim)])
-k0_params = [k0_params, {"variance": 0.02}]
+k0_params = [k0_params, {"variance": 0.02}] 
 
 k1 = ndp.kernels.RBFVec(output_dim)
 # k1 = ndp.kernels.WhiteVec(output_dim)
 # k1_params = {"variance": k0_variance, "lengthscale": 2.}
-k1_params = {"variance": k0_variance, "lengthscale": 2.}
-k1 = SumKernel([k1, ndp.kernels.WhiteVec(output_dim)])
-k1_params = [k1_params, {"variance": 1.}]
+k1_params = {"variance": 10., "lengthscale": 1.}
+# k1 = SumKernel([k1, ndp.kernels.WhiteVec(output_dim)])
+# k1_params = [k1_params, {"variance": .1}]
 
 mean_function = gpjax.Zero(output_dim)
 
 limiting_params = {
         "kernel": k1_params,
+        "mean_function": mean_function.init_params(key),
+    }
+data_params = {
+        "kernel": k0_params,
         "mean_function": mean_function.init_params(key),
     }
 
@@ -81,7 +89,30 @@ limiting_params = {
 # kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (p1 n1) (p2 n2)') 
 # plt.matshow(kxx)
 
-sde = ndp.sde.SDE(k1, mean_function, limiting_params, beta_schedule, True, True, exact=True)
+sde = ndp.sde.SDE(k1, mean_function, limiting_params, beta_schedule, False, False, is_score_preconditioned=False, exact_score=True)
+# network = sde.get_exact_score(mean_function, k0, data_params)
+import jmp
+import haiku as hk
+from neural_diffusion_processes.models.attention import MultiOutputAttentionModel
+policy = jmp.get_policy('params=float32,compute=float32,output=float32')
+@hk.without_apply_rng
+@hk.transform
+def network_def(t, y, x):
+    t, y, x = policy.cast_to_compute((t, y, x))
+    model = MultiOutputAttentionModel(n_layers=3, hidden_dim=64, num_heads=4, sparse=False)
+    return model(x, y, t)
+
+dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.)(x)
+y0 = unflatten(dist.sample(seed=subkey, sample_shape=(8)), 2)
+key, subkey = jax.random.split(key)
+params = policy.cast_to_param((network_def.init(subkey, t= 1. * jnp.zeros((y0.shape[0])), y=y0, x=jnp.repeat(x[None, ...], 8, 0))))
+@jax.jit
+def network(t, yt, x, *, key):
+    #NOTE: Network awkwardly requires a batch dimension for the inputs
+    # return network_def.apply(params, t[None], yt[None], x[None])[0]
+    return network_def.apply(params, t[None], yt[None], x[None])[0]
+
+
 
 plot_vf = partial(plot_vector_field, scale=50*math.sqrt(k0_variance), width=0.005)
 plot_cov = partial(plot_covariances, scale=0.3/math.sqrt(k0_variance), zorder=-1)
@@ -133,8 +164,10 @@ print(y0s.shape)
 subkeys = jax.random.split(key, num=num_samples)
 ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1, num_ts=5)
 
-solve = jax.jit(lambda y, key: ndp.sde.sde_solve(sde, None, x, y=y, key=key, ts=ts, prob_flow=True, atol=None, rtol=None, num_steps=100, forward=True))
+solve = jax.jit(lambda y, key: ndp.sde.sde_solve(sde, network, x, y=y, key=key, ts=ts, prob_flow=True, atol=None, rtol=None, num_steps=100, forward=True))
 ys = jax.vmap(solve)(y0s, subkeys)
+# solve = lambda y, key: ndp.sde.sde_solve(sde, network, x, y=y, key=key, ts=ts, prob_flow=False, atol=None, rtol=None, num_steps=100, forward=True)
+# ys = solve(y0s[0], subkeys[0])
 
 plot(ys, ts)
 
@@ -144,7 +177,7 @@ plot(ys, ts)
 # ts = get_timesteps(sde.beta_schedule.t1, 1e-3, num_ts=5)
 ts = get_timesteps(sde.beta_schedule.t1, sde.beta_schedule.t0+1e-8, num_ts=5)
 
-reverse_solve = lambda key, y: ndp.sde.sde_solve(sde, None, x, key=key, y=y, ts=ts, prob_flow=True,
+reverse_solve = lambda key, y: ndp.sde.sde_solve(sde, network, x, key=key, y=y, ts=ts, prob_flow=True,
 # solver=dfx.Heun(), rtol=1e-3, atol=1e-3, num_steps=100)
 solver=dfx.Euler(), rtol=None, atol=None, num_steps=100)
 
@@ -183,186 +216,13 @@ data_posterior_gp = posterior_gp(mean_function, k0, {"kernel": k0_params, "mean_
 y_test = unflatten(data_posterior_gp.sample(seed=subkey, sample_shape=(num_samples)), output_dim)
 # y_test = unflatten(data_posterior_gp.mean(), output_dim)[None, ...]
 
-def conditional_sample2(
-    sde: SDE,
-    network,
-    x_context,
-    y_context,
-    x_test,
-    *,
-    key,
-    num_steps: int = 100,
-    num_inner_steps: int = 5,
-    prob_flow: bool = True,
-    langevin_kernel = True,
-    psi: float = 1.,
-    lambda0: float = 1.,
-    tau: float = None,
-):
-    # TODO: Langevin dynamics option
-
-    num_context = len(x_context)
-    num_target = len(x_test)
-    y_dim = y_context.shape[-1]
-    shape_augmented_state = [(num_context + num_target) * y_dim]
-    x_augmented = jnp.concatenate([x_context, x_test], axis=0)
-
-    t0 = sde.beta_schedule.t0
-    t1 = sde.beta_schedule.t1
-    ts = jnp.linspace(t1, t0, num_steps, endpoint=True)
-    dt = ts[0] - ts[1]
-    tau = tau if tau is not None else t1
-
-    solver = dfx.Euler()
-
-    diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
-    if not prob_flow:
-        # reverse SDE:
-        reverse_drift_sde = lambda t, yt, arg: flatten(sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network))
-
-        shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
-        key, subkey = jax.random.split(key)
-        bm = dfx.VirtualBrownianTree(t0=t1, t1=t0, tol=dt, shape=shape, key=key)
-        terms_reverse = dfx.MultiTerm(
-            dfx.ODETerm(reverse_drift_sde), LinOpControlTerm(diffusion, bm)
-        )
-    else:
-        # reverse ODE:
-        reverse_drift_ode = lambda t, yt, arg: flatten(
-            sde.reverse_drift_ode(key, t, unflatten(yt, y_dim), arg, network)
-            # reverse_drift_ode(sde, key, t, unflatten(yt, y_dim), arg, network)
-        )
-        terms_reverse = dfx.ODETerm(reverse_drift_ode)
-
-    # langevin dynamics:
-    def reverse_drift_langevin(t, yt, x) -> Array:
-        yt = unflatten(yt, y_dim)
-        score = flatten(sde.score(key, t, yt, x, network))
-        if langevin_kernel:
-            if sde.precond:
-                score = score
-            else:
-                score = sde.limiting_gram(x) @ score
-        else:
-            if sde.precond:
-                score = sde.limiting_gram(x).solve(score)
-            else:
-                score = score
-        return 0.5 * sde.beta_schedule(t) * score
-        # return 0.5 * score
-    
-    def diffusion_langevin(t, yt, x):
-        if langevin_kernel:
-            return diffusion(t, yt, x)
-            # return sde.limiting_gram(x)._add_diagonal(JITTER * identity(x.shape[0]*x.shape[1])).to_root()
-        else:
-            return jnp.sqrt(sde.beta_schedule(t)) * identity(yt.shape[-1])
-            # return identity(yt.shape[-1])
-
-    key, subkey = jax.random.split(key)
-    shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
-    # bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
-    bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
-    langevin_terms = dfx.MultiTerm(
-        dfx.ODETerm(reverse_drift_langevin),
-        LinOpControlTerm(diffusion_langevin, bm)
-    )
-
-    def sample_marginal(key, t, x_context, y_context):
-        if len(y_context) == 0:
-            return y_context
-        else:
-            return flatten(sde.sample_marginal(key, t, x_context, y_context))
-
-
-    def inner_loop(key, ys, t):
-        print("compiling Langevin inner_loop")
-        # reverse step
-        yt, yt_context = ys
-        yt_context = sample_marginal(key, t, x_context, y_context) # NOTE: should resample?
-        yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
-
-        # yt_m_dt, *_ = solver.step(
-        #     langevin_terms,
-        #     t - dt,
-        #     t,
-        #     # t + dt,
-        #     yt_augmented,
-        #     x_augmented,
-        #     None,
-        #     made_jump=False,
-        # )
-
-        yt_m_dt = yt_augmented
-        yt_m_dt += lambda0 * psi * dt * reverse_drift_langevin(t - dt, yt_augmented, x_augmented)
-        # noise = jnp.sqrt(psi) * langevin_terms.contr(t - dt, t)[1]
-        noise = jnp.sqrt(psi) * jnp.sqrt(dt) * jax.random.normal(key, shape=yt_augmented.shape)
-        yt_m_dt += diffusion_langevin(t - dt, yt_augmented, x_augmented) @ noise
-        # yt_m_dt += langevin_terms.contr(t, t)[0] * langevin_terms.vf(t, yt_augmented, x_augmented)[0]
-        # yt_m_dt += langevin_terms.vf(t, yt_augmented, x_augmented)[1] @ noise
-        
-        yt = yt_m_dt[num_context * y_dim :]
-        # strip context from augmented state
-        return (yt, yt_context), yt_m_dt
-
-    def outer_loop(key, yt, t):
-        print("compiling Euler-Maruyama outer_loop")
-        # yt_context = sde.sample_marginal(key, t, x_context, y_context)
-        yt_context = sample_marginal(key, t, x_context, y_context)
-        # yt_context = y_context #NOTE: doesn't need to be noised?
-        yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
-
-        yt_m_dt, *_ = solver.step(
-            terms_reverse,
-            t,
-            t - dt,
-            yt_augmented,
-            x_augmented,
-            None,
-            made_jump=False,
-        )
-        # yt_m_dt = yt_augmented
-        # yt_m_dt += -dt * reverse_drift_sde(t, yt_augmented, x_augmented)
-        # # yt_m_dt += terms_reverse.contr(t, t-dt) * terms_reverse.vf(t, yt_augmented, x_augmented)
-        # noise = jax.random.normal(key, shape=yt_augmented.shape)
-        # yt_m_dt += jnp.sqrt(dt) * diffusion(t, yt_augmented, x_augmented) @ noise
-
-        yt = yt_m_dt[num_context * y_dim :]
-        # if num_inner_steps > 0:
-        def corrector(key, yt, yt_context, t):
-            print("corrector")
-            _, yt_m_dt = jax.lax.scan(
-                lambda ys, key: inner_loop(key, ys, t),
-                (yt, yt_context),
-                jax.random.split(key, num_inner_steps),
-            )
-            yt = yt_m_dt[-1][num_context * y_dim :]
-            return yt
-    
-        yt = jax.lax.cond(
-            tau > t,
-            corrector,
-            lambda key, yt, yt_context, t: yt,
-            key, yt, yt_context, t
-        )
-        return yt, yt
-
-    key, subkey = jax.random.split(key)
-    yT = flatten(sde.sample_prior(subkey, x_test))
-
-    xs = (ts[:-1], jax.random.split(key, len(ts) - 1))
-    y0, _ = jax.lax.scan(lambda yt, x: outer_loop(x[1], yt, x[0]), yT, xs)
-    return unflatten(y0, y_dim)
-
-
-
 num_steps = 50
 num_inner_steps = 50
 print(f"num_steps={num_steps} and num_inner_steps={num_inner_steps}")
 import time
 start = time.time()
 # conditional_sample = jax.jit(lambda  x, y, x_eval, key: ndp.sde.conditional_sample2(sde, None, x, y, x_eval, key=key, num_steps=num_steps, num_inner_steps=num_inner_steps, langevin_kernel=True, alpha=3.))
-conditional_sample = jax.jit(lambda  x, y, x_eval, key: conditional_sample2(sde, None, x, y, x_eval, key=key, num_steps=num_steps, num_inner_steps=num_inner_steps, langevin_kernel=True, tau=.5, psi=2., lambda0=1., prob_flow=True))
+conditional_sample = jax.jit(lambda  x, y, x_eval, key: ndp.sde.conditional_sample2(sde, network, x, y, x_eval, key=key, num_steps=num_steps, num_inner_steps=num_inner_steps, langevin_kernel=True, tau=.5, psi=2., lambda0=1., prob_flow=True))
 
 samples = jax.jit(jax.vmap(lambda key:conditional_sample(x_known, y_known, x_test, key=key)))(jax.random.split(key, num_samples))
 end = time.time()
@@ -419,88 +279,6 @@ plt.savefig('conditional_ndp_rot.png', dpi=300, facecolor='white', edgecolor='no
 # %%
 #Likelihood evaluation
 
-# from neural_diffusion_processes.sde import get_div_fn, div_noise
-
-# @check_shapes("x: [N, x_dim]", "y: [N, y_dim]")#, "return: []")
-# def log_prob(
-#     sde: SDE,
-#     network,
-#     x,
-#     y,
-#     *,
-#     key,
-#     num_steps: int = 100,
-#     solver: AbstractSolver = dfx.Tsit5(),
-#     rtol: float = 1e-3,
-#     atol: float = 1e-3,
-#     hutchinson_type = 'None',
-#     forward: bool = True,
-#     ts = None
-# ):
-#     y_dim = y.shape[-1]
-#     y = flatten(y)
-
-#     if rtol is None or atol is None:
-#         stepsize_controller = ConstantStepSize()
-#     else:
-#         stepsize_controller =  dfx.PIDController(rtol=rtol, atol=atol)
-
-#     if forward:
-#         t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
-#     else:
-#         t1, t0 = sde.beta_schedule.t0, sde.beta_schedule.t1
-#     dt = (t1 - t0) / num_steps
-#     print(t0, t1, dt)
-
-#     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
-#         key, t, yt, arg, network
-#     )
-#     div_fn = get_div_fn(reverse_drift_ode, hutchinson_type)
-
-
-#     @jax.jit
-#     def logp_wrapper(t, carry, static_args):
-#         yt, _ = carry
-#         eps, x = static_args
-#         yt = unflatten(yt, y_dim)
-
-#         drift = flatten(reverse_drift_ode(t, yt, x))
-#         logp = div_fn(t, yt, x, eps)
-#         # drift = jnp.zeros_like(yt)
-#         # logp = jnp.zeros(())
-#         return drift, logp
-
-#     terms = dfx.ODETerm(logp_wrapper)
-#     #NOTE: should we resample?
-#     eps = div_noise(key, y.shape, hutchinson_type)
-
-
-#     # reverse_drift_ode = lambda t, yt, arg: flatten(sde.reverse_drift_ode(
-#     #     key, t, unflatten(yt, y_dim), arg, network
-#     # ))
-#     # terms = dfx.ODETerm(reverse_drift_ode)
-
-#     saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
-#     sol = dfx.diffeqsolve(
-#         terms,
-#         solver,
-#         t0=t0,
-#         t1=t1,
-#         dt0=dt,
-#         y0=(y, 0.0),
-#         args=(eps, x),
-#         adjoint=dfx.NoAdjoint(),
-#         stepsize_controller=stepsize_controller,
-#         saveat=saveat
-#     )
-#     yT, delta_logp = sol.ys
-#     yT = unflatten(yT, y_dim)
-#     nfe = sol.stats['num_steps']
-#     # yT, delta_logp = yT.squeeze(0), delta_logp.squeeze(0)
-#     logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
-
-#     return logp_prior, delta_logp, nfe, yT
-
 key = jax.random.PRNGKey(1)
 num_samples = 2
 subkeys = jax.random.split(key, num=num_samples)
@@ -521,13 +299,14 @@ solver = dfx.Euler()
 rtol = atol = None
 hutchinson_type = "None"
 
-log_prior, delta_logp, nfe, ys = jax.vmap(lambda y, key: log_prob(sde, None, x, y, key=key, 
-num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=False))(unflatten(yT, output_dim), subkeys)
+log_prior, delta_logp, nfe, ys = jax.vmap(lambda y, key: log_prob(sde, network, x, y, key=key, 
+num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=False, return_all=True))(unflatten(yT, output_dim), subkeys)
 
 plot(ys)
 
 #%%
 # Solves forward SDE for multiple initia states using vmap.
+
 num_samples = 2
 key, subkey = jax.random.split(key)
 dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.)(x)
@@ -548,33 +327,35 @@ solver = dfx.Tsit5()
 # solver = dfx.Dopri5()
 rtol: float = 1e-6
 atol: float = 1e-6
+# rtol: float = 1e-3
+# atol: float = 1e-3
 # rtol = atol = None
 print(solver, rtol, atol)
 
 key = jax.random.PRNGKey(4)
 subkeys = jax.random.split(key, num=num_samples)
 # ts = get_timesteps(sde.beta_schedule. t0,sde.beta_schedule.t1, num_ts=5)
-# hutchinson_type="Gaussian"
-hutchinson_type = "None"
+hutchinson_type="Gaussian"
+# hutchinson_type = "None"
 
-ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1, num_ts=5)
+ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1-1e-3, num_ts=5)
 # ts = None
 
-model_logp, nfe = jax.vmap(jax.jit(lambda y, key: log_prob(sde, None, x, y, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=True)))(y0s, subkeys)
+log_prior, delta_logp, nfe, ys = jax.vmap(jax.jit(lambda y, key: log_prob(sde, network, x, y, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=True, return_all=True)))(y0s, subkeys)
 # log_prior, delta_logp, nfe, yT = jax.vmap(jax.jit(lambda y, key: log_prob(sde, None, x, y, key=key, hutchinson_type=hutchinson_type, ts=ts)))(y0s, subkeys)
 
 # ys = unflatten(y0s, output_dim)[:, None, ...]
 # ys = yT
-plot(yT, ts)
+plot(ys, ts)
 
 # print("mean var ys", (jnp.std(yT, 0) ** 2).mean())
 # print("mean mean ys", (jnp.mean(yT, 0) ** 2).mean())
-# log_prior = log_prior[:, -1]
-# delta_logp = delta_logp[:, -1]
+log_prior = log_prior[:, -1]
+delta_logp = delta_logp[:, -1]
 
-# model_logp = log_prior + delta_logp
-# print("log_prior ode", log_prior.shape, log_prior)
-# print("delta_logp", delta_logp.shape, delta_logp)
+model_logp = log_prior + delta_logp
+print("log_prior ode", log_prior.shape, log_prior)
+print("delta_logp", delta_logp.shape, delta_logp)
 print("model_logp", model_logp.shape, model_logp)
 print("true_logp", true_logp.shape, true_logp)
 print("nfe", nfe)
