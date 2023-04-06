@@ -5,10 +5,11 @@ check_shapes==1.0.0
 dm-haiku
 einops
 optax
-distrax==0.1.2
+distrax==0.1.3
 gpjax==0.5.9
 jaxkern
 e3nn_jax
 equinox
 jmp
 fsspec[http]>=2021.05.0, !=2021.06.0
+simple_pytree
