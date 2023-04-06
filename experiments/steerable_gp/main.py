@@ -339,7 +339,7 @@ def run(cfg):
             key, *keys = jax.random.split(key, num_samples + 1)
 
             # NOTE: only eval on 1 batch appart at the end
-            if step == cfg.optim.num_steps or i < 1:
+            if step >= cfg.optim.num_steps or i < 1:
                 print(step, i, batch.xs.shape, batch.ys.shape, key.shape)
                 # TODO: depends on dataset if dist is avail or not
                 # true_mean = batch.ys
