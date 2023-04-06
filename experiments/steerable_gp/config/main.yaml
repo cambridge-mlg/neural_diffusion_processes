@@ -38,10 +38,34 @@ beta_schedule:
 optim:
   # batch_size: 30
   batch_size: 20
-  eval_batch_size: ${eval:${optim.batch_size}//8}
   num_steps: 50_000
   lr: 1e-3
   ema_rate: 0.999
+
+eval:
+  batch_size: ${eval:${optim.batch_size}//8}
+  prior:
+    n_steps: 100
+    rtol: 1e-3
+    atol: 1e-4
+    prob_flow: false
+  cond:
+    lambda0: 1.
+    psi: 1.
+    tau: 0.5
+    n_steps: 50
+    n_inner_steps: 50
+    prob_flow: false
+  like:
+    hutchinson_type: Gaussian
+    # hutchinson_type: None
+    n_steps: 100
+    rtol: null
+    atol: null
+    # rtol: 1e-6
+    # atol: 1e-6
+    hutchinson_samples: 1
+
 
 data:
   _target_: neural_diffusion_processes.data.get_vec_gp_data
