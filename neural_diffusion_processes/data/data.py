@@ -4,13 +4,13 @@ import dataclasses
 
 import jax
 import jax.numpy as jnp
+from simple_pytree import Pytree
 from check_shapes import check_shapes, check_shape
 from jaxtyping import Array
 
 
-@jax.tree_util.register_pytree_node_class
-@dataclasses.dataclass(frozen=True)
-class DataBatch:
+@dataclasses.dataclass
+class DataBatch(Pytree):
     xs: Array
     ys: Array
     xc: Array | None = None
@@ -27,16 +27,6 @@ class DataBatch:
     def __post_init__(self) -> None:
         check_shape(self.xs, "[batch, num_points, input_dim]")
         check_shape(self.ys, "[batch, num_points, output_dim]")
-
-    def tree_flatten(self):
-        children = (self.xs, self.ys)
-        aux_data = None
-        return (children, aux_data)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        del aux_data
-        return cls(*children)
 
 
 @check_shapes(
