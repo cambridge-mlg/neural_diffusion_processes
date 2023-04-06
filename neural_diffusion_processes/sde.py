@@ -773,7 +773,7 @@ def log_prob(
         terms,
         solver,
         t0=t0,
-        t1=t1,
+        t1=t1,#-1e-3,
         dt0=dt,
         y0=(y, 0.0),
         args=(eps, x),
