@@ -32,6 +32,7 @@ from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
 from neural_diffusion_processes.utils.vis import plot_scalar_field, plot_vector_field, plot_covariances
 from neural_diffusion_processes.utils import flatten, unflatten
 from neural_diffusion_processes.data import radial_grid_2d, DataBatch
+from neural_diffusion_processes.kernels import SumKernel, WhiteVec
 
 
 def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
@@ -54,35 +55,24 @@ def run(cfg):
     ckpt_path = os.path.join(run_path, cfg.paths.ckpt_dir)
     wandb_cfg_path = os.path.join(run_path, "wandb", "config.yaml")
     os.makedirs(os.path.dirname(wandb_cfg_path), exist_ok=True)
+
     os.makedirs(ckpt_path, exist_ok=True)
-    if cfg.mode == "eval":
-        with open(wandb_cfg_path, 'r') as file:
-            cfg_yaml = yaml.safe_load(file)
-        cfg.logger.wandb.id = cfg_yaml["wandb_id"]
-    else:
-        import wandb
-        cfg.logger.wandb.id = wandb.util.generate_id()
-        with open(wandb_cfg_path, 'w+') as file:
-            yaml.safe_dump({"wandb_id": cfg.logger.wandb.id}, file)
+    if 'wandb' in cfg.logger:
+        if cfg.mode == "eval":
+            with open(wandb_cfg_path, 'r') as file:
+                cfg_yaml = yaml.safe_load(file)
+            cfg.logger.wandb.id = cfg_yaml["wandb_id"]
+        else:
+            import wandb
+            cfg.logger.wandb.id = wandb.util.generate_id()
+            with open(wandb_cfg_path, 'w+') as file:
+                yaml.safe_dump({"wandb_id": cfg.logger.wandb.id}, file)
     loggers = [instantiate(logger_config) for logger_config in cfg.logger.values()]
     logger = LoggerCollection(loggers)
     logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
 
     key = jax.random.PRNGKey(cfg.seed)
     key_iter = _get_key_iter(key)
-
-    ####### init relevant diffusion classes
-    limiting_kernel = instantiate(cfg.kernel.cls)
-    limiting_mean_fn = instantiate(cfg.sde.limiting_mean_fn)
-    limiting_params = {
-        "kernel": limiting_kernel.init_params(key),
-        "mean_function": limiting_mean_fn.init_params(key),
-    }
-    limiting_params["kernel"].update(OmegaConf.to_container(cfg.kernel.params, resolve=True)) # NOTE: breaks RFF?
-    log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params['kernel']}")
-    # sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
-    sde = instantiate(cfg.sde, limiting_params=limiting_params, beta_schedule=cfg.beta_schedule)
-    log.info(f"beta_schedule: {sde.beta_schedule}")
 
     ####### prepare data
     data = call(
@@ -117,6 +107,26 @@ def run(cfg):
         ndp.data.split_dataset_in_context_and_target(batch, next(key_iter), cfg.data.min_context, cfg.data.max_context)
         for batch in dataloader_test
     ]
+
+    ####### init relevant diffusion classes
+    limiting_kernel = instantiate(cfg.kernel.cls)
+    kernel_params = limiting_kernel.init_params(key)
+    limiting_kernel = SumKernel([limiting_kernel, WhiteVec(y_dim)])
+    kernel_params.update(OmegaConf.to_container(cfg.kernel.params, resolve=True)) # NOTE: breaks RFF?
+    kernel_params = [kernel_params, {"variance": cfg.kernel.noise}]
+    limiting_mean_fn = instantiate(cfg.sde.limiting_mean_fn)
+    limiting_params = {
+        "kernel": kernel_params,
+        "mean_function": limiting_mean_fn.init_params(key),
+    }
+    # limiting_params["kernel"].update(OmegaConf.to_container(cfg.kernel.params, resolve=True)) # NOTE: breaks RFF?
+    log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params['kernel']}")
+    # sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
+    # sde = instantiate(cfg.sde, limiting_params=limiting_params, beta_schedule=cfg.beta_schedule)
+    sde = instantiate(cfg.sde, limiting_kernel=limiting_kernel, limiting_params=limiting_params, beta_schedule=cfg.beta_schedule)
+    print("limiting_params", sde.limiting_params["kernel"])
+    log.info(f"beta_schedule: {sde.beta_schedule}")
+
 
     ####### Forward haiku model
 
@@ -317,7 +327,6 @@ def run(cfg):
         net_ = partial(net, params)
         config = cfg.eval.like
         return ndp.sde.log_prob(sde, net_, x, y, key=key, num_steps=config.n_steps, rtol=config.rtol, atol=config.atol, hutchinson_type=config.hutchinson_type, hutchinson_samples=config.hutchinson_samples)
-    prior_log_prob = jit(vmap(partial(prior_log_prob, params=state.params_ema)))
 
     # @partial(jax.vmap, in_axes=[None, None, None, 0])
     # @partial(jax.vmap)
@@ -334,11 +343,13 @@ def run(cfg):
         num_samples = 32
         # num_samples = 20
         metrics = defaultdict(list)
+        prior_logp = jit(vmap(partial(prior_log_prob, params=state.params_ema)))
+
 
         for i, batch in enumerate(data_test):
             key, *keys = jax.random.split(key, num_samples + 1)
 
-            # NOTE: only eval on 1 batch appart at the end
+            # # NOTE: only eval on 1 batch appart at the end
             if step >= cfg.optim.num_steps or i < 1:
                 print(step, i, batch.xs.shape, batch.ys.shape, key.shape)
                 # TODO: depends on dataset if dist is avail or not
@@ -374,25 +385,25 @@ def run(cfg):
             # context_logp = prior_log_prob(batch.xc, batch.yc, key)
             # metrics["cond_log_prob2"].append(jnp.mean(augmented_logp - context_logp))
 
-            # if i > 0:
-                # continue
-            # true_logp = jax.vmap(dist.log_prob)(flatten(batch.ys))
-            # # metrics["true_bpd"].append(jnp.mean(true_logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
-            # metrics["true_logp"].append(jnp.mean(true_logp))
-            # # logp, nfe = prior_log_prob(key, batch.xs, batch.ys)
-            # subkeys = jax.random.split(key, num=batch.ys.shape[0])
-            # # logp_prior, delta_logp, nfe, yT = prior_log_prob(subkeys, batch.xs, batch.ys)
-            # # logp = logp_prior + delta_logp
-            # # print("logp_prior, delta_logp", logp_prior.shape, delta_logp.shape)
-            # # print("true_logp", true_logp)
-            # # print(logp_prior.squeeze())
-            # # print(delta_logp.squeeze())
-            # # print(logp.squeeze())
-            # # metrics["bpd"].append(jnp.mean(logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
-            # logp, nfe = prior_log_prob(subkeys, batch.xs, batch.ys)
-            # metrics["logp"].append(jnp.mean(logp))
-            # metrics["nfe"].append(jnp.mean(nfe))
-            # print(metrics["logp"][-1], metrics["nfe"][-1])
+            if step >= cfg.optim.num_steps or i < 1:
+                true_logp = jax.vmap(lambda x, y: prior(x).log_prob(flatten(y)))(batch.xs, batch.ys)
+                metrics["true_bpd"].append(jnp.mean(true_logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
+                # metrics["true_logp"].append(jnp.mean(true_logp))
+                # logp, nfe = prior_log_prob(key, batch.xs, batch.ys)
+                subkeys = jax.random.split(key, num=batch.ys.shape[0])
+                # logp_prior, delta_logp, nfe, yT = prior_log_prob(subkeys, batch.xs, batch.ys)
+                # logp = logp_prior + delta_logp
+                # print("logp_prior, delta_logp", logp_prior.shape, delta_logp.shape)
+                # print("true_logp", true_logp)
+                # print(logp_prior.squeeze())
+                # print(delta_logp.squeeze())
+                # print(logp.squeeze())
+                logp, nfe = prior_logp(subkeys, batch.xs, batch.ys)
+                metrics["bpd"].append(jnp.mean(logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
+                # metrics["logp"].append(jnp.mean(logp))
+                metrics["nfe"].append(jnp.mean(nfe))
+                # print(metrics["true_logp"][-1], metrics["logp"][-1], metrics["nfe"][-1])
+                print(metrics["true_bpd"][-1], metrics["bpd"][-1], metrics["nfe"][-1])
 
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
@@ -414,7 +425,7 @@ def run(cfg):
         ),
         ml_tools.actions.PeriodicCallback(
             # every_steps=cfg.optim.num_steps // 10,
-            every_steps=cfg.optim.num_steps // 10,
+            every_steps=cfg.optim.num_steps // 20,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 eval(kwargs["state"], kwargs["key"], step), step
             ),
@@ -437,7 +448,7 @@ def run(cfg):
     # logger.log_plot("process", plots(state, key, 0), 0)
     # logger.log_plot("process", plots(state, key, 1), 1)
     # # logger.log_plot("process", plots(state, key, 1), 1)
-    # logger.log_metrics(eval(state, key, 0), 0)
+    logger.log_metrics(eval(state, key, 0), 0)
     # logger.log_metrics(eval(state, key, 1), 1)
     # logger.save()
     # raise

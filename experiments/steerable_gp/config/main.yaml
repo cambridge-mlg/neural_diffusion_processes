@@ -61,7 +61,7 @@ eval:
     # hutchinson_type: None
     n_steps: 100
     rtol: null
-    atol: null
+    atol: 1e-6
     # rtol: 1e-6
     # atol: 1e-6
     hutchinson_samples: 1
@@ -100,10 +100,12 @@ data:
 kernel:
   params:
     variance: ${data.variance}
-    lengthscale: 2.
+    lengthscale: 1.
+  noise: 0.
 
 sde:
   _target_: neural_diffusion_processes.sde.SDE
+  _convert_: object
   std_trick: true
   residual_trick: true
   # limiting_kernel_hyperparameters: 
