@@ -36,9 +36,9 @@ beta_schedule:
   beta1: 15.0
 
 optim:
-  # batch_size: 30
-  batch_size: 20
-  num_steps: 50_000
+  batch_size: 30
+  # batch_size: 20
+  num_steps: 100_000
   lr: 1e-3
   ema_rate: 0.999
 
@@ -60,11 +60,13 @@ eval:
     hutchinson_type: Gaussian
     # hutchinson_type: None
     n_steps: 100
-    rtol: null
-    atol: 1e-6
+    # rtol: null
     # rtol: 1e-6
     # atol: 1e-6
-    hutchinson_samples: 1
+    rtol: 1e-4
+    atol: 1e-4
+    # atol: 1e-6
+    hutchinson_samples: 8
 
 
 data:
@@ -101,7 +103,7 @@ kernel:
   params:
     variance: ${data.variance}
     lengthscale: 1.
-  noise: 0.
+  noise: .1
 
 sde:
   _target_: neural_diffusion_processes.sde.SDE
