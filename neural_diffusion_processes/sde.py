@@ -202,8 +202,9 @@ class SDE:
         if self.residual_trick:
             # NOTE: s.t. bwd SDE = fwd SDE
             # NOTE: wrong sign?
-            fwd_drift = self.drift(t, yt, x)
-            residual = 2 * fwd_drift / self.beta_schedule(t)
+            # fwd_drift = self.drift(t, yt, x)
+            # residual = 2 * fwd_drift / self.beta_schedule(t)
+            residual = - yt
             score += residual
         return score
     
