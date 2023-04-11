@@ -266,7 +266,7 @@ class EFGNN(EGNN):
 
 def unsorted_segment_sum(data, segment_ids, num_segments):
     result_shape = (num_segments, data.shape[1])
-    result = jnp.zeros(result_shape)  # Init empty result tensor.
+    result = jnp.zeros(result_shape).astype(data.dtype)  # Init empty result tensor.
     # segment_ids = segment_ids[..., None].expand(-1, data.shape[1])
     segment_ids = segment_ids[..., None]
     segment_ids = jnp.broadcast_to(
@@ -284,8 +284,8 @@ def unsorted_segment_mean(data, segment_ids, num_segments):
     segment_ids = jnp.broadcast_to(
         segment_ids, (*segment_ids.shape[:-1], data.shape[-1])
     )
-    result = jnp.zeros(result_shape)  # Init empty result tensor.
-    count = jnp.zeros(result_shape)
+    result = jnp.zeros(result_shape).astype(data.dtype)  # Init empty result tensor.
+    count = jnp.zeros(result_shape).astype(data.dtype)
     # result.scatter_add_(0, segment_ids, data)
     # count.scatter_add_(0, segment_ids, jnp.ones_like(data))
     result = scatter(result, 0, segment_ids, data, reduce="add")
@@ -333,6 +333,7 @@ class EGNNScore(EGNN):
     maximum_radius: int = 3
     num_basis: int = 50
     radial_basis: str = "gaussian"
+    num_heads: int = 0 #TODO: replace with **kwargs
 
     @check_shapes(
         "x: [batch_size, num_points, input_dim]",

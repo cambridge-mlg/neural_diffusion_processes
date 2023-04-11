@@ -260,6 +260,9 @@ def promote_compute_engines(engine1: Type[jaxkern.computations.AbstractKernelCom
     if engine1 == MultiOutputDenseKernelComputation or engine2 == MultiOutputDenseKernelComputation:
         return MultiOutputDenseKernelComputation
 
+    if engine1 == MultiOutputConstantDiagonalKernelComputation and engine2 == MultiOutputConstantDiagonalKernelComputation:
+        return MultiOutputConstantDiagonalKernelComputation
+
     raise NotImplementedError(
         "Add rule for optimal compute engine sum kernel for types %s and %s." % (
             engine1, engine2
