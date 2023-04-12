@@ -288,7 +288,7 @@ class MultiHeadAttention(hk.Module):
 class BiDimensionalAttentionBlock(hk.Module):
     hidden_dim: int
     num_heads: int
-    sparse: bool
+    sparse: bool = False
 
     @check_shapes(
         "s: [batch_size, num_points, input_dim, hidden_dim]",

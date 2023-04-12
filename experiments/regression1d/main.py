@@ -39,7 +39,7 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = False
+USE_TRUE_SCORE = True
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -215,6 +215,7 @@ def main(_):
         is_score_preconditioned=not USE_TRUE_SCORE,
         std_trick=not USE_TRUE_SCORE,
         residual_trick=False,
+        exact_score=USE_TRUE_SCORE,
     )
 
     factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
@@ -393,24 +394,30 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
         )
     ]
-    train_dataloader = data_generator(
-        next(key_iter),
-        config.data.dataset,
-        "training",
-        total_num_samples=config.data.num_samples_in_epoch,
-        batch_size=config.optimization.batch_size,
-        num_epochs=config.optimization.num_epochs,
-    )
+    def train_dataloader():
+        while True:
+            yield batch0
+
+    # train_dataloader = data_generator(
+    #     next(key_iter),
+    #     config.data.dataset,
+    #     "training",
+    #     total_num_samples=config.data.num_samples_in_epoch,
+    #     batch_size=config.optimization.batch_size,
+    #     num_epochs=config.optimization.num_epochs,
+    # )
 
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
-    for step, batch, key in zip(progress_bar, train_dataloader, key_iter):
+    for step, batch, key in zip(progress_bar, train_dataloader(), key_iter):
+        # if USE_TRUE_SCORE:
+        #     metrics = {'loss': 0.0, 'step': step}
+        # else:
         state, metrics = update_step(state, batch)
-        # metrics = {'loss': 0.0, 'step': step}
         metrics["lr"] = learning_rate_schedule(step)
 
-        for action in actions:
-            action(step, t=None, metrics=metrics, state=state, key=key)
+        # for action in actions:
+        #     action(step, t=None, metrics=metrics, state=state, key=key)
 
         if step % 100 == 0:
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")

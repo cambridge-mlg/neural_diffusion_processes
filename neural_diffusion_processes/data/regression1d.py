@@ -236,8 +236,8 @@ def get_batch(key, batch_size: int, name: str, task: str):
 
     key, nckey, ntkey = jax.random.split(key, 3)
     if task == "training":
-        n_context = _DATASET_CONFIGS[name].train_num_context.sample(nckey, ())
-        n_target = _DATASET_CONFIGS[name].train_num_target.sample(ntkey, ())
+        n_context = 100 #_DATASET_CONFIGS[name].train_num_context.sample(nckey, ())
+        n_target = 100 # _DATASET_CONFIGS[name].train_num_target.sample(ntkey, ())
     else:
         n_context = _DATASET_CONFIGS[name].eval_num_context.sample(nckey, ())
         n_target = _DATASET_CONFIGS[name].eval_num_target.sample(ntkey, ())
@@ -261,50 +261,51 @@ def get_batch(key, batch_size: int, name: str, task: str):
 
 #%%
 if __name__ == "__main__":
-    import numpy
-    import matplotlib.pyplot as plt
-    import itertools
+    def plot_data():
+        import numpy
+        import matplotlib.pyplot as plt
+        import itertools
 
-    def info(a, name):
-        print(name)
-        print(a.shape)
-        print(jnp.min(a))
-        print(jnp.max(a))
-        print("="*10)
+        def info(a, name):
+            print(name)
+            print(a.shape)
+            print(jnp.min(a))
+            print(jnp.max(a))
+            print("="*10)
 
-    def plot_data(xc, yc, xt, yt, ax, legend=True, ns=1):
-        ax.plot(xc[:ns, :, 0].T, yc[:ns, :, 0].T, "C0.", label="context")
-        ax.plot(xt[:ns, :, 0].T, yt[:ns, :, 0].T, "C1.", label="target")
-        handles, labels = ax.get_legend_handles_labels()
-        labels, ids = numpy.unique(labels, return_index=True)
-        handles = [handles[i] for i in ids]
-        if legend:
-            ax.legend(handles, labels, loc='best')
-
-
-    key = jax.random.PRNGKey(0)
-
-    fig, axes = plt.subplots(len(_DATASET_FACTORIES), len(_TASK_CONFIGS), figsize=(15, 5), sharex=True, tight_layout=True)
+        def plot_data(xc, yc, xt, yt, ax, legend=True, ns=1):
+            ax.plot(xc[:ns, :, 0].T, yc[:ns, :, 0].T, "C0.", label="context")
+            ax.plot(xt[:ns, :, 0].T, yt[:ns, :, 0].T, "C1.", label="target")
+            handles, labels = ax.get_legend_handles_labels()
+            labels, ids = numpy.unique(labels, return_index=True)
+            handles = [handles[i] for i in ids]
+            if legend:
+                ax.legend(handles, labels, loc='best')
 
 
-    for (i, dataset), (j, task) in itertools.product(enumerate(_DATASET_FACTORIES.keys()), enumerate(_TASK_CONFIGS.keys())):
-        print(dataset, task)
-        ax = axes[i,j]
-        ax.set_xlim(-4, 6)
-        data = get_batch(key, 16, dataset, task)
-        plot_data(*data, ax, legend=(i==0) and (j==0))
-        if i == 0:
-            ax.set_title(task)
-        if j == 0:
-            ax.set_ylabel(dataset)
+        key = jax.random.PRNGKey(0)
+
+        fig, axes = plt.subplots(len(_DATASET_FACTORIES), len(_TASK_CONFIGS), figsize=(15, 5), sharex=True, tight_layout=True)
 
 
-    nrows = len(_DATASET_FACTORIES)
-    fig, axes = plt.subplots(nrows, 1, figsize=(15, 3 * nrows), sharex=True)
-    for i, name in enumerate(_DATASET_FACTORIES.keys()):
-        ax = axes[i]
-        keys = jax.random.split(key, 16)
-        x = jnp.linspace(-2, 3, 500)[:, None]
-        y = jax.vmap(_DATASET_FACTORIES[name].sample, in_axes=[0, None])(keys, x)
-        ax.set_title(name)
-        ax.plot(x, y[:3, :, 0].T)
+        for (i, dataset), (j, task) in itertools.product(enumerate(_DATASET_FACTORIES.keys()), enumerate(_TASK_CONFIGS.keys())):
+            print(dataset, task)
+            ax = axes[i,j]
+            ax.set_xlim(-4, 6)
+            data = get_batch(key, 16, dataset, task)
+            plot_data(*data, ax, legend=(i==0) and (j==0))
+            if i == 0:
+                ax.set_title(task)
+            if j == 0:
+                ax.set_ylabel(dataset)
+
+
+        nrows = len(_DATASET_FACTORIES)
+        fig, axes = plt.subplots(nrows, 1, figsize=(15, 3 * nrows), sharex=True)
+        for i, name in enumerate(_DATASET_FACTORIES.keys()):
+            ax = axes[i]
+            keys = jax.random.split(key, 16)
+            x = jnp.linspace(-2, 3, 500)[:, None]
+            y = jax.vmap(_DATASET_FACTORIES[name].sample, in_axes=[0, None])(keys, x)
+            ax.set_title(name)
+            ax.plot(x, y[:3, :, 0].T)
