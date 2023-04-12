@@ -1,6 +1,6 @@
 #%%
 from __future__ import annotations
-from typing import Tuple, List, Callable, Mapping
+from typing import Tuple, List, Callable, Mapping, Optional
 
 import abc
 from dataclasses import dataclass
@@ -10,13 +10,16 @@ import gpjax
 import jax.numpy as jnp
 from jaxtyping import Float, Array
 import distrax
-import matplotlib
 
 import jax
 jax.config.update("jax_enable_x64", True)
 
 from neural_diffusion_processes.kernels import sample_prior_gp
 from neural_diffusion_processes.data.data import DataBatch
+
+
+MAX_NUM_CONTEXT = 10
+MAX_NUM_TARGET = 100
 
 
 @dataclass
@@ -52,7 +55,6 @@ class TaskConfig:
 
 @dataclass
 class DatasetConfig:
-    train_num_context: UniformDiscrete
     train_num_target: UniformDiscrete
     eval_num_context: UniformDiscrete
     eval_num_target: UniformDiscrete
@@ -64,34 +66,29 @@ _LENGTHSCALE = .25
 
 _DATASET_CONFIGS = {
     "se": DatasetConfig(
-        train_num_context=UniformDiscrete(10, 10),
-        train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(1, 60),
         eval_num_target=UniformDiscrete(50, 50),
+        eval_num_context=UniformDiscrete(1, 10),
     ),
     "matern": DatasetConfig(
-        train_num_context=UniformDiscrete(10, 10),
-        train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(1, 60),
         eval_num_target=UniformDiscrete(50, 50),
+        eval_num_context=UniformDiscrete(1, 10),
     ),
     "weaklyperiodic": DatasetConfig(
-        train_num_context=UniformDiscrete(10, 10),
-        train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(1, 60),
         eval_num_target=UniformDiscrete(50, 50),
+        eval_num_context=UniformDiscrete(1, 10),
     ),
     "noisymixture": DatasetConfig(
-        train_num_context=UniformDiscrete(10, 10),
-        train_num_target=UniformDiscrete(60, 60),
-        eval_num_context=UniformDiscrete(10, 10),
+        train_num_target=UniformDiscrete(1, 60),
         eval_num_target=UniformDiscrete(50, 50),
+        eval_num_context=UniformDiscrete(1, 10),
     ),
     "sawtooth": DatasetConfig(
-        train_num_context=UniformDiscrete(10, 10),
-        train_num_target=UniformDiscrete(110, 110),
-        eval_num_context=UniformDiscrete(10, 10),
-        eval_num_target=UniformDiscrete(100, 100),
+        train_num_target=UniformDiscrete(1, 100),
+        eval_num_target=UniformDiscrete(90, 90),
+        eval_num_context=UniformDiscrete(1, 10),
     ),
 }
 
@@ -234,13 +231,8 @@ def get_batch(key, batch_size: int, name: str, task: str):
         raise NotImplementedError("Unknown task: %s." % task)
     
 
-    key, nckey, ntkey = jax.random.split(key, 3)
-    if task == "training":
-        n_context = 100 #_DATASET_CONFIGS[name].train_num_context.sample(nckey, ())
-        n_target = 100 # _DATASET_CONFIGS[name].train_num_target.sample(ntkey, ())
-    else:
-        n_context = _DATASET_CONFIGS[name].eval_num_context.sample(nckey, ())
-        n_target = _DATASET_CONFIGS[name].eval_num_target.sample(ntkey, ())
+    n_context = MAX_NUM_CONTEXT #_DATASET_CONFIGS[name].train_num_context.sample(nckey, ())
+    n_target = MAX_NUM_TARGET # _DATASET_CONFIGS[name].train_num_target.sample(ntkey, ())
 
     key, ckey, tkey = jax.random.split(key, 3)
     task = _TASK_CONFIGS[task]
@@ -259,8 +251,105 @@ def get_batch(key, batch_size: int, name: str, task: str):
     )
 
 
+class DatasetFromGenerator:
+    def __init__(self, generator, key):
+        self._key = key
+        self._generator  = generator
+        self._preprocess = []
+    
+    def map(self, function):
+        self._preprocess.append(function)
+    
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
+        batch = next(self._generator)
+        for func in self._preprocess:
+            self._key, key = jax.random.split(self._key)
+            batch = func(batch, key=key)
+        return batch
+
+
+def data_generator(key, dataset, task, total_num_samples, batch_size, num_epochs: Optional[int] = None):
+    """
+    :param num_epochs: if `None` generator runs forever
+    """
+    assert total_num_samples % batch_size == 0
+
+    @jax.jit
+    def batch(key) -> DataBatch:
+        return get_batch(key, batch_size, dataset, task)
+
+    print("run once...")
+    _ = batch(key)
+
+    if num_epochs is None:
+        num_epochs = jnp.inf
+    
+    count_epochs = 0
+    while count_epochs < num_epochs:
+        count_epochs += 1
+        for _ in range(total_num_samples // batch_size):
+            key, bkey = jax.random.split(key)
+            yield batch(bkey)
+
+
+
+def get_padding_function(dataset: str, task: str):
+    if task == "training":
+        target_num_data_sampler = _DATASET_CONFIGS[dataset].train_num_target
+        context_num_data_sampler = None
+    else:
+        target_num_data_sampler = _DATASET_CONFIGS[dataset].eval_num_target
+        context_num_data_sampler = _DATASET_CONFIGS[dataset].eval_num_context
+
+    @jax.jit
+    def padding(batch: DataBatch, key):
+        num_data_total = batch.xs.shape[1]
+        num_data = target_num_data_sampler.sample(key, shape=())
+        mask = jnp.where(
+            jnp.arange(num_data_total)[None, :, None] < num_data,
+            jnp.ones_like(batch.xs),
+            jnp.zeros_like(batch.xs)
+        )
+
+        # repeat for context
+        if context_num_data_sampler is not None:
+            num_data_total = batch.xc.shape[1]
+            num_data = context_num_data_sampler.sample(key, shape=())
+            mask_context = jnp.where(
+                jnp.arange(num_data_total)[None, :, None] < num_data,
+                jnp.ones_like(batch.xc),
+                jnp.zeros_like(batch.xc)
+            )
+        else:
+            mask_context = None
+
+        return DataBatch(
+            xs=batch.xs,
+            ys=batch.ys,
+            mask=mask,
+            xc=batch.xc,
+            yc=batch.yc,
+            mask_context=mask_context
+        )
+
+    return padding
+
+
+def get_dataset(dataset: str, task: str, *, key, batch_size: int, samples_per_epoch: int, num_epochs: Optional[int] = None) -> DatasetFromGenerator:
+    gkey, dskey = jax.random.split(key)
+    gen = data_generator(gkey, dataset, task, samples_per_epoch, batch_size, num_epochs)
+    ds = DatasetFromGenerator(gen, dskey)
+    ds.map(get_padding_function(dataset, task))
+    return ds
+
+
 #%%
 if __name__ == "__main__":
+    import matplotlib
+
     def plot_data():
         import numpy
         import matplotlib.pyplot as plt

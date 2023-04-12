@@ -43,7 +43,7 @@ def scale_kernel_variance(params, coeff):
 
 class ScoreNetwork(Callable):
     @abstractmethod
-    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
+    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "mask: [N, 1]", "return: [N, y_dim]")
     def __call__(self, t: Array, yt: Array, x: Array, *, key) -> Array:
         ...
 

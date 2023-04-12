@@ -15,6 +15,8 @@ class DataBatch(Pytree):
     ys: Array
     xc: Array | None = None
     yc: Array | None = None
+    mask: Array | None = None
+    mask_context: Array | None = None
 
     def __len__(self) -> int:
         return len(self.xs)
@@ -38,8 +40,6 @@ def dataloader(
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
-    # x = x.astype(jnp.float32)
-    # y = y.astype(jnp.float32)
     dataset_size = len(x)
     indices_batch = jnp.arange(dataset_size)
     indices_points = jnp.arange(x.shape[1])

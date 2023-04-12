@@ -50,21 +50,21 @@ _LOG_DIR = 'logs'
 _CONFIG = config_flags.DEFINE_config_dict("config", config_utils.to_configdict(Config()))
 
 
-def data_generator(key, dataset, task, total_num_samples, batch_size, num_epochs: Optional[int] = None):
-    assert total_num_samples % batch_size == 0
+# def data_generator(key, dataset, task, total_num_samples, batch_size, num_epochs: Optional[int] = None):
+#     assert total_num_samples % batch_size == 0
 
-    def batch(key) -> ndp.data.DataBatch:
-        return regression1d.get_batch(key, batch_size, dataset, task)
+#     def batch(key) -> ndp.data.DataBatch:
+#         return regression1d.get_batch(key, batch_size, dataset, task)
 
-    if num_epochs is None:
-        num_epochs = np.inf
+#     if num_epochs is None:
+#         num_epochs = np.inf
     
-    count_epochs = 0
-    while count_epochs < num_epochs:
-        count_epochs += 1
-        for _ in range(total_num_samples // batch_size):
-            key, bkey = jax.random.split(key)
-            yield batch(bkey)
+#     count_epochs = 0
+#     while count_epochs < num_epochs:
+#         count_epochs += 1
+#         for _ in range(total_num_samples // batch_size):
+#             key, bkey = jax.random.split(key)
+#             yield batch(bkey)
 
 
 def get_experiment_name(config: Config):
@@ -142,9 +142,10 @@ class Task:
     def eval(self, params, key):
         num_samples = 16
         # uses same key to keep test data fixed across evaluations
-        generator = data_generator(self._key, self._dataset, self._task, self._num_data, self._batch_size, num_epochs=1)
+        # generator = data_generator(self._key, self._dataset, self._task, self._num_data, self._batch_size, num_epochs=1)
+        ds = regression1d.get_dataset(self._dataset, self._task, key=self._key, batch_size=self._batch_size, samples_per_epoch=self._num_data, num_epochs=1)
         metrics = {"mse": [], "loglik": []}
-        for i, batch in enumerate(generator):
+        for i, batch in enumerate(ds):
             print(".", end='')
             key, *keys = jax.random.split(key, num_samples + 1)
             samples = self._sampler(params, batch.xc, batch.yc, batch.xs, jnp.stack(keys))
@@ -398,6 +399,14 @@ def main(_):
         while True:
             yield batch0
 
+    train_ds = regression1d.get_dataset(
+        config.data.dataset,
+        "training",
+        key=next(key_iter),
+        samples_per_epoch=config.data.num_samples_in_epoch,
+        batch_size=config.optimization.batch_size,
+        num_epochs=config.optimization.num_epochs,
+    )
     # train_dataloader = data_generator(
     #     next(key_iter),
     #     config.data.dataset,
@@ -409,9 +418,9 @@ def main(_):
 
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
-    for step, batch, key in zip(progress_bar, train_dataloader(), key_iter):
+    for step, batch, key in zip(progress_bar, train_ds, key_iter):
         # if USE_TRUE_SCORE:
-        #     metrics = {'loss': 0.0, 'step': step}
+            # metrics = {'loss': 0.0, 'step': step}
         # else:
         state, metrics = update_step(state, batch)
         metrics["lr"] = learning_rate_schedule(step)
