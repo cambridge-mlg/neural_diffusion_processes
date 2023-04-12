@@ -445,7 +445,7 @@ def run(cfg):
     # print(sde.score(None, 0.5, jnp.ones_like(x), x, None))
     # raise
     
-    # logger.log_plot("process", plots(state, key, 0), 0)
+    logger.log_plot("process", plots(state, key, 0), 0)
     # logger.log_plot("process", plots(state, key, 1), 1)
     # # logger.log_plot("process", plots(state, key, 1), 1)
     logger.log_metrics(eval(state, key, 0), 0)
