@@ -32,7 +32,7 @@ hydra:
     config:
       # configuration for the ${hydra.job.override_dirname} runtime variable
       override_dirname:
-        exclude_keys: [name, experiment, server, seed, run, resume, num_workers, num_gpus, val_freq, logger, mode, n_jobs, test_val, test_test, test_plot]
+        exclude_keys: '${concat: ${my_glob: eval.*}, ${my_glob: eval.prior.*}, ${my_glob: eval.cond.*}, ${my_glob: eval.like.*}, [name, experiment, server, seed, resume, num_gpus, val_freq, logger, mode]}'
 
 # git:
 #   commit: ${git_commit:}

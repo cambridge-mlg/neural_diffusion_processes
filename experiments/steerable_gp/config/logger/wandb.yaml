@@ -9,3 +9,4 @@ wandb:
     # project: diffusion_manifold
     project: equiv-stochastic-diffusion-processes
     offline: False
+    id: null

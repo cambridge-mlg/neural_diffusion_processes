@@ -21,9 +21,9 @@ from jaxkern.computations import (
 from jaxlinop import LinearOperator, DenseLinearOperator, ConstantDiagonalLinearOperator, DiagonalLinearOperator, identity
 from jaxlinop.dense_linear_operator import _check_matrix
 
-from .utils.constants import JITTER
 from .utils.types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable, Float, Type
 from .utils.misc import flatten, unflatten, check_shape, jax_unstack
+from .config import get_config
 
 
 class BlockDiagonalLinearOperator(DenseLinearOperator):
@@ -260,6 +260,9 @@ def promote_compute_engines(engine1: Type[jaxkern.computations.AbstractKernelCom
     if engine1 == MultiOutputDenseKernelComputation or engine2 == MultiOutputDenseKernelComputation:
         return MultiOutputDenseKernelComputation
 
+    if engine1 == MultiOutputConstantDiagonalKernelComputation and engine2 == MultiOutputConstantDiagonalKernelComputation:
+        return MultiOutputConstantDiagonalKernelComputation
+
     raise NotImplementedError(
         "Add rule for optimal compute engine sum kernel for types %s and %s." % (
             engine1, engine2
@@ -460,7 +463,7 @@ def prior_gp(
         μt = flatten(μt)  # jnp.atleast_1d(μt.squeeze())
         Ktt = kernel.gram(params["kernel"], x_test)
         # Ktt += identity(n_test) * (JITTER + obs_noise)
-        Ktt = Ktt._add_diagonal(identity(n_test) * (JITTER + obs_noise))
+        Ktt = Ktt._add_diagonal(identity(n_test) * (get_config().jitter + obs_noise))
         dist = GaussianDistribution(μt, Ktt)
         return dist
 
@@ -516,7 +519,7 @@ def posterior_gp(
     μx = flatten(μx)  # jnp.atleast_1d(μt.squeeze())
     Kxx = kernel.gram(params["kernel"], x)
     # Sigma = Kxx + identity(n) * (JITTER + obs_noise)
-    Sigma = Kxx._add_diagonal(identity(n) * (JITTER + obs_noise))
+    Sigma = Kxx._add_diagonal(identity(n) * (get_config().jitter + obs_noise))
 
     @check_shapes("x_test: [N, x_dim]")
     def predict(x_test):
@@ -534,7 +537,7 @@ def posterior_gp(
 
         # Ktt  -  Ktx (Kxx + Iσ²)⁻¹ Kxt, TODO: Take advantage of covariance structure to compute Schur complement more efficiently.
         covariance = Ktt - jnp.matmul(Kxt.T, Sigma_inv_Kxt)
-        covariance = covariance._add_diagonal(identity(n_test) * JITTER)
+        covariance = covariance._add_diagonal(identity(n_test) * (get_config().jitter + obs_noise))
 
         dist = GaussianDistribution(mean, covariance)
         return dist

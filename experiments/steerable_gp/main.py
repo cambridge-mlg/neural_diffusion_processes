@@ -6,7 +6,7 @@ import logging
 from collections import defaultdict
 from functools import partial
 import tqdm
-
+import yaml
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import haiku as hk
@@ -32,6 +32,7 @@ from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
 from neural_diffusion_processes.utils.vis import plot_scalar_field, plot_vector_field, plot_covariances
 from neural_diffusion_processes.utils import flatten, unflatten
 from neural_diffusion_processes.data import radial_grid_2d, DataBatch
+from neural_diffusion_processes.kernels import SumKernel, WhiteVec
 
 
 def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
@@ -42,7 +43,7 @@ def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
 
 log = logging.getLogger(__name__)
 
-def run(config):
+def run(cfg):
     jax.config.update("jax_enable_x64", True)
     policy = jmp.get_policy('params=float32,compute=float32,output=float32')
 
@@ -51,36 +52,36 @@ def run(config):
     run_path = os.getcwd()
     log.info(f"run_path: {run_path}")
     log.info(f"hostname: {socket.gethostname()}")
-    ckpt_path = os.path.join(run_path, config.paths.ckpt_dir)
+    ckpt_path = os.path.join(run_path, cfg.paths.ckpt_dir)
+    wandb_cfg_path = os.path.join(run_path, "wandb", "config.yaml")
+    os.makedirs(os.path.dirname(wandb_cfg_path), exist_ok=True)
+
     os.makedirs(ckpt_path, exist_ok=True)
-    loggers = [instantiate(logger_config) for logger_config in config.logger.values()]
+    if 'wandb' in cfg.logger:
+        if cfg.mode == "eval":
+            with open(wandb_cfg_path, 'r') as file:
+                cfg_yaml = yaml.safe_load(file)
+            cfg.logger.wandb.id = cfg_yaml["wandb_id"]
+        else:
+            import wandb
+            cfg.logger.wandb.id = wandb.util.generate_id()
+            with open(wandb_cfg_path, 'w+') as file:
+                yaml.safe_dump({"wandb_id": cfg.logger.wandb.id}, file)
+    loggers = [instantiate(logger_config) for logger_config in cfg.logger.values()]
     logger = LoggerCollection(loggers)
-    logger.log_hyperparams(OmegaConf.to_container(config, resolve=True))
+    logger.log_hyperparams(OmegaConf.to_container(cfg, resolve=True))
 
-    key = jax.random.PRNGKey(config.seed)
+    key = jax.random.PRNGKey(cfg.seed)
     key_iter = _get_key_iter(key)
-
-    ####### init relevant diffusion classes
-    limiting_kernel = instantiate(config.kernel.cls)
-    limiting_mean_fn = instantiate(config.sde.limiting_mean_fn)
-    limiting_params = {
-        "kernel": limiting_kernel.init_params(key),
-        "mean_function": limiting_mean_fn.init_params(key),
-    }
-    limiting_params["kernel"].update(OmegaConf.to_container(config.kernel.params, resolve=True)) # NOTE: breaks RFF?
-    log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params['kernel']}")
-    # sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
-    sde = instantiate(config.sde, limiting_params=limiting_params, beta_schedule=config.beta_schedule)
-    log.info(f"beta_schedule: {sde.beta_schedule}")
 
     ####### prepare data
     data = call(
-        config.data,
-        key=jax.random.PRNGKey(config.data.seed),
-        num_samples=config.data.num_samples_train,
+        cfg.data,
+        key=jax.random.PRNGKey(cfg.data.seed),
+        num_samples=cfg.data.num_samples_train,
     )
     dataloader = ndp.data.dataloader(
-        data, batch_size=config.optim.batch_size, key=next(key_iter), n_points=config.data.n_points
+        data, batch_size=cfg.optim.batch_size, key=next(key_iter), n_points=cfg.data.n_points
     )
     batch0 = next(dataloader)
     x_dim = batch0.xs.shape[-1]
@@ -88,24 +89,44 @@ def run(config):
     log.info(f"num elements: {batch0.xs.shape[-2]} & x_dim: {x_dim} & y_dim: {y_dim}")
 
     data_test = call(
-        config.data,
-        key=jax.random.PRNGKey(config.data.seed_test),
-        num_samples=config.data.num_samples_test,
+        cfg.data,
+        key=jax.random.PRNGKey(cfg.data.seed_test),
+        num_samples=cfg.data.num_samples_test,
     )
     plot_batch = DataBatch(xs=data_test[0][:32], ys=data_test[1][:32])
-    plot_batch = ndp.data.split_dataset_in_context_and_target(plot_batch, next(key_iter), config.data.min_context, config.data.max_context)
+    plot_batch = ndp.data.split_dataset_in_context_and_target(plot_batch, next(key_iter), cfg.data.min_context, cfg.data.max_context)
     
     dataloader_test = ndp.data.dataloader(
         data_test,
-        batch_size=config.optim.eval_batch_size,
+        batch_size=cfg.eval.batch_size,
         key=next(key_iter),
         run_forever=False,  # only run once
-        n_points=config.data.n_points
+        n_points=cfg.data.n_points
     )
     data_test: List[ndp.data.DataBatch] = [
-        ndp.data.split_dataset_in_context_and_target(batch, next(key_iter), config.data.min_context, config.data.max_context)
+        ndp.data.split_dataset_in_context_and_target(batch, next(key_iter), cfg.data.min_context, cfg.data.max_context)
         for batch in dataloader_test
     ]
+
+    ####### init relevant diffusion classes
+    limiting_kernel = instantiate(cfg.kernel.cls)
+    kernel_params = limiting_kernel.init_params(key)
+    limiting_kernel = SumKernel([limiting_kernel, WhiteVec(y_dim)])
+    kernel_params.update(OmegaConf.to_container(cfg.kernel.params, resolve=True)) # NOTE: breaks RFF?
+    kernel_params = [kernel_params, {"variance": cfg.kernel.noise}]
+    limiting_mean_fn = instantiate(cfg.sde.limiting_mean_fn)
+    limiting_params = {
+        "kernel": kernel_params,
+        "mean_function": limiting_mean_fn.init_params(key),
+    }
+    # limiting_params["kernel"].update(OmegaConf.to_container(cfg.kernel.params, resolve=True)) # NOTE: breaks RFF?
+    log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params['kernel']}")
+    # sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
+    # sde = instantiate(cfg.sde, limiting_params=limiting_params, beta_schedule=cfg.beta_schedule)
+    sde = instantiate(cfg.sde, limiting_kernel=limiting_kernel, limiting_params=limiting_params, beta_schedule=cfg.beta_schedule)
+    print("limiting_params", sde.limiting_params["kernel"])
+    log.info(f"beta_schedule: {sde.beta_schedule}")
+
 
     ####### Forward haiku model
 
@@ -113,7 +134,7 @@ def run(config):
     @hk.transform
     def network(t, y, x):
         t, y, x = policy.cast_to_compute((t, y, x))
-        model = instantiate(config.net)
+        model = instantiate(cfg.net)
         log.info(f"network: {model} | shape={y.shape}")
         return model(x, y, t)
     
@@ -127,7 +148,7 @@ def run(config):
         network_ = partial(net, params)
         return ndp.sde.loss(sde, network_, batch, key)
 
-    learning_rate_schedule = instantiate(config.lr_schedule)
+    learning_rate_schedule = instantiate(cfg.lr_schedule)
     optimizer = optax.chain(
         optax.clip_by_global_norm(1.0),
         optax.scale_by_adam(),
@@ -160,8 +181,8 @@ def run(config):
         updates, new_opt_state = optimizer.update(grads, state.opt_state)
         new_params = optax.apply_updates(state.params, updates)
         new_params_ema = jax.tree_util.tree_map(
-                lambda p_ema, p: p_ema * config.optim.ema_rate
-                + p * (1.0 - config.optim.ema_rate),
+                lambda p_ema, p: p_ema * cfg.optim.ema_rate
+                + p * (1.0 - cfg.optim.ema_rate),
                 state.params_ema,
                 new_params,
         )
@@ -171,9 +192,9 @@ def run(config):
         metrics = {"loss": loss_value, "step": state.step}
         return new_state, metrics
 
-    state = init(batch0, jax.random.PRNGKey(config.seed))
-    if config.mode == "eval":  # if resume or evaluate
-        state = load_checkpoint(state, ckpt_path, config.optim.num_steps)
+    state = init(batch0, jax.random.PRNGKey(cfg.seed))
+    if cfg.mode == "eval":  # if resume or evaluate
+        state = load_checkpoint(state, ckpt_path, cfg.optim.num_steps)
 
     nb_params = sum(x.size for x in jax.tree_util.tree_leaves(state.params))
     log.info(f"Number of parameters: {nb_params}")
@@ -181,7 +202,7 @@ def run(config):
 
 
     progress_bar = tqdm.tqdm(
-        list(range(1, config.optim.num_steps + 1)), miniters=1
+        list(range(1, cfg.optim.num_steps + 1)), miniters=1
     )
     # exp_root_dir = get_experiment_dir(config)
 
@@ -190,20 +211,21 @@ def run(config):
     def reverse_sample(key, x_grid, params, yT=None):
         print("reverse_sample", x_grid.shape)
         net_ = partial(net, params)
-        return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=False)
+        config = cfg.eval.prior
+        return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, num_steps=config.n_steps, rtol=config.rtol, atol=config.atol, prob_flow=config.prob_flow)
 
     @jit
     def cond_sample(key, x_grid, x_context, y_context, params):
         net_ = partial(net, params)
+        config = cfg.eval.cond
         x_context += 1.0e-5 #NOTE: to avoid context overlapping with grid
-        # return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_inner_steps=50)
-        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_steps=50, num_inner_steps=100, tau=0.5, psi=2., lambda0=1.5, prob_flow=False)
+        return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_steps=config.n_steps, num_inner_steps=config.n_inner_steps, tau=config.tau, psi=config.psi, lambda0=config.lambda0, prob_flow=config.prob_flow)
     
     #TODO: data as a class with such methods?
     # @jit
     def cond_log_prob(xc, yc, xs):
-        config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_cond"
-        posterior_log_prob = call(config.data)
+        cfg.data._target_ = "neural_diffusion_processes.data.get_vec_gp_cond"
+        posterior_log_prob = call(cfg.data)
         return posterior_log_prob(xc, yc, xs)
 
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
@@ -211,8 +233,8 @@ def run(config):
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
         n_samples = 20
         keys = jax.random.split(key, 6)
-        plot_vf = partial(plot_vector_field, scale=50*math.sqrt(config.data.variance), width=0.005)
-        plot_cov = partial(plot_covariances, scale=0.3/math.sqrt(config.data.variance), zorder=-1)
+        plot_vf = partial(plot_vector_field, scale=50*math.sqrt(cfg.data.variance), width=0.005)
+        plot_cov = partial(plot_covariances, scale=0.3/math.sqrt(cfg.data.variance), zorder=-1)
         def plot_vf_and_cov(x, ys, axes, title="", cov=True):
             plot_vf(x, ys[0], ax=axes[0])
             plot_vf(x, jnp.mean(ys, 0), ax=axes[1])
@@ -224,7 +246,7 @@ def run(config):
         idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
 
         # define grid over x space
-        x_grid = radial_grid_2d(config.data.x_radius, config.data.num_points)
+        x_grid = radial_grid_2d(cfg.data.x_radius, cfg.data.num_points)
 
         fig_backward, axes = plt.subplots(2, 5, figsize=(8*5, 8*2), sharex=True, sharey=True)
         fig_backward.subplots_adjust(wspace=0, hspace=0.)
@@ -303,35 +325,34 @@ def run(config):
     def prior_log_prob(key, x, y, params):
         print("log_prob")
         net_ = partial(net, params)
-        # return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian")
-        # return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="None", rtol=1e-6, atol=1e-6)
-        # return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian", rtol=1e-6, atol=1e-6, hutchinson_samples=1)
-        return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian", rtol=None, atol=None, hutchinson_samples=1)
-        # return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="Gaussian", rtol=None, atol=None)
-        return ndp.sde.log_prob(sde, net_, x, y, key=key, hutchinson_type="None")
-    prior_log_prob = jit(vmap(partial(prior_log_prob, params=state.params_ema)))
+        config = cfg.eval.like
+        return ndp.sde.log_prob(sde, net_, x, y, key=key, num_steps=config.n_steps, rtol=config.rtol, atol=config.atol, hutchinson_type=config.hutchinson_type, hutchinson_samples=config.hutchinson_samples)
 
     # @partial(jax.vmap, in_axes=[None, None, None, 0])
     # @partial(jax.vmap)
     # def cond_log_prob(xc, yc, xs, ys):
-    #     config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_cond"
-    #     posterior_log_prob = call(config.data)
+    #     cfg.data._target_ = "neural_diffusion_processes.data.get_vec_gp_cond"
+    #     posterior_log_prob = call(cfg.data)
     #     return posterior_log_prob(xc, yc, xs, ys)
 
-    config.data._target_ = "neural_diffusion_processes.data.get_vec_gp_prior"
-    prior = call(config.data)
+    cfg.data._target_ = "neural_diffusion_processes.data.get_vec_gp_prior"
+    prior = call(cfg.data)
    
     # @jit
     def eval(state: TrainingState, key, step) -> Mapping[str, float]:
         num_samples = 32
         # num_samples = 20
         metrics = defaultdict(list)
+        prior_logp = jit(vmap(partial(prior_log_prob, params=state.params_ema)))
+
 
         for i, batch in enumerate(data_test):
             key, *keys = jax.random.split(key, num_samples + 1)
-            # print(step, i, batch.xs.shape, batch.ys.shape, key.shape)
 
-            if step != config.optim.num_steps and i < 1:
+            # # NOTE: only eval on 1 batch appart at the end
+            if step >= cfg.optim.num_steps or i < 1:
+                print(step, i, batch.xs.shape, batch.ys.shape, key.shape)
+                # TODO: depends on dataset if dist is avail or not
                 # true_mean = batch.ys
                 true_mean = vmap(lambda x: unflatten(prior(x).mean(), y_dim))(batch.xs)
                 def f(x):
@@ -364,25 +385,25 @@ def run(config):
             # context_logp = prior_log_prob(batch.xc, batch.yc, key)
             # metrics["cond_log_prob2"].append(jnp.mean(augmented_logp - context_logp))
 
-            # if i > 0:
-                # continue
-            # true_logp = jax.vmap(dist.log_prob)(flatten(batch.ys))
-            # # metrics["true_bpd"].append(jnp.mean(true_logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
-            # metrics["true_logp"].append(jnp.mean(true_logp))
-            # # logp, nfe = prior_log_prob(key, batch.xs, batch.ys)
-            # subkeys = jax.random.split(key, num=batch.ys.shape[0])
-            # # logp_prior, delta_logp, nfe, yT = prior_log_prob(subkeys, batch.xs, batch.ys)
-            # # logp = logp_prior + delta_logp
-            # # print("logp_prior, delta_logp", logp_prior.shape, delta_logp.shape)
-            # # print("true_logp", true_logp)
-            # # print(logp_prior.squeeze())
-            # # print(delta_logp.squeeze())
-            # # print(logp.squeeze())
-            # # metrics["bpd"].append(jnp.mean(logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
-            # logp, nfe = prior_log_prob(subkeys, batch.xs, batch.ys)
-            # metrics["logp"].append(jnp.mean(logp))
-            # metrics["nfe"].append(jnp.mean(nfe))
-            # print(metrics["logp"][-1], metrics["nfe"][-1])
+            if step >= cfg.optim.num_steps or i < 1:
+                true_logp = jax.vmap(lambda x, y: prior(x).log_prob(flatten(y)))(batch.xs, batch.ys)
+                metrics["true_bpd"].append(jnp.mean(true_logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
+                # metrics["true_logp"].append(jnp.mean(true_logp))
+                # logp, nfe = prior_log_prob(key, batch.xs, batch.ys)
+                subkeys = jax.random.split(key, num=batch.ys.shape[0])
+                # logp_prior, delta_logp, nfe, yT = prior_log_prob(subkeys, batch.xs, batch.ys)
+                # logp = logp_prior + delta_logp
+                # print("logp_prior, delta_logp", logp_prior.shape, delta_logp.shape)
+                # print("true_logp", true_logp)
+                # print(logp_prior.squeeze())
+                # print(delta_logp.squeeze())
+                # print(logp.squeeze())
+                logp, nfe = prior_logp(subkeys, batch.xs, batch.ys)
+                metrics["bpd"].append(jnp.mean(logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
+                # metrics["logp"].append(jnp.mean(logp))
+                metrics["nfe"].append(jnp.mean(nfe))
+                # print(metrics["true_logp"][-1], metrics["logp"][-1], metrics["nfe"][-1])
+                print(metrics["true_bpd"][-1], metrics["bpd"][-1], metrics["nfe"][-1])
 
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
@@ -397,20 +418,20 @@ def run(config):
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=config.optim.num_steps // 10,
+            every_steps=cfg.optim.num_steps // 10,
             callback_fn=lambda step, t, **kwargs: save_checkpoint(
                 kwargs["state"], ckpt_path, step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            # every_steps=config.optim.num_steps // 10,
-            every_steps=config.optim.num_steps // 10,
+            # every_steps=cfg.optim.num_steps // 10,
+            every_steps=cfg.optim.num_steps // 20,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 eval(kwargs["state"], kwargs["key"], step), step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=config.optim.num_steps // 10,
+            every_steps=cfg.optim.num_steps // 10,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"], step), step
             ),
@@ -424,15 +445,15 @@ def run(config):
     # print(sde.score(None, 0.5, jnp.ones_like(x), x, None))
     # raise
     
-    # logger.log_plot("process", plots(state, key, 0), 0)
+    logger.log_plot("process", plots(state, key, 0), 0)
     # logger.log_plot("process", plots(state, key, 1), 1)
     # # logger.log_plot("process", plots(state, key, 1), 1)
-    # logger.log_metrics(eval(state, key, 0), 0)
+    logger.log_metrics(eval(state, key, 0), 0)
     # logger.log_metrics(eval(state, key, 1), 1)
     # logger.save()
     # raise
 
-    if config.mode == "train":
+    if cfg.mode == "train":
         for step, batch, key in zip(progress_bar, dataloader, key_iter):
             state, metrics = update_step(state, batch)
             if jnp.isnan(metrics['loss']).any():
@@ -448,7 +469,7 @@ def run(config):
     else:
         # for action in actions[3:]:
         action = actions[2]
-        action._cb_fn(config.optim.num_steps + 1, t=None, state=state, key=key)
+        action._cb_fn(cfg.optim.num_steps + 1, t=None, state=state, key=key)
         logger.save()
 
 

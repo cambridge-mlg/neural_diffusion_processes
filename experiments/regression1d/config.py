@@ -1,51 +1,45 @@
-from typing import ClassVar, Dict, Protocol, Mapping, Optional
 import dataclasses
 
 # from ml_collections import config_dict
 
+
 @dataclasses.dataclass
 class DataConfig:
     seed: int = 0
-    kernel: str = "rbf"
-    num_samples: int = 10_000
-    num_points: int = 100
-    hyperparameters: Mapping[str, float] = dataclasses.field(
-        default_factory=lambda: {
-            "variance": 1.0,
-            "lengthscale": 0.2,
-        }
-    )
-
-    seed_test: int = 1
-    num_samples_test: int = 64
+    dataset: str = "se"
+    num_samples_in_epoch: int = int(2**14)
 
 
 @dataclasses.dataclass
 class SdeConfig:
     limiting_kernel: str = "white"
-    limiting_kernel_hyperparameters: Mapping[str, float] = dataclasses.field(
-        default_factory=lambda: {
-            "variance": 1.0,
-        },
-    )
+    t0: float = 5e-4
 
 
 @dataclasses.dataclass
 class OptimizationConfig:
     batch_size: int = 16
-    num_steps: int = 100_000
+    num_epochs: int = 50
+    ema_rate: float = 0.999
 
 
 @dataclasses.dataclass
 class NetworkConfig:
-    num_bidim_attention_layers: int = 2
-    hidden_dim: int = 16
-    num_heads: int = 4
+    num_bidim_attention_layers: int = 5
+    hidden_dim: int = 64
+    num_heads: int = 8
+
+
+@dataclasses.dataclass
+class EvalConfig:
+    batch_size: int = 16
+    num_samples_in_epoch: int = 128
 
 
 @dataclasses.dataclass
 class Config:
     seed: int = 42
+    eval: EvalConfig = EvalConfig()
     data: DataConfig = DataConfig()
     sde: SdeConfig = SdeConfig()
     optimization: OptimizationConfig = OptimizationConfig()
@@ -56,7 +50,7 @@ class Config:
 toy_config = Config(
     seed=666,
     data=DataConfig(
-        num_samples=1_000,
+        num_samples_in_epoch=32
     ),
 )
 

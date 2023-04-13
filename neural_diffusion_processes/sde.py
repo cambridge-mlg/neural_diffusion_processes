@@ -25,8 +25,9 @@ from check_shapes import check_shapes
 from .utils.types import Tuple, Callable, Mapping, Sequence
 from .data import DataBatch
 from .kernels import prior_gp, sample_prior_gp, log_prob_prior_gp, promote_compute_engines, SumKernel
-from .utils.constants import JITTER
 from .utils.misc import flatten, unflatten
+from .config import get_config
+
 
 class AbstractMeanFunction(gpjax.mean_functions.AbstractMeanFunction):
     def init_params(self, key):
@@ -45,6 +46,7 @@ class ScoreNetwork(Callable):
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def __call__(self, t: Array, yt: Array, x: Array, *, key) -> Array:
         ...
+
 
 @dataclasses.dataclass
 class LinearBetaSchedule:
@@ -80,8 +82,16 @@ class SDE:
     beta_schedule: LinearBetaSchedule
     std_trick: bool = True
     residual_trick: bool = True
-    precond: bool = True
-    exact: bool = False
+    is_score_preconditioned: bool = True
+    exact_score: bool = False
+
+    def __post_init__(self):
+        if self.exact_score:
+            assert (
+                not self.std_trick and
+                not self.residual_trick# and
+                # not self.is_score_preconditioned
+            ), "Exact score. Do not apply re-parameterizations or preconditioning"
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
@@ -122,9 +132,10 @@ class SDE:
         if isinstance(k0t_params, list):
             for k in k0t_params:
                 k["variance"] = k["variance"] * (1.0 - cov_coef)
+                params = {"mean_function": {}, "kernel": [*k0t_params]}
         else:
             k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
-        params = {"mean_function": {}, "kernel": k0t_params}
+            params = {"mean_function": {}, "kernel": k0t_params}
         return μ0t, k0t, params
     
     def pt(
@@ -146,11 +157,17 @@ class SDE:
 
         # Cov[Y_t|Y_0]
         cov_coef = jnp.exp(-self.beta_schedule.B(t))
+        k0_params = copy.deepcopy(k0_params)
         k0_params = scale_kernel_variance(k0_params, cov_coef)
         kt_param = copy.deepcopy(self.limiting_params["kernel"])
         kt_param = scale_kernel_variance(kt_param, 1.0 - cov_coef)
         k0t = SumKernel([k0, self.limiting_kernel])
-        params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
+        # params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
+        
+        k0_params = k0_params if isinstance(k0_params, list) else [k0_params]
+        kt_param = kt_param if isinstance(kt_param, list) else [kt_param]
+        params = {"mean_function": {}, "kernel": [*k0_params, *kt_param]}
+
         return μ0t, k0t, params
 
 
@@ -169,7 +186,7 @@ class SDE:
         np = yt.shape[-2] * yt.shape[-1]
         del yt
         Ktt = self.limiting_gram(x)
-        Ktt = Ktt._add_diagonal(JITTER * identity(np))
+        Ktt = Ktt._add_diagonal(get_config().jitter * identity(np))
         sqrt_K = Ktt.to_root()
         beta_term = jnp.sqrt(self.beta_schedule(t))
         diffusion = beta_term * sqrt_K
@@ -177,71 +194,55 @@ class SDE:
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
-        """ This parametrise the preconditioned score K(x,x) grad log p(y_t|x) """
-        if self.exact:
-            return self.exact_score(key, t, yt, x, network)
-        else:
-            score = network(t, yt, x, key=key)
-            if self.std_trick:
-                std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
-                score = score / (std + 1e-3)
-            if self.residual_trick:
-                # NOTE: s.t. bwd SDE = fwd SDE
-                fwd_drift = self.drift(t, yt, x)
-                residual = 2 * fwd_drift / (self.beta_schedule(t) + 1e-3)
-                score += residual
-            return score
-
-    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    def exact_score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
-        from neural_diffusion_processes.kernels import RBFCurlFree, WhiteVec
-        solve_lower_triangular = partial(jax.scipy.linalg.solve_triangular, lower=True)  # L⁻¹ x
-        solve_upper_triangular = partial(jax.scipy.linalg.solve_triangular, lower=False)  # U⁻¹ x
-        k0 = RBFCurlFree()
-        k0_params = {"variance": 10, "lengthscale": 2.23606797749979}
-        k0 = SumKernel([k0, WhiteVec(2)])
-        k0_params = [k0_params, {"variance": 0.02}]
-        def pt(t):
-            return self.pt(t, y0=jnp.zeros_like(yt), k0=k0, k0_params=k0_params)
-        
-        # mu_t, k_t, params = pt(t)
-        b = yt# - mu_t({}, x)
-        n = b.shape[0] * b.shape[1]
-        b = flatten(b)
-        
-        SigmaT = self.limiting_gram(x)
-        # Sigma_t = k_t.gram(params['kernel'], x)
-        # Sigma_t = Sigma_t._add_diagonal(identity(n) * JITTER)
-        # Sigma_inv_b = Sigma_t.solve(b)
-        # out = - (SigmaT @ Sigma_inv_b)
+        """ This parametrises the (preconditioned) score K(x,x) grad log p(y_t|x) """
+        score = network(t, yt, x, key=key)
+        if self.std_trick:
+            std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
+            score = score / (std + 1e-3)
+        if self.residual_trick:
+            # NOTE: s.t. bwd SDE = fwd SDE
+            # NOTE: wrong sign?
+            # fwd_drift = self.drift(t, yt, x)
+            # residual = 2 * fwd_drift / self.beta_schedule(t)
+            residual = - yt
+            score += residual
+        return score
     
-        # k0 = RBFCurlFree()
-        # k0_params={"variance": 10, "lengthscale": 2.23606797749979}
+    def get_exact_score(self, mean0: AbstractMeanFunction, k0: jaxkern.base.AbstractKernel, params0: Mapping) -> ScoreNetwork:
+        """Returns a ScoreNetwork which computes the returns the true score. Can only be computed for a Gaussian data dist."""
 
-        cov_coef = jnp.exp(-self.beta_schedule.B(t))
-        Sigma_t = (1 - cov_coef) * SigmaT.to_dense()
-        Sigma0 = k0.gram(k0_params, x)
-        Sigma_t += cov_coef * Sigma0.to_dense() 
-        Lt = jnp.linalg.cholesky(Sigma_t + JITTER * jnp.eye(n))
-        Sigma_inv_b = solve_upper_triangular(jnp.transpose(Lt), solve_lower_triangular(Lt, b))
-        out = - (SigmaT @ Sigma_inv_b)
+        class _ExactScoreNetwork(ScoreNetwork):
+            "Exact marginal score in Gaussian setting"
+            def __call__(self2, t: Array, yt: Array, x: Array, *, key) -> Array:
+                y0 = mean0(params0["mean_function"], x)
+                mu_t, k_t, params = self.pt(t, y0, k0, params0["kernel"])
+                b = flatten(yt - mu_t(params['mean_function'], x))
+                Sigma_t = k_t.gram(params['kernel'], x) + identity(np.prod(x.shape).item()) * get_config().jitter
+                # Σ⁻¹ (yt - m_0(x))
+                Sigma_inv_b = Sigma_t.solve(b)
+                out = - Sigma_inv_b
+                if self.is_score_preconditioned:
+                   out = self.limiting_gram(x) @ out
+                return unflatten(out, yt.shape[-1])
 
-        return unflatten(out, yt.shape[-1])
-
+        return _ExactScoreNetwork()
+        
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_ode(self, key, t: Array, yt: Array, x: Array, network) -> Array:
         second_term = 0.5 * self.beta_schedule(t) * self.score(key, t, yt, x, network)
-        if not self.precond:
+        if not self.is_score_preconditioned:
             second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
         return self.drift(t, yt, x) - second_term
+
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_sde(self, key, t: Array, yt: Array, x: Array, network) -> Array:
         second_term = self.beta_schedule(t) * self.score(key, t, yt, x, network)
-        if not self.precond:
+        if not self.is_score_preconditioned:
             second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
         return self.drift(t, yt, x) - second_term
+
 
     @check_shapes("t: []", "y: [N, y_dim]", "x: [N, x_dim]", "return: []")
     def loss(self, key, t: Array, y: Array, x: Array, network: ScoreNetwork) -> Array:
@@ -267,18 +268,11 @@ class SDE:
 
         precond_score_net = self.score(nkey, t, yt, x, network)
         precond_noise = sqrt @ Z
-        if not self.precond:
+        if not self.is_score_preconditioned:
             precond_noise = self.limiting_gram(x).solve(precond_noise)
         loss = jnp.square(std * precond_score_net + unflatten(precond_noise, y.shape[-1]))
         loss = jnp.mean(jnp.sum(loss, -1))
         return loss
-
-        yt = sample_prior_gp(ekey, μ0t, k0t, params, x)
-        precond_score = -(yt - μ0t(params["mean_function"], x))# / factor
-        precond_score_net = self.score(nkey, t, yt, x, network)
-        loss = jnp.mean(jnp.sum(jnp.square(precond_score - factor * precond_score_net), -1))
-        # return factor * loss
-        return loss / factor
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
@@ -313,6 +307,7 @@ class LinOpControlTerm(dfx.ControlTerm):
 #     @staticmethod
 #     def prod(vf: PyTree, control: PyTree) -> PyTree:
 #         return jtu.tree_map(lambda a, b: a @ b, vf, control)
+
 
 def sde_solve(
     sde: SDE,
@@ -376,7 +371,7 @@ def sde_solve(
         dt0=dt,
         y0=y,
         args=x,
-        adjoint=dfx.NoAdjoint(),
+        # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
         saveat=saveat
     )
@@ -537,12 +532,12 @@ def conditional_sample2(
         yt = unflatten(yt, y_dim)
         score = flatten(sde.score(key, t, yt, x, network))
         if langevin_kernel:
-            if sde.precond:
+            if sde.is_score_preconditioned:
                 score = score
             else:
                 score = sde.limiting_gram(x) @ score
         else:
-            if sde.precond:
+            if sde.is_score_preconditioned:
                 score = sde.limiting_gram(x).solve(score)
             else:
                 score = score
@@ -572,7 +567,6 @@ def conditional_sample2(
 
 
     def inner_loop(key, ys, t):
-        print("compiling Langevin inner_loop")
         # reverse step
         yt, yt_context = ys
         yt_context = sample_marginal(key, t, x_context, y_context) # NOTE: should resample?
@@ -601,7 +595,6 @@ def conditional_sample2(
         return (yt, yt_context), yt_m_dt
 
     def outer_loop(key, yt, t):
-        print("compiling Euler-Maruyama outer_loop")
         # jax.debug.print("time {t}", t=t)
 
         # yt_context = sde.sample_marginal(key, t, x_context, y_context)
@@ -696,7 +689,7 @@ def get_exact_div_fn(fn):
 
 
 def get_div_fn(drift_fn, hutchinson_type):
-    """Pmapped divergence of the drift function."""
+    """Divergence of the drift function."""
     if hutchinson_type == "None":
         return lambda y, t, context, eps: get_exact_div_fn(drift_fn)(y, t, context)
     else:
@@ -729,6 +722,7 @@ def log_prob(
     y,
     *,
     key,
+    # dt=1e-3/2,
     num_steps: int = 100,
     solver: AbstractSolver = Tsit5(),
     rtol: float = 1e-3,
@@ -736,7 +730,8 @@ def log_prob(
     hutchinson_type: str = 'None',
     hutchinson_samples: int = 1,
     forward: bool = True,
-    ts = None
+    ts = None,
+    return_all: bool = False,
 ):
 
     if rtol is None or atol is None:
@@ -748,7 +743,9 @@ def log_prob(
         t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
     else:
         t1, t0 = sde.beta_schedule.t0, sde.beta_schedule.t1
+        # dt = -1.0 * abs(dt)
     dt = (t1 - t0) / num_steps
+    # dt = 1e-3/2.
 
     reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
         key, t, yt, arg, network
@@ -777,11 +774,11 @@ def log_prob(
         terms,
         solver,
         t0=t0,
-        t1=t1,
+        t1=t1,#-1e-3,
         dt0=dt,
         y0=(y, 0.0),
         args=(eps, x),
-        adjoint=dfx.NoAdjoint(),
+        # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
         saveat=saveat
     )
@@ -790,5 +787,7 @@ def log_prob(
     nfe = sol.stats['num_steps']
     logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
 
-    return logp_prior + delta_logp, nfe
-    # return logp_prior, delta_logp, nfe, yT
+    if return_all:
+        return logp_prior, delta_logp, nfe, yT
+    else:
+        return logp_prior + delta_logp, nfe
