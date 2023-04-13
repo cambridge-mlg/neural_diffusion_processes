@@ -310,9 +310,9 @@ def get_padding_function(dataset: str, task: str):
         num_data = target_num_data_sampler.sample(key, shape=())
         mask = jnp.where(
             jnp.arange(num_data_total)[None, :, None] < num_data,
-            jnp.ones_like(batch.xs),
-            jnp.zeros_like(batch.xs)
-        )
+            jnp.zeros_like(batch.xs),  # keep
+            jnp.ones_like(batch.xs)  # ignore
+        )[..., 0]
 
         # repeat for context
         if context_num_data_sampler is not None:
@@ -320,9 +320,9 @@ def get_padding_function(dataset: str, task: str):
             num_data = context_num_data_sampler.sample(key, shape=())
             mask_context = jnp.where(
                 jnp.arange(num_data_total)[None, :, None] < num_data,
-                jnp.ones_like(batch.xc),
-                jnp.zeros_like(batch.xc)
-            )
+                jnp.zeros_like(batch.xc),  # keep
+                jnp.ones_like(batch.xc),  # ignore
+            )[..., 0]
         else:
             mask_context = None
 
