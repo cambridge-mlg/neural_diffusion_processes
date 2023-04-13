@@ -22,7 +22,7 @@ import numpy as np
 from jaxtyping import Array, Float, PyTree
 from check_shapes import check_shapes
 
-from .utils.types import Tuple, Callable, Mapping, Sequence
+from .utils.types import Tuple, Callable, Mapping, Sequence, Optional
 from .data import DataBatch
 from .kernels import prior_gp, sample_prior_gp, log_prob_prior_gp, promote_compute_engines, SumKernel
 from .utils.misc import flatten, unflatten
@@ -649,11 +649,16 @@ def conditional_sample2(
 def get_estimate_div_fn(fn):
     """Create the divergence function of `fn` using the Hutchinson-Skilling trace estimator."""
 
-    @check_shapes("t: []", "y: [N, y_dim]", "eps: [K, N, y_dim]", "return: []")
-    def div_fn(t, y: jnp.ndarray, arg, eps: jnp.ndarray) -> jnp.ndarray:
+    @check_shapes("t: []", "y: [N, y_dim]", "eps: [K, M, y_dim]", "return: []")
+    def div_fn(t, y: jnp.ndarray, arg, eps: jnp.ndarray, num_context = None) -> jnp.ndarray:
         y_dim = y.shape[-1]
-        flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
-        _, vjp_fn = jax.vjp(flattened_fn, flatten(y))
+        if num_context:
+            yc = y[:num_context * y_dim]
+            y = y[num_context * y_dim :]
+            flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg))[num_context * y_dim :]
+        else:
+            flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
+        _, vjp_fn = jax.vjp(flattened_fn, flatten(y) )
 
         # NOTE: sequential
         # def f(carry, eps):
@@ -679,10 +684,15 @@ def get_exact_div_fn(fn):
     "flatten all but the last axis and compute the true divergence"
 
     @check_shapes("t: []", "y: [N, y_dim]", "return: []")
-    def div_fn(t, y: jnp.ndarray, arg) -> jnp.ndarray:
+    def div_fn(t, y, arg, num_context = None) -> jnp.ndarray:
         y_dim = y.shape[-1]
-        flattened_fn = lambda t, y, arg: flatten(fn(t, unflatten(y, y_dim), arg))
-        jac = jax.jacrev(flattened_fn, argnums=1)(t, flatten(y), arg)
+        if num_context:
+            yc = y[:num_context * y_dim]
+            y = y[num_context * y_dim :]
+            flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg))[num_context * y_dim :]
+        else:
+            flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
+        jac = jax.jacrev(flattened_fn)(flatten(y))
         return jnp.trace(jac, axis1=-1, axis2=-2)
 
     return div_fn
@@ -691,10 +701,10 @@ def get_exact_div_fn(fn):
 def get_div_fn(drift_fn, hutchinson_type):
     """Divergence of the drift function."""
     if hutchinson_type == "None":
-        return lambda y, t, context, eps: get_exact_div_fn(drift_fn)(y, t, context)
+        return lambda y, t, context, eps, **kwargs: get_exact_div_fn(drift_fn)(y, t, context, **kwargs)
     else:
-        return lambda y, t, context, eps: get_estimate_div_fn(drift_fn)(
-            y, t, context, eps
+        return lambda y, t, context, eps, **kwargs: get_estimate_div_fn(drift_fn)(
+            y, t, context, eps, **kwargs
         )
 
 def div_noise(
@@ -732,6 +742,8 @@ def log_prob(
     forward: bool = True,
     ts = None,
     return_all: bool = False,
+    x_known: Optional[Array] = None,
+    y_known: Optional[Array] = None,
 ):
 
     if rtol is None or atol is None:
@@ -751,8 +763,15 @@ def log_prob(
         key, t, yt, arg, network
     )
     div_fn = get_div_fn(reverse_drift_ode, hutchinson_type)
-    # eps = div_noise(key, y.shape, hutchinson_type)
     eps = div_noise(key, (hutchinson_samples, *y.shape), hutchinson_type)
+
+    if x_known is not None and y_known is not None:
+        num_context = len(x_known)
+        x = jnp.concatenate([x_known, x], axis=0)
+        y = jnp.concatenate([y_known, y], axis=0)
+        div_fn = partial(div_fn, num_context=num_context)
+
+    # eps = div_noise(key, y.shape, hutchinson_type)
     y_dim = y.shape[-1]
     y = flatten(y)
 
