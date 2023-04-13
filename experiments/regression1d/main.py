@@ -39,7 +39,7 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = True
+USE_TRUE_SCORE = False
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -239,20 +239,21 @@ def main(_):
     ####### Forward haiku model
     @hk.without_apply_rng
     @hk.transform
-    def network(t, y, x):
+    def network(t, y, x, mask):
         t, y, x = policy.cast_to_compute((t, y, x))
         model = ndp.models.attention.BiDimensionalAttentionModel(
             n_layers=config.network.num_bidim_attention_layers,
             hidden_dim=config.network.hidden_dim,
             num_heads=config.network.num_heads,
         )
-        return model(x, y, t)
+        return model(x, y, t, mask)
 
     @jax.jit
-    def net(params, t, yt, x, *, key):
+    def net(params, t, yt, x, mask, *, key):
         del key  # the network is deterministic
         #NOTE: Network awkwardly requires a batch dimension for the inputs
-        return network.apply(params, t[None], yt[None], x[None])[0]
+        print("compiling network")
+        return network.apply(params, t[None], yt[None], x[None], mask[None])[0]
 
     def loss_fn(params, batch: ndp.data.DataBatch, key):
         net_params = functools.partial(net, params)
@@ -275,7 +276,7 @@ def main(_):
     def init(batch: ndp.data.DataBatch, key) -> TrainingState:
         key, init_rng = jax.random.split(key)
         t = 1. * jnp.zeros((batch.ys.shape[0]))
-        initial_params = network.init(init_rng, t=t, y=batch.ys, x=batch.xs)
+        initial_params = network.init(init_rng, t=t, y=batch.ys, x=batch.xs, mask=batch.mask)
         initial_params = policy.cast_to_param((initial_params))
         initial_opt_state = optimizer.init(initial_params)
         return TrainingState(
@@ -288,6 +289,7 @@ def main(_):
 
     @jax.jit
     def update_step(state: TrainingState, batch: ndp.data.DataBatch) -> Tuple[TrainingState, Mapping]:
+        print("compiling update_step")
         new_key, loss_key = jax.random.split(state.key)
         loss_and_grad_fn = jax.value_and_grad(loss_fn)
         loss_value, grads = loss_and_grad_fn(state.params, batch, loss_key)
@@ -395,10 +397,6 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
         )
     ]
-    def train_dataloader():
-        while True:
-            yield batch0
-
     train_ds = regression1d.get_dataset(
         config.data.dataset,
         "training",
@@ -419,6 +417,7 @@ def main(_):
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
     for step, batch, key in zip(progress_bar, train_ds, key_iter):
+        # print("num_points", batch.xs.shape[1] - jnp.count_nonzero(batch.mask[0]))
         # if USE_TRUE_SCORE:
             # metrics = {'loss': 0.0, 'step': step}
         # else:

@@ -1,6 +1,6 @@
 from __future__ import annotations
+from typing import Optional
 from abc import abstractmethod
-import operator
 
 import copy
 from functools import partial
@@ -43,8 +43,8 @@ def scale_kernel_variance(params, coeff):
 
 class ScoreNetwork(Callable):
     @abstractmethod
-    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "mask: [N, 1]", "return: [N, y_dim]")
-    def __call__(self, t: Array, yt: Array, x: Array, *, key) -> Array:
+    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "mask: [N,] if mask is not None", "return: [N, y_dim]")
+    def __call__(self, t: Array, yt: Array, x: Array, mask: Optional[Array], *, key) -> Array:
         ...
 
 
@@ -192,10 +192,10 @@ class SDE:
         diffusion = beta_term * sqrt_K
         return diffusion
 
-    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
+    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "mask: [N,] if mask is not None", "return: [N, y_dim]")
+    def score(self, key, t: Array, yt: Array, x: Array, mask: Array, network: ScoreNetwork) -> Array:
         """ This parametrises the (preconditioned) score K(x,x) grad log p(y_t|x) """
-        score = network(t, yt, x, key=key)
+        score = network(t, yt, x, mask, key=key)
         if self.std_trick:
             std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
             score = score / (std + 1e-3)
@@ -206,6 +206,9 @@ class SDE:
             # residual = 2 * fwd_drift / self.beta_schedule(t)
             residual = - yt
             score += residual
+
+        # set score of masked values (i.e. mask == 1) to zero
+        score = jnp.where(mask[:, None] == 0.0, score, jnp.zeros_like(score))
         return score
     
     def get_exact_score(self, mean0: AbstractMeanFunction, k0: jaxkern.base.AbstractKernel, params0: Mapping) -> ScoreNetwork:
@@ -213,7 +216,9 @@ class SDE:
 
         class _ExactScoreNetwork(ScoreNetwork):
             "Exact marginal score in Gaussian setting"
-            def __call__(self2, t: Array, yt: Array, x: Array, *, key) -> Array:
+            def __call__(self2, t: Array, yt: Array, x: Array, mask, *, key) -> Array:
+                x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e12)
+
                 y0 = mean0(params0["mean_function"], x)
                 mu_t, k_t, params = self.pt(t, y0, k0, params0["kernel"])
                 b = flatten(yt - mu_t(params['mean_function'], x))
@@ -229,25 +234,28 @@ class SDE:
         
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    def reverse_drift_ode(self, key, t: Array, yt: Array, x: Array, network) -> Array:
-        second_term = 0.5 * self.beta_schedule(t) * self.score(key, t, yt, x, network)
+    def reverse_drift_ode(self, key, t: Array, yt: Array, x: Array, mask: Array, network) -> Array:
+        second_term = 0.5 * self.beta_schedule(t) * self.score(key, t, yt, x, mask, network)
         if not self.is_score_preconditioned:
             second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
         return self.drift(t, yt, x) - second_term
 
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    def reverse_drift_sde(self, key, t: Array, yt: Array, x: Array, network) -> Array:
-        second_term = self.beta_schedule(t) * self.score(key, t, yt, x, network)
+    def reverse_drift_sde(self, key, t: Array, yt: Array, x: Array, mask, network) -> Array:
+        second_term = self.beta_schedule(t) * self.score(key, t, yt, x, mask, network)
         if not self.is_score_preconditioned:
             second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
         return self.drift(t, yt, x) - second_term
 
 
-    @check_shapes("t: []", "y: [N, y_dim]", "x: [N, x_dim]", "return: []")
-    def loss(self, key, t: Array, y: Array, x: Array, network: ScoreNetwork) -> Array:
+    @check_shapes("t: []", "y: [N, y_dim]", "x: [N, x_dim]", "mask: [N,] if mask is not None", "return: []")
+    def loss(self, key, t: Array, y: Array, x: Array, mask: Array, network: ScoreNetwork) -> Array:
         # TODO: this is DSM loss, refactor to enable ISM loss etc
         """ grad log p(y_t|y_0) = - \Sigma^-1 (y_t - mean) """
+        if mask is None:
+            # consider all points
+            mask = jnp.zeros_like(x[:,0])
 
         factor = (1.0 - jnp.exp(-self.beta_schedule.B(t)))
         std = jnp.sqrt(factor)
@@ -266,12 +274,16 @@ class SDE:
         affine_transformation = lambda x: dist.loc + sqrt @ x
         yt = unflatten(affine_transformation(Z), y.shape[-1])
 
-        precond_score_net = self.score(nkey, t, yt, x, network)
+        precond_score_net = self.score(nkey, t, yt, x, mask, network)
         precond_noise = sqrt @ Z
         if not self.is_score_preconditioned:
             precond_noise = self.limiting_gram(x).solve(precond_noise)
-        loss = jnp.square(std * precond_score_net + unflatten(precond_noise, y.shape[-1]))
-        loss = jnp.mean(jnp.sum(loss, -1))
+        loss = jnp.square(std * precond_score_net + unflatten(precond_noise, y.shape[-1]))  # [N, y_dim]
+
+        # Set values of loss to zero where mask is nonzero
+        loss = jnp.where(mask == 0.0, loss, jnp.zeros_like(loss))
+        num_points = len(x) - jnp.count_nonzero(mask)
+        loss = jnp.sum(jnp.sum(loss, -1)) / num_points
         return loss
 
 
@@ -286,8 +298,8 @@ def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
     t = t + (t1 / batch_size) * jnp.arange(batch_size)
 
     keys = jax.random.split(key, batch_size)
-    losses = jax.vmap(sde.loss, in_axes=[0, 0, 0, 0, None])(
-        keys, t, batch.ys, batch.xs, network
+    losses = jax.vmap(sde.loss, in_axes=[0, 0, 0, 0, 0, None])(
+        keys, t, batch.ys, batch.xs, batch.mask, network
     )
     return jnp.mean(losses)
 
@@ -299,7 +311,6 @@ def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
 class LinOpControlTerm(dfx.ControlTerm):
     @staticmethod
     def prod(vf: LinearOperator, control: PyTree) -> PyTree:
-        # return jtu.tree_map(lambda a, b: a @ b, vf, control)
         return vf @ control
 
 
@@ -313,9 +324,10 @@ def sde_solve(
     sde: SDE,
     network: ScoreNetwork,
     x,
+    mask: Optional[Array],
     *,
     key,
-    prob_flow: bool = False,
+    prob_flow: bool = True,
     num_steps: int = 100,
     y = None,
     solver: AbstractSolver = dfx.Heun(),
@@ -324,6 +336,9 @@ def sde_solve(
     forward: bool = False,
     ts = None
 ):
+    if mask is None:
+        mask = jnp.zeros_like(x[..., 0])
+
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
     else:
@@ -337,26 +352,29 @@ def sde_solve(
     #NOTE: default is time-reversal
     if forward:
         t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
-        drift_sde = lambda t, yt, arg: flatten(
-            sde.drift(t, unflatten(yt, y_dim), arg)
+        # args = (x, mask)
+        drift_sde = lambda t, yt, args: flatten(
+            sde.drift(t, unflatten(yt, y_dim), args[0])
         )
     else:
         t1, t0 = sde.beta_schedule.t0, sde.beta_schedule.t1
-        drift_sde = lambda t, yt, arg: flatten(
-            sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network)
+        # args = (x, mask)
+        drift_sde = lambda t, yt, args: flatten(
+            sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), args[0], args[1], network)
         )
     dt = (t1 - t0) / num_steps  # TODO: dealing properly with endpoint?
 
     if prob_flow:
-        reverse_drift_ode = lambda t, yt, arg: flatten(sde.reverse_drift_ode(
-            key, t, unflatten(yt, y_dim), arg, network
+        # args = (x, mask)
+        reverse_drift_ode = lambda t, yt, args: flatten(sde.reverse_drift_ode(
+            key, t, unflatten(yt, y_dim), args[0], args[1], network
         ))
         terms = dfx.ODETerm(reverse_drift_ode)
     else:
         shape = jax.ShapeDtypeStruct(y.shape, y.dtype)
         key, subkey = jax.random.split(key)
         bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=jnp.abs(dt), shape=shape, key=subkey)
-        diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
+        diffusion = lambda t, yt, args: sde.diffusion(t, unflatten(yt, y_dim), args[0])
 
         terms = dfx.MultiTerm(
             dfx.ODETerm(drift_sde), LinOpControlTerm(diffusion, bm)
@@ -370,7 +388,7 @@ def sde_solve(
         t1=t1,
         dt0=dt,
         y0=y,
-        args=x,
+        args=(x, mask),
         # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
         saveat=saveat

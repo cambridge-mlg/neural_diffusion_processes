@@ -7,7 +7,7 @@ import math
 import haiku as hk
 from einops import rearrange, reduce
 from check_shapes import check_shape as cs, check_shapes, set_enable_function_call_precompute
-set_enable_function_call_precompute(True)
+set_enable_function_call_precompute(False)
 import jax
 import jax.numpy as jnp
 
