@@ -60,7 +60,8 @@ class DatasetConfig:
     eval_num_target: UniformDiscrete
 
 
-_NOISE_VAR = 1e-8
+# _NOISE_VAR = 1e-8
+_NOISE_VAR = 0.05**2
 _KERNEL_VAR = 1.0
 _LENGTHSCALE = .25
 
@@ -148,11 +149,16 @@ def register_dataset_factory(name: str):
     
 @register_dataset_factory("se")
 def _se_dataset_factory():
-    kernel = jaxkern.stationary.RBF(active_dims=[0])
+    rbf = jaxkern.stationary.RBF(active_dims=[0])
+    white = jaxkern.White(active_dims=[0])
+    kernel = jaxkern.SumKernel([rbf, white])
     params = {
         "mean_function": {},
-        "kernel": {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR,},
-        "noise_variance": _NOISE_VAR
+        "kernel": [
+            {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR,},
+            {"variance": _NOISE_VAR,},
+        ],
+        "noise_variance": 0.0
     }
     return GPFunctionalDistribution(kernel, params)
 

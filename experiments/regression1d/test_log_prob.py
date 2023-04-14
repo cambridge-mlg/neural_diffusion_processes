@@ -12,6 +12,14 @@ from neural_diffusion_processes.data import regression1d
 
 from neural_diffusion_processes import config
 
+DATASET = "se"  # squared exponential
+
+
+def get_dataset(key):
+    task = "interpolation"
+    total_num_samples = int(2**14)
+    batch_size = 2
+    return regression1d.get_dataset(DATASET, task, key=key, batch_size=batch_size, samples_per_epoch=total_num_samples, num_epochs=None)
 
 
 @dataclass
@@ -33,7 +41,6 @@ class GP:
             return post(x).log_prob(jnp.reshape(y, (-1,)))
 
 
-DATASET = "se"  # squared exponential
 
 key = jax.random.PRNGKey(0)
 
@@ -56,6 +63,7 @@ sde = ndp.sde.SDE(
     is_score_preconditioned=False,
     std_trick=False,
     residual_trick=False,
+    exact_score=True
 )
 
 
@@ -66,34 +74,53 @@ print(params0)
 p_data = GP(mean0, kernel0, params0)
 true_score_network = sde.get_exact_score(mean0, kernel0, params0)
 
-key, bkey = jax.random.split(key)
+def log_prob(x, y, mask, key):
+    return ndp.sde.log_prob(sde, true_score_network, x, y, mask, key=key, rtol=None)[0][0]
 
-def log_prob(x, y, key):
-    return ndp.sde.log_prob(sde, true_score_network, x, y, key=key, rtol=None)[0][0]
+
+key, dkey = jax.random.split(key)
+ds = get_dataset(dkey)
+batch = next(ds)
+
+
+def m2i(mask):
+    """mask to indices"""
+    return ~mask.astype(jnp.bool_)
 
 
 values = []
 
 
-for ji in [1e-6, 1e-8, 1e-12]:
+for ji in [1e-6]:
     config.set_config(config.Config(jitter=ji))
-    batch = regression1d.get_batch(bkey, 4, DATASET, "training")
     x = jnp.concatenate([batch.xc, batch.xs], axis=1)[0]
     y = jnp.concatenate([batch.yc, batch.ys], axis=1)[0]
+    mask = jnp.concatenate([batch.mask_context, batch.mask], axis=1)[0]
+    mask = jnp.zeros_like(mask)
+    mask_context = jnp.zeros_like(batch.mask_context)
 
     key, jkey, ckey = jax.random.split(key, num=3)
-    logp_joint = log_prob(x, y, jkey)
-    logp_context = log_prob(batch.xc[0], batch.yc[0], ckey)
+    logp_joint = log_prob(x, y, mask, jkey)
+    logp_context = log_prob(batch.xc[0], batch.yc[0], mask_context[0], ckey)
     logp_ndp_cond = logp_joint - logp_context
 
-    logp_gp_prior = p_data.log_prob(x, y)
-    D = (batch.xc[0], batch.yc[0])
-    logp_gp_cond = p_data.log_prob(batch.xs[0], batch.ys[0], data=D)
+    logp_gp_joint = p_data.log_prob(x[m2i(mask)], y[m2i(mask)])
+    D = (
+        batch.xc[0][m2i(mask_context[0])],
+        batch.yc[0][m2i(mask_context[0])]
+    )
+    logp_gp_cond = p_data.log_prob(
+        # batch.xs[0][m2i(batch.mask[0])],
+        # batch.ys[0][m2i(batch.mask[0])],
+        batch.xs[0],
+        batch.ys[0],
+        data=D
+    )
 
     values.append({
         "jitter": ji,
         "logp_ndp_prior": logp_joint,
-        "logp_gp_prior": logp_gp_prior,
+        "logp_gp_prior": logp_gp_joint,
         "logp_ndp_cond": logp_ndp_cond,
         "logp_gp_cond": logp_gp_cond,
     })

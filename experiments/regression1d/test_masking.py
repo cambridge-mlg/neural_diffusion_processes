@@ -53,6 +53,8 @@ test_mask = jnp.concatenate([
     jnp.zeros((len(x) - 15,)),
     jnp.zeros((15,))
 ])
+test_mask
+
 context_mask = jnp.concatenate([
     jnp.zeros((1,)),
     jnp.ones((1,)),
@@ -71,6 +73,7 @@ y_preds = jax.vmap(lambda key: ndp.sde.conditional_sample2(
     key=key,
     num_steps=500,
     num_inner_steps=10,
+    prob_flow=False,
 ))(jax.random.split(key, 30))
 
 import matplotlib.pyplot as plt

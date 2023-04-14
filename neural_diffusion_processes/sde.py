@@ -161,7 +161,14 @@ class SDE:
         k0_params = scale_kernel_variance(k0_params, cov_coef)
         kt_param = copy.deepcopy(self.limiting_params["kernel"])
         kt_param = scale_kernel_variance(kt_param, 1.0 - cov_coef)
-        k0t = SumKernel([k0, self.limiting_kernel])
+
+        if isinstance(k0, jaxkern.base.CombinationKernel):
+            k0t = SumKernel(
+                [*k0.kernel_set, self.limiting_kernel],
+                compute_engine=jaxkern.computations.DenseKernelComputation
+            )
+        else:
+            k0t = SumKernel([k0, self.limiting_kernel])
         # params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
         
         k0_params = k0_params if isinstance(k0_params, list) else [k0_params]
@@ -686,9 +693,9 @@ def get_estimate_div_fn(fn):
     """Create the divergence function of `fn` using the Hutchinson-Skilling trace estimator."""
 
     @check_shapes("t: []", "y: [N, y_dim]", "eps: [K, N, y_dim]", "return: []")
-    def div_fn(t, y: jnp.ndarray, arg, eps: jnp.ndarray) -> jnp.ndarray:
+    def div_fn(t, y: jnp.ndarray, args, eps: jnp.ndarray) -> jnp.ndarray:
         y_dim = y.shape[-1]
-        flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
+        flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), args))
         _, vjp_fn = jax.vjp(flattened_fn, flatten(y))
 
         # NOTE: sequential
@@ -715,10 +722,12 @@ def get_exact_div_fn(fn):
     "flatten all but the last axis and compute the true divergence"
 
     @check_shapes("t: []", "y: [N, y_dim]", "return: []")
-    def div_fn(t, y: jnp.ndarray, arg) -> jnp.ndarray:
+    def div_fn(t, y: jnp.ndarray, args) -> jnp.ndarray:
+        _, mask = args
         y_dim = y.shape[-1]
         flattened_fn = lambda t, y, arg: flatten(fn(t, unflatten(y, y_dim), arg))
-        jac = jax.jacrev(flattened_fn, argnums=1)(t, flatten(y), arg)
+        jac = jax.jacrev(flattened_fn, argnums=1)(t, flatten(y), args)
+        jac = jnp.where(mask[:, None] == 0, jac, jnp.zeros_like(jac))
         return jnp.trace(jac, axis1=-1, axis2=-2)
 
     return div_fn
@@ -727,10 +736,10 @@ def get_exact_div_fn(fn):
 def get_div_fn(drift_fn, hutchinson_type):
     """Divergence of the drift function."""
     if hutchinson_type == "None":
-        return lambda y, t, context, eps: get_exact_div_fn(drift_fn)(y, t, context)
+        return lambda y, t, args, eps: get_exact_div_fn(drift_fn)(y, t, args)
     else:
-        return lambda y, t, context, eps: get_estimate_div_fn(drift_fn)(
-            y, t, context, eps
+        return lambda y, t, args, eps: get_estimate_div_fn(drift_fn)(
+            y, t, args, eps
         )
 
 def div_noise(
@@ -756,6 +765,7 @@ def log_prob(
     network: ScoreNetwork,
     x,
     y,
+    mask: Optional[Array],
     *,
     key,
     # dt=1e-3/2,
@@ -769,6 +779,8 @@ def log_prob(
     ts = None,
     return_all: bool = False,
 ):
+    if mask is None:
+        mask = jnp.zeros_like(x[:, 0])
 
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
@@ -783,8 +795,8 @@ def log_prob(
     dt = (t1 - t0) / num_steps
     # dt = 1e-3/2.
 
-    reverse_drift_ode = lambda t, yt, arg: sde.reverse_drift_ode(
-        key, t, yt, arg, network
+    reverse_drift_ode = lambda t, yt, args: sde.reverse_drift_ode(
+        key, t, yt, args[0], args[1], network
     )
     div_fn = get_div_fn(reverse_drift_ode, hutchinson_type)
     # eps = div_noise(key, y.shape, hutchinson_type)
@@ -795,11 +807,11 @@ def log_prob(
     @jax.jit
     def logp_wrapper(t, carry, static_args):
         yt, _ = carry
-        eps, x = static_args
+        eps, x, mask = static_args
         yt = unflatten(yt, y_dim)
-
-        drift = flatten(reverse_drift_ode(t, yt, x))
-        logp = div_fn(t, yt, x, eps)
+        args = (x, mask)
+        drift = flatten(reverse_drift_ode(t, yt, args))
+        logp = div_fn(t, yt, args, eps)
         return drift, logp
 
     terms = dfx.ODETerm(logp_wrapper)
@@ -813,15 +825,21 @@ def log_prob(
         t1=t1,#-1e-3,
         dt0=dt,
         y0=(y, 0.0),
-        args=(eps, x),
+        args=(eps, x, mask),
         # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
         saveat=saveat
     )
     yT, delta_logp = sol.ys
-    yT = unflatten(yT, y_dim)
+    yT = unflatten(yT, y_dim)[0]
     nfe = sol.stats['num_steps']
-    logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
+
+    print(">>> yT", yT.shape)
+    print(">>> delta_logp", delta_logp.shape)
+
+    logp_prior = sde.log_prob_prior(
+        x[~mask.astype(jnp.bool_)], yT[~mask.astype(jnp.bool_)]
+    )
 
     if return_all:
         return logp_prior, delta_logp, nfe, yT

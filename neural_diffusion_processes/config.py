@@ -20,7 +20,7 @@ def get_config() -> Config:
 
 
 def set_config(new_config: Config) -> None:
-    """Update GPflow config with new settings from `new_config`."""
+    """Update config with new settings from `new_config`."""
     global __config
     __config = new_config
 
