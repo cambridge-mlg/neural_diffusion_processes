@@ -339,6 +339,9 @@ def sde_solve(
     if mask is None:
         mask = jnp.zeros_like(x[..., 0])
 
+    # push the masked points far away
+    x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e12)
+
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
     else:
@@ -502,6 +505,8 @@ def conditional_sample2(
     y_context,
     x_test,
     *,
+    mask_context: Optional[Array],
+    mask_test: Optional[Array],
     key,
     num_steps: int = 100,
     num_inner_steps: int = 5,
@@ -511,13 +516,21 @@ def conditional_sample2(
     lambda0: float = 1.,
     tau: float = None,
 ):
-    # TODO: Langevin dynamics option
+    if mask_context is None:
+        mask_context = jnp.zeros_like(x_context[:, 0])
+    if mask_test is None:
+        mask_test = jnp.zeros_like(x_test[:, 0])
+
+    # push the masked points far away
+    x_context = jnp.where(mask_context[:, None] == 0, x_context, jnp.ones_like(x_context) * 1e12)
+    x_test = jnp.where(mask_test[:, None] == 0, x_test, jnp.ones_like(x_test) * 1e12)
 
     num_context = len(x_context)
     num_target = len(x_test)
     y_dim = y_context.shape[-1]
     shape_augmented_state = [(num_context + num_target) * y_dim]
     x_augmented = jnp.concatenate([x_context, x_test], axis=0)
+    mask_augmented = jnp.concatenate([mask_context, mask_test], axis=0)
 
     t0 = sde.beta_schedule.t0
     t1 = sde.beta_schedule.t1
@@ -527,10 +540,12 @@ def conditional_sample2(
 
     solver = dfx.Euler()
 
-    diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
+    diffusion = lambda t, yt, args: sde.diffusion(t, unflatten(yt, y_dim), args[0])
     if not prob_flow:
         # reverse SDE:
-        reverse_drift_sde = lambda t, yt, arg: flatten(sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network))
+        reverse_drift_sde = lambda t, yt, args: flatten(
+            sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), args[0], args[1], network)
+        )
 
         shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
         key, subkey = jax.random.split(key)
@@ -540,15 +555,16 @@ def conditional_sample2(
         )
     else:
         # reverse ODE:
-        reverse_drift_ode = lambda t, yt, arg: flatten(
-            sde.reverse_drift_ode(key, t, unflatten(yt, y_dim), arg, network)
+        reverse_drift_ode = lambda t, yt, args: flatten(
+            sde.reverse_drift_ode(key, t, unflatten(yt, y_dim), args[0], args[1], network)
         )
         terms_reverse = dfx.ODETerm(reverse_drift_ode)
 
     # langevin dynamics:
-    def reverse_drift_langevin(t, yt, x) -> Array:
+    def reverse_drift_langevin(t, yt, args) -> Array:
+        x, mask = args
         yt = unflatten(yt, y_dim)
-        score = flatten(sde.score(key, t, yt, x, network))
+        score = flatten(sde.score(key, t, yt, x, mask, network))
         if langevin_kernel:
             if sde.is_score_preconditioned:
                 score = score
@@ -561,9 +577,10 @@ def conditional_sample2(
                 score = score
         return 0.5 * sde.beta_schedule(t) * score
     
-    def diffusion_langevin(t, yt, x) -> LinearOperator:
+    def diffusion_langevin(t, yt, args) -> LinearOperator:
+        x, mask = args
         if langevin_kernel:
-            return diffusion(t, yt, x)
+            return diffusion(t, yt, args)
         else:
             return jnp.sqrt(sde.beta_schedule(t)) * identity(yt.shape[-1])
 
@@ -600,11 +617,11 @@ def conditional_sample2(
         #     None,
         #     made_jump=False,
         # )
-
+        args = (x_augmented, mask_augmented)
         yt_m_dt = yt_augmented
-        yt_m_dt += lambda0 * psi * dt * reverse_drift_langevin(t - dt, yt_augmented, x_augmented)
+        yt_m_dt += lambda0 * psi * dt * reverse_drift_langevin(t - dt, yt_augmented, args)
         noise = jnp.sqrt(psi) * jnp.sqrt(dt) * jax.random.normal(key, shape=yt_augmented.shape)
-        yt_m_dt += diffusion_langevin(t - dt, yt_augmented, x_augmented) @ noise
+        yt_m_dt += diffusion_langevin(t - dt, yt_augmented, args) @ noise
         # yt_m_dt += langevin_terms.contr(t, t)[0] * langevin_terms.vf(t, yt_augmented, x_augmented)[0]
         # yt_m_dt += langevin_terms.vf(t, yt_augmented, x_augmented)[1] @ noise
         
@@ -625,10 +642,11 @@ def conditional_sample2(
             t,
             t - dt,
             yt_augmented,
-            x_augmented,
+            (x_augmented, mask_augmented),
             None,
             made_jump=False,
         )
+
         # yt_m_dt = yt_augmented 
         # yt_m_dt += -dt * reverse_drift_diffeq(t, yt_augmented, x_augmented)
         # # yt_m_dt += terms_reverse.contr(t, t-dt) * terms_reverse.vf(t, yt_augmented, x_augmented)

@@ -45,41 +45,40 @@ net = sde.get_exact_score(mean0, kernel0, params0)
 key, dkey = jax.random.split(key)
 # dataset = get_dataset(dkey)
 # batch = next(dataset)
-x = jnp.linspace(-2, 2, 60)[:, None]
-mask1 = jnp.concatenate([
-    jnp.zeros((50,)),
-    jnp.ones((10,))
+x = jnp.linspace(-2, 2, 100)[:, None]
+x_context = jnp.linspace(-2, 2, 5)[:, None] + 1e-4
+y_context = jnp.sin(x_context)
+
+test_mask = jnp.concatenate([
+    jnp.zeros((len(x) - 15,)),
+    jnp.zeros((15,))
 ])
-mask2 = jnp.concatenate([
-    jnp.zeros((60,)),
-    jnp.ones((0,))
-])
-mask3 = jnp.concatenate([
-    jnp.ones((10,)),
-    jnp.zeros((2,)),
-    jnp.ones((10,)),
-    jnp.zeros((3,)),
-    jnp.ones((35,)),
+context_mask = jnp.concatenate([
+    jnp.zeros((1,)),
+    jnp.ones((1,)),
+    jnp.zeros((1,)),
+    jnp.ones((1,)),
+    jnp.zeros((1,)),
 ])
 
+# x_corrupted = jnp.where(mask1[:,None] == 1., -666., x)
 
-x_corrupted = jnp.where(mask1[:,None] == 1., -666., x)
-o1 = ndp.sde.sde_solve(
-    sde, net, x_corrupted, mask1, key=key
-)[0]
-o2 = ndp.sde.sde_solve(
-    sde, net, x, mask2, key=key
-)[0]
-o3 = ndp.sde.sde_solve(
-    sde, net, x, mask3, key=key
-)[0]
+
+y_preds = jax.vmap(lambda key: ndp.sde.conditional_sample2(
+    sde, net, x_context, y_context, x,
+    mask_context=context_mask,
+    mask_test=test_mask,
+    key=key,
+    num_steps=500,
+    num_inner_steps=10,
+))(jax.random.split(key, 30))
 
 import matplotlib.pyplot as plt
-plt.plot(x, o1, "x")
-plt.plot(x, o2, 'o')
-plt.plot(x, o3, 's')
-plt.ylim(-5, 5)
-plt.savefig("sample.png")
+plt.plot(x[~test_mask.astype(jnp.bool_)], y_preds[:, ~test_mask.astype(jnp.bool_), 0].T, "C0", alpha=.3)
+plt.plot(x_context[~context_mask.astype(jnp.bool_)], y_context[~context_mask.astype(jnp.bool_)], "kx")
+plt.plot(x_context[context_mask.astype(jnp.bool_)], y_context[context_mask.astype(jnp.bool_)], "ko", mfc='none')
+# plt.ylim(-5, 5)
+plt.savefig("cond.png")
 
 # import numpy as np
 # np.testing.assert_array_almost_equal(o1[:50], o2)
