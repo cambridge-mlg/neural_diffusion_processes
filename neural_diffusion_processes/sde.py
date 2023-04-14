@@ -779,6 +779,7 @@ def log_prob(
     ts = None,
     return_all: bool = False,
 ):
+    print("compiling log_prob", x.shape)
     if mask is None:
         mask = jnp.zeros_like(x[:, 0])
 
@@ -833,9 +834,7 @@ def log_prob(
     yT, delta_logp = sol.ys
     yT = unflatten(yT, y_dim)[0]
     nfe = sol.stats['num_steps']
-
-    print(">>> yT", yT.shape)
-    print(">>> delta_logp", delta_logp.shape)
+    return delta_logp[0], yT
 
     logp_prior = sde.log_prob_prior(
         x[~mask.astype(jnp.bool_)], yT[~mask.astype(jnp.bool_)]

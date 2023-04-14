@@ -12,14 +12,14 @@ from neural_diffusion_processes.data import regression1d
 
 from neural_diffusion_processes import config
 
-DATASET = "se"  # squared exponential
+DATASET = "matern"  # squared exponential
 
 
 def get_dataset(key):
     task = "interpolation"
     total_num_samples = int(2**14)
-    batch_size = 2
-    return regression1d.get_dataset(DATASET, task, key=key, batch_size=batch_size, samples_per_epoch=total_num_samples, num_epochs=None)
+    batch_size = 32
+    return regression1d.get_dataset(DATASET, task, key=key, batch_size=batch_size, samples_per_epoch=total_num_samples, num_epochs=1)
 
 
 @dataclass
@@ -74,8 +74,18 @@ print(params0)
 p_data = GP(mean0, kernel0, params0)
 true_score_network = sde.get_exact_score(mean0, kernel0, params0)
 
+
+@jax.vmap
+@jax.jit
+def delta_logp(x, y, mask, key):
+    return ndp.sde.log_prob(sde, true_score_network, x, y, mask, key=key)
+
 def log_prob(x, y, mask, key):
-    return ndp.sde.log_prob(sde, true_score_network, x, y, mask, key=key, rtol=None)[0][0]
+    dlp, yT = delta_logp(x, y, mask, key)
+    logp_prior = jax.vmap(sde.log_prob_prior)(
+        x[:, ~mask[0].astype(jnp.bool_)], yT[:, ~mask[0].astype(jnp.bool_)]
+    )
+    return logp_prior + dlp
 
 
 key, dkey = jax.random.split(key)
@@ -90,39 +100,48 @@ def m2i(mask):
 
 values = []
 
+logliks = []
 
-for ji in [1e-6]:
-    config.set_config(config.Config(jitter=ji))
-    x = jnp.concatenate([batch.xc, batch.xs], axis=1)[0]
-    y = jnp.concatenate([batch.yc, batch.ys], axis=1)[0]
-    mask = jnp.concatenate([batch.mask_context, batch.mask], axis=1)[0]
-    mask = jnp.zeros_like(mask)
-    mask_context = jnp.zeros_like(batch.mask_context)
+
+ji = 1e-6
+config.set_config(config.Config(jitter=ji))
+
+for i, batch in enumerate(ds):
+    # if i >= 124: break
+    x = jnp.concatenate([batch.xc, batch.xs], axis=1)
+    y = jnp.concatenate([batch.yc, batch.ys], axis=1)
+    mask = jnp.concatenate([batch.mask_context, batch.mask], axis=1)
+    # mask = jnp.zeros_like(mask)
+    mask_context = batch.mask_context
 
     key, jkey, ckey = jax.random.split(key, num=3)
-    logp_joint = log_prob(x, y, mask, jkey)
-    logp_context = log_prob(batch.xc[0], batch.yc[0], mask_context[0], ckey)
+    logp_joint = log_prob(x, y, mask, jax.random.split(jkey, len(x)))
+    logp_context = log_prob(batch.xc, batch.yc, mask_context, jax.random.split(ckey, len(x)))
     logp_ndp_cond = logp_joint - logp_context
 
-    logp_gp_joint = p_data.log_prob(x[m2i(mask)], y[m2i(mask)])
-    D = (
-        batch.xc[0][m2i(mask_context[0])],
-        batch.yc[0][m2i(mask_context[0])]
-    )
-    logp_gp_cond = p_data.log_prob(
-        # batch.xs[0][m2i(batch.mask[0])],
-        # batch.ys[0][m2i(batch.mask[0])],
-        batch.xs[0],
-        batch.ys[0],
-        data=D
-    )
+    # logp_gp_joint = p_data.log_prob(x[m2i(mask)], y[m2i(mask)])
+    # D = (
+    #     batch.xc[:, m2i(mask_context)],
+    #     batch.yc[:, m2i(mask_context)]
+    # )
+    # logp_gp_cond = p_data.log_prob(
+    #     batch.xs[:, m2i(batch.mask[0])],
+    #     batch.ys[m2i(batch.mask[0])],
+    #     # batch.xs[0],
+    #     # batch.ys[0],
+    #     data=D
+    # )
+    print(logp_joint.shape)
+    logliks.append(logp_ndp_cond / 50.)
 
     values.append({
         "jitter": ji,
-        "logp_ndp_prior": logp_joint,
-        "logp_gp_prior": logp_gp_joint,
-        "logp_ndp_cond": logp_ndp_cond,
-        "logp_gp_cond": logp_gp_cond,
+        "logp_ndp_prior": jnp.mean(logp_joint),
+        # "logp_gp_prior": logp_gp_joint,
+        "logp_ndp_cond": jnp.mean(logp_ndp_cond),
+        # "logp_gp_cond": logp_gp_cond,
+        "num_target": m2i(batch.mask[0]).sum(),
+        "num_context": m2i(batch.mask_context[0]).sum()
     })
     print(values[-1])
 
@@ -130,3 +149,12 @@ import pandas as pd
 
 df = pd.DataFrame(values)
 print(df)
+
+vals = jnp.concatenate(logliks)
+err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
+
+print(jnp.mean(vals))
+print(jnp.var(vals))
+print(err(vals))
+
+

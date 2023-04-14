@@ -165,27 +165,76 @@ def _se_dataset_factory():
 
 @register_dataset_factory("matern")
 def _matern_dataset_factory():
-    kernel = jaxkern.stationary.Matern52(active_dims=[0])
+    mat = jaxkern.stationary.Matern52(active_dims=[0])
+    white = jaxkern.White(active_dims=[0])
+    kernel = jaxkern.SumKernel([mat, white])
     params = {
         "mean_function": {},
-        "kernel": {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR,},
-        "noise_variance": _NOISE_VAR
+        "kernel": [
+            {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR,},
+            {"variance": _NOISE_VAR,},
+        ],
+        "noise_variance": 0.0
     }
     return GPFunctionalDistribution(kernel, params)
 
 
+class MyWeaklyPeriodic(jaxkern.base.AbstractKernel):
+    """The Radial Basis Function (RBF) kernel."""
+
+    def __init__(
+        self,
+        compute_engine: jaxkern.computations.AbstractKernelComputation = jaxkern.computations.DenseKernelComputation,
+        active_dims: Optional[List[int]] = None,
+        stationary: Optional[bool] = False,
+        spectral: Optional[bool] = False,
+        name: Optional[str] = "Radial basis function kernel",
+    ) -> None:
+        super().__init__(compute_engine, active_dims, stationary, spectral, name)
+        self.rbf = jaxkern.stationary.RBF(active_dims=active_dims)
+        self.per = jaxkern.stationary.Periodic(active_dims=active_dims)
+
+    def __call__(self, params, x, y):
+        params_rbf = {
+            "variance": 1.0,
+            "lengthscale": params["rbf_lengthscale"],
+        }
+        params_per = {
+            "variance": 1.0,
+            "lengthscale": params["per_lengthscale"],
+            "period": params["period"]
+        }
+        return (
+            params["variance"] * self.rbf(params_rbf, x, y) * self.per(params_per, x, y)
+        )
+
+    def init_params(self, key):
+        params = {
+            "variance": jnp.array([1.0]),
+            "per_lengthscale": jnp.array([1.0] * self.ndims),
+            "rbf_lengthscale": jnp.array([1.0] * self.ndims),
+            "period": jnp.array([1.0] * self.ndims),
+        }
+        return jax.tree_util.tree_map(lambda x: jnp.atleast_1d(x), params)
+
+
 @register_dataset_factory("weaklyperiodic")
 def _weaklyper_dataset_factory():
-    rbf = jaxkern.stationary.RBF(active_dims=[0])
-    per = jaxkern.stationary.Periodic(active_dims=[0])
-    kernel = jaxkern.ProductKernel([rbf, per])
+    per = MyWeaklyPeriodic(active_dims=[0])
+    white = jaxkern.White(active_dims=[0])
+    kernel = jaxkern.SumKernel([per, white])
     params = {
         "mean_function": {},
         "kernel": [
-            {"lengthscale": 0.5, "variance": _KERNEL_VAR},
-            {"lengthscale": _LENGTHSCALE, "variance": _KERNEL_VAR, "period": 1.},
+            {
+            "variance": _KERNEL_VAR,
+            "per_lengthscale": _LENGTHSCALE,
+            "rbf_lengthscale": 0.5,
+            "period": 1.0,
+            },
+            {"variance": _NOISE_VAR,},
         ],
-        "noise_variance": _NOISE_VAR,
+        "noise_variance": 0.0,
     }
 
     return GPFunctionalDistribution(kernel, params)
