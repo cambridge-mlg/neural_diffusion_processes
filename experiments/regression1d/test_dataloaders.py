@@ -37,7 +37,7 @@ max         : {np.max(times)}
 
 if __name__ == "__main__":
     key = jax.random.PRNGKey(0)
-    dataset = "se"
+    dataset = "mixture"
     task = "training"
     total_num_samples = int(2**14)
     batch_size = 2

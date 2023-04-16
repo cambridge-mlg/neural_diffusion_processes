@@ -18,10 +18,6 @@ from neural_diffusion_processes.kernels import sample_prior_gp
 from neural_diffusion_processes.data.data import DataBatch
 
 
-MAX_NUM_CONTEXT = 10
-MAX_NUM_TARGET = 100
-
-
 @dataclass
 class UniformDiscrete:
     lower: int
@@ -38,7 +34,7 @@ _DATASET = [
     "matern",
     "weaklyperiodic",
     "sawtooth",
-    "noisymixture",
+    "mixture",
 ]
 
 _TASKS = [
@@ -60,7 +56,6 @@ class DatasetConfig:
     eval_num_target: UniformDiscrete
 
 
-# _NOISE_VAR = 1e-8
 _NOISE_VAR = 0.05**2
 _KERNEL_VAR = 1.0
 _LENGTHSCALE = .25
@@ -81,14 +76,14 @@ _DATASET_CONFIGS = {
         eval_num_target=UniformDiscrete(50, 50),
         eval_num_context=UniformDiscrete(1, 10),
     ),
-    "noisymixture": DatasetConfig(
-        train_num_target=UniformDiscrete(1, 60),
-        eval_num_target=UniformDiscrete(50, 50),
+    "sawtooth": DatasetConfig(
+        train_num_target=UniformDiscrete(1, 110),
+        eval_num_target=UniformDiscrete(100, 100),
         eval_num_context=UniformDiscrete(1, 10),
     ),
-    "sawtooth": DatasetConfig(
-        train_num_target=UniformDiscrete(1, 100),
-        eval_num_target=UniformDiscrete(90, 90),
+    "mixture": DatasetConfig(
+        train_num_target=UniformDiscrete(1, 110),
+        eval_num_target=UniformDiscrete(100, 100),
         eval_num_context=UniformDiscrete(1, 10),
     ),
 }
@@ -135,6 +130,8 @@ class GPFunctionalDistribution(FuntionalDistribution):
         return sample_prior_gp(
             key, self.mean, self.kernel, params=self.params, x=x, obs_noise=self.params["noise_variance"]
         )
+
+
 
 DatasetFactory: Callable[[], FuntionalDistribution]
 
@@ -240,25 +237,6 @@ def _weaklyper_dataset_factory():
     return GPFunctionalDistribution(kernel, params)
 
 
-@register_dataset_factory("noisymixture")
-def _noisymix_dataset_factory():
-    rbf1 = jaxkern.stationary.RBF(active_dims=[0])
-    rbf2 = jaxkern.stationary.RBF(active_dims=[0])
-    white = jaxkern.stationary.White(active_dims=[0])
-    kernel = jaxkern.SumKernel([rbf1, rbf2, white])
-    params = {
-        "mean_function": {},
-        "kernel": [
-            {"lengthscale": _LENGTHSCALE, "variance": 1.0},
-            {"lengthscale": 1.0, "variance": 1.0},
-            {"variance": 1e-3},
-        ],
-        "noise_variance": _NOISE_VAR,
-    }
-
-    return GPFunctionalDistribution(kernel, params)
-
-
 class Sawtooth(FuntionalDistribution):
     """ See appendix H: https://arxiv.org/pdf/2007.01332.pdf"""
     def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
@@ -279,6 +257,41 @@ def _sawtooth_dataset_factory():
     return Sawtooth()
 
 
+class Mixture(FuntionalDistribution):
+    def __init__(self, generators: List[FuntionalDistribution]):
+        assert len(generators) == 4  # see tests/test_mixture.py for a more general impl.
+        self._generators = generators
+
+    def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
+        key, skey = jax.random.split(key)
+        rand1, rand2, rand3 = jax.random.uniform(skey, shape=(3,))
+        return jax.lax.cond(
+            rand1 < 0.25,
+            lambda: self._generators[0].sample(key, x),
+            lambda: jax.lax.cond(
+                rand2 < 1./3,
+                lambda: self._generators[1].sample(key, x),
+                lambda: jax.lax.cond(
+                    rand3 < 0.5,
+                    lambda: self._generators[2].sample(key, x),
+                    lambda: self._generators[3].sample(key, x),
+                )
+            )
+        )
+
+
+@register_dataset_factory("mixture")
+def _mixture_dataset_factory():
+    return Mixture(
+        generators=[
+            _DATASET_FACTORIES["se"],
+            _DATASET_FACTORIES["matern"],
+            _DATASET_FACTORIES["weaklyperiodic"],
+            _DATASET_FACTORIES["sawtooth"],
+        ]
+    )
+
+
 def get_batch(key, batch_size: int, name: str, task: str):
     if name not in _DATASET:
         raise NotImplementedError("Unknown dataset: %s." % name)
@@ -286,23 +299,27 @@ def get_batch(key, batch_size: int, name: str, task: str):
         raise NotImplementedError("Unknown task: %s." % task)
     
 
-    n_context = MAX_NUM_CONTEXT #_DATASET_CONFIGS[name].train_num_context.sample(nckey, ())
-    n_target = MAX_NUM_TARGET # _DATASET_CONFIGS[name].train_num_target.sample(ntkey, ())
+    if task == "training":
+        max_n_target = _DATASET_CONFIGS[name].train_num_target.upper
+        max_n_context = 0
+    else:
+        max_n_target = _DATASET_CONFIGS[name].eval_num_target.upper
+        max_n_context = _DATASET_CONFIGS[name].eval_num_context.upper
 
     key, ckey, tkey = jax.random.split(key, 3)
     task = _TASK_CONFIGS[task]
-    x_context = task.x_context_dist.sample(seed=ckey, sample_shape=(batch_size, n_context, 1))
+    x_context = task.x_context_dist.sample(seed=ckey, sample_shape=(batch_size, max_n_context, 1))
 
-    x_target = task.x_target_dist.sample(seed=tkey, sample_shape=(batch_size, n_target, 1))
+    x_target = task.x_target_dist.sample(seed=tkey, sample_shape=(batch_size, max_n_target, 1))
     x = jnp.concatenate([x_context, x_target], axis=1)
 
     keys = jax.random.split(key, batch_size)
     y = jax.vmap(_DATASET_FACTORIES[name].sample)(keys, x)
     return DataBatch(
         xs=x_target,
-        ys=y[:, n_context:, :],
+        ys=y[:, max_n_context:, :],
         xc=x_context,
-        yc=y[:, :n_context, :]
+        yc=y[:, :max_n_context, :]
     )
 
 
@@ -413,13 +430,13 @@ if __name__ == "__main__":
         def info(a, name):
             print(name)
             print(a.shape)
-            print(jnp.min(a))
-            print(jnp.max(a))
             print("="*10)
 
         def plot_data(xc, yc, xt, yt, ax, legend=True, ns=1):
-            ax.plot(xc[:ns, :, 0].T, yc[:ns, :, 0].T, "C0.", label="context")
+            info(xc, "context")
+            info(xt, "target")
             ax.plot(xt[:ns, :, 0].T, yt[:ns, :, 0].T, "C1.", label="target")
+            ax.plot(xc[:ns, :, 0].T, yc[:ns, :, 0].T, "C0.", label="context")
             handles, labels = ax.get_legend_handles_labels()
             labels, ids = numpy.unique(labels, return_index=True)
             handles = [handles[i] for i in ids]
@@ -431,17 +448,18 @@ if __name__ == "__main__":
 
         fig, axes = plt.subplots(len(_DATASET_FACTORIES), len(_TASK_CONFIGS), figsize=(15, 5), sharex=True, tight_layout=True)
 
-
         for (i, dataset), (j, task) in itertools.product(enumerate(_DATASET_FACTORIES.keys()), enumerate(_TASK_CONFIGS.keys())):
             print(dataset, task)
             ax = axes[i,j]
             ax.set_xlim(-4, 6)
             data = get_batch(key, 16, dataset, task)
-            plot_data(*data, ax, legend=(i==0) and (j==0))
+            plot_data(data.xc, data.yc, data.xs, data.ys, ax, legend=(i==0) and (j==0))
             if i == 0:
                 ax.set_title(task)
             if j == 0:
                 ax.set_ylabel(dataset)
+        
+        plt.savefig("fig1.png")
 
 
         nrows = len(_DATASET_FACTORIES)
@@ -453,3 +471,7 @@ if __name__ == "__main__":
             y = jax.vmap(_DATASET_FACTORIES[name].sample, in_axes=[0, None])(keys, x)
             ax.set_title(name)
             ax.plot(x, y[:3, :, 0].T)
+
+        plt.savefig("fig2.png")
+    
+    plot_data()
