@@ -331,9 +331,9 @@ def sde_solve(
     sde: SDE,
     network: ScoreNetwork,
     x,
-    mask: Optional[Array],
     *,
     key,
+    mask: Optional[Array] = None,
     prob_flow: bool = True,
     num_steps: int = 100,
     y = None,
@@ -779,7 +779,6 @@ def log_prob(
     ts = None,
     return_all: bool = False,
 ):
-    print("compiling log_prob", x.shape)
     if mask is None:
         mask = jnp.zeros_like(x[:, 0])
 

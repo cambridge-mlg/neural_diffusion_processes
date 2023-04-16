@@ -18,12 +18,26 @@ class DataBatch(Pytree):
     mask: Array | None = None
     mask_context: Array | None = None
 
-    def __len__(self) -> int:
-        return len(self.xs)
+    @property
+    def batch_size(self) -> int:
+        return self.xs.shape[0]
 
     @property
-    def num_points(self) -> int:
-        return self.xs.shape[1]
+    def num_targets(self) -> int:
+        if self.mask is None:
+            return self.xs.shape[1]
+
+        return self.xs.shape[1] - jnp.count_nonzero(self.mask[0])
+
+    @property
+    def num_context(self) -> int:
+        if self.xc is None:
+            return 0
+
+        if self.mask_context is None:
+            return self.xc.shape[1]
+
+        return self.xc.shape[1] - jnp.count_nonzero(self.mask_context[0])
 
     @check_shapes()
     def __post_init__(self) -> None:

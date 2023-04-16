@@ -32,13 +32,14 @@ class NetworkConfig:
 
 @dataclasses.dataclass
 class EvalConfig:
-    batch_size: int = 16
+    batch_size: int = 64
     num_samples_in_epoch: int = 128
 
 
 @dataclasses.dataclass
 class Config:
     seed: int = 42
+    mode: str = "train"
     eval: EvalConfig = EvalConfig()
     data: DataConfig = DataConfig()
     sde: SdeConfig = SdeConfig()

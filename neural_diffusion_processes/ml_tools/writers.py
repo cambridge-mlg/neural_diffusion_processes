@@ -196,17 +196,13 @@ _IMAGE_PATH_TEMPLATE = "%s/images"
 class LocalWriter(_MetricWriter):
     """MetricWriter that writes files to local disk."""
 
-    def __init__(self, logdir: str, flush_every_n: int = 100):
-        """
-        export_scalars: If `True` exports the scalars to json to `logdir/scalars.json`
-            when writer is closed.
-        """
+    def __init__(self, logdir: str, flush_every_n: int = 100, filename: str = "metrics"):
         super().__init__()
         _cond_mkdir(logdir)
         self._count = 0
         self._flush_every_n = flush_every_n
         self._logdir = logdir
-        self._metrics_path = f"{self._logdir}/metrics.csv"
+        self._metrics_path = f"{self._logdir}/{filename}.csv"
         self._metrics = []
 
     def write_scalars(self, step: int, scalars: Mapping[str, Scalar]):
@@ -257,14 +253,12 @@ class LocalWriter(_MetricWriter):
         if len(self._metrics) == 0:
             return
 
+        df = pd.DataFrame(self._metrics)
         if os.path.exists(self._metrics_path):
-            # append
-            pd.DataFrame(self._metrics).to_csv(
-                self._metrics_path, mode="a", header=True, index=False
-            )
-        else:
-            # create new one
-            pd.DataFrame(self._metrics).to_csv(self._metrics_path, header=True, index=False)
+            prev = pd.read_csv(self._metrics_path, index_col=0)
+            df = pd.concat([prev, df], axis=0)
+
+        df.to_csv(self._metrics_path)
 
         self._count = 0
         self._metrics = []

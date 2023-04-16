@@ -39,7 +39,7 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = False
+USE_TRUE_SCORE = True
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -48,23 +48,6 @@ _LOG_DIR = 'logs'
 
 
 _CONFIG = config_flags.DEFINE_config_dict("config", config_utils.to_configdict(Config()))
-
-
-# def data_generator(key, dataset, task, total_num_samples, batch_size, num_epochs: Optional[int] = None):
-#     assert total_num_samples % batch_size == 0
-
-#     def batch(key) -> ndp.data.DataBatch:
-#         return regression1d.get_batch(key, batch_size, dataset, task)
-
-#     if num_epochs is None:
-#         num_epochs = np.inf
-    
-#     count_epochs = 0
-#     while count_epochs < num_epochs:
-#         count_epochs += 1
-#         for _ in range(total_num_samples // batch_size):
-#             key, bkey = jax.random.split(key)
-#             yield batch(bkey)
 
 
 def get_experiment_name(config: Config):
@@ -93,6 +76,62 @@ def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
         yield next_key
 
 
+def get_log_prob(sde, network):
+    """
+    Returns a function which computes the log (conditional) probabability.
+
+    Warning: The function can not be jitted!
+    """
+
+    @functools.partial(jax.vmap, in_axes=[None, 0, 0, 0, 0])
+    @jax.jit
+    def delta_logp(params, x, y, mask, key):
+        net = functools.partial(network, params)
+        return ndp.sde.log_prob(sde, net, x, y, mask, key=key)
+
+    def log_prob(params, x, y, mask, key):
+        dlp, yT = delta_logp(params, x, y, mask, key)
+        logp_prior = jax.vmap(sde.log_prob_prior)(
+            x[:, ~mask[0].astype(jnp.bool_)], yT[:, ~mask[0].astype(jnp.bool_)]
+        )
+        return logp_prior + dlp
+    
+    def log_prob_cond(params, key,  x, y, mask, context):
+        """
+        params: []
+        key: []
+        x: [batch, num_pounts, x_dim]
+        y: [batch, num_pounts, y_dim]
+        mask: [batch, num_pounts]
+        context: if not None:
+            x: [batch, num_pounts_context, x_dim]
+            y: [batch, num_pounts_context, y_dim]
+            mask: [batch, num_pounts_context]
+        """
+        batch_size = len(x)
+        if context is not None:
+            assert len(context) == 3
+            xc, yc, mc = context
+            x = jnp.concatenate([x, xc], axis=1)
+            y = jnp.concatenate([y, yc], axis=1)
+            mask = jnp.concatenate([mask, mc], axis=1)
+            key, skey = jax.random.split(key)
+            keys = jax.random.split(skey, batch_size)
+            logp_context = log_prob(params, xc, yc, mc, keys)
+        else:
+            logp_context = 0.
+
+        keys = jax.random.split(key, batch_size)
+        logp_joint = log_prob(params, x, y, mask, keys)
+        return logp_joint - logp_context
+    
+    return log_prob_cond
+
+
+def m2i(mask):
+    """mask to indices"""
+    return ~mask.astype(jnp.bool_)
+
 
 class Task:
     def __init__(self, key, task: str, dataset: str, batch_size: int, num_data: int, conditional_sampler: Callable, logp: Callable):
@@ -101,67 +140,83 @@ class Task:
         self._task = task
         self._batch_size = batch_size
         self._num_data = num_data
-        key = jax.random.PRNGKey(0)
+        _key = jax.random.PRNGKey(0)
         # just for plotting - it doesn't matter that we use the same key across tasks/datasets.
-        self._test_batch = regression1d.get_batch(key, 4, dataset, task)
+        self._plt_batch = regression1d.get_batch(_key, batch_size, dataset, task)
 
-        @functools.partial(jax.vmap, in_axes=[None, None, None, None, 0])
-        @functools.partial(jax.vmap, in_axes=[None, 0, 0, 0, None])
-        def vmapped_sampler(params, x_context, y_context, x_target, key):
-            return conditional_sampler(params, x_context, y_context, x_target, key)
+        # @functools.partial(jax.vmap, in_axes=[None, None, None, None, 0])
+        # @functools.partial(jax.vmap, in_axes=[None, 0, 0, 0, None])
+        # def vmapped_sampler(params, x_context, y_context, x_target, key):
+        #     return conditional_sampler(params, x_context, y_context, x_target, key)
 
-        @functools.partial(jax.vmap, in_axes=[None, 0, 0, None])
-        def vmapped_logp(params, x, y, key):
-            return logp(params, x, y, key)
+        # @functools.partial(jax.vmap, in_axes=[None, 0, 0, None])
+        # def vmapped_logp(params, x, y, key):
+        #     return logp(params, x, y, key)
         
-        self._sampler = vmapped_sampler
-        self._logp = vmapped_logp
+        self._sampler = conditional_sampler
+        self._logp = logp
     
     def plot(self, params, key):
         fig, axes = plt.subplots(4, 1, figsize=(8, 8), sharex=True, sharey=True, tight_layout=True)
         keys = jax.random.split(key, 10)
-        samples = self._sampler(params, self._test_batch.xc, self._test_batch.yc, self._test_batch.xs, keys)
+        samples = self._sampler(
+            params,
+            keys,
+            self._plt_batch.xc,
+            self._plt_batch.yc,
+            self._plt_batch.mask_context,
+            self._plt_batch.xs,
+            self._plt_batch.mask,
+        )
         means = jnp.mean(samples, axis=0)
         stds = jnp.std(samples, axis=0)
 
         fig.suptitle(self._task)
         for i, ax in enumerate(axes):
-            ax.plot(self._test_batch.xc[i], self._test_batch.yc[i], 'kx')
-            ax.plot(self._test_batch.xs[i], self._test_batch.ys[i], 'rx')
+            ax.plot(self._plt_batch.xc[i], self._plt_batch.yc[i], 'kx')
+            ax.plot(self._plt_batch.xs[i], self._plt_batch.ys[i], 'rx')
             ax.errorbar(
-                jnp.reshape(self._test_batch.xs[i], (-1,)),
+                jnp.reshape(self._plt_batch.xs[i], (-1,)),
                 means[i].ravel(),
                 yerr=stds[i].ravel() * 2,
                 ecolor='C0',
                 ls='none',
             )
-            ax.plot(self._test_batch.xs[i], means[i], 'C0.')
+            ax.plot(self._plt_batch.xs[i], means[i], 'C0.')
 
         return fig
     
     def eval(self, params, key):
+        print(self._task)
         num_samples = 16
         # uses same key to keep test data fixed across evaluations
         # generator = data_generator(self._key, self._dataset, self._task, self._num_data, self._batch_size, num_epochs=1)
         ds = regression1d.get_dataset(self._dataset, self._task, key=self._key, batch_size=self._batch_size, samples_per_epoch=self._num_data, num_epochs=1)
         metrics = {"mse": [], "loglik": []}
-        for i, batch in enumerate(ds):
-            print(".", end='')
+        pb = tqdm.tqdm(list(range(1, self._num_data // self._batch_size + 1)), miniters=1)
+        for i, batch in zip(pb, ds):
             key, *keys = jax.random.split(key, num_samples + 1)
-            samples = self._sampler(params, batch.xc, batch.yc, batch.xs, jnp.stack(keys))
+            samples = self._sampler(
+                params,
+                jnp.stack(keys),
+                batch.xc,
+                batch.yc,
+                batch.mask_context,
+                batch.xs,
+                batch.mask,
+            )
             y_pred = jnp.mean(samples, axis=0)  # [batch_size, num_points, y_dim]
             mse = jnp.mean((batch.ys - y_pred) ** 2, axis=[1, 2])  # [batch_size]
             metrics["mse"].append(mse)
 
-            x = jnp.concatenate([batch.xc, batch.xs], axis=1)
-            y = jnp.concatenate([batch.yc, batch.ys], axis=1)
-            key, jkey, ckey = jax.random.split(key, num=3)
-            logp_joint, _ = self._logp(params, x, y, jkey)
-            logp_context, _ = self._logp(params, batch.xc, batch.yc, ckey)
-            logp_cond = (logp_joint - logp_context) / batch.xs.shape[1]
+            key, skey = jax.random.split(key)
+            context = (batch.xc, batch.yc, batch.mask_context)
+            logp_cond = self._logp(
+                params, skey, batch.xs, batch.ys, batch.mask, context
+            )
+            logp_cond = logp_cond / batch.num_targets
             metrics["loglik"].append(jnp.reshape(logp_cond, (-1)))
 
-        print("")
         
         err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
         summary_stats = [
@@ -170,6 +225,7 @@ class Task:
             ("err", err)
         ]
         metrics = {f"{k}_{n}": s(jnp.stack(v)) for k, v in metrics.items() for n, s in summary_stats}
+        print(metrics)
         return metrics
 
     def get_callback(self, writer: ml_tools.writers._MetricWriter):
@@ -322,19 +378,21 @@ def main(_):
     
     ########## Plotting
 
-    def conditional(params, xc, yc, xs, key):
-        net_params = (
-            true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
-        )
-        return ndp.sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key)
-
-
+    @functools.partial(jax.vmap, in_axes=[None, 0, None, None, None, None, None])
+    @functools.partial(jax.vmap, in_axes=[None, None, 0, 0, 0, 0, 0])
     @jax.jit
-    def logp(params, x, y, key):
+    def conditional(params, key, xc, yc, maskc, xs, mask):
+        print("Compiling conditional", xc.shape, xs.shape)
         net_params = (
             true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
         )
-        return ndp.sde.log_prob(sde, net_params, x, y, key=key)
+        return ndp.sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key, mask_context=maskc, mask_test=mask)
+
+    logp = get_log_prob(
+        sde,
+        lambda params, *args, **kwargs: true_score_network(*args, **kwargs) if USE_TRUE_SCORE else \
+            net(params, *args, **kwargs)
+    )
     
     local_writer = ml_tools.writers.LocalWriter(exp_root_dir, flush_every_n=100)
     tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))
@@ -353,7 +411,7 @@ def main(_):
         for task in ["interpolation", "extrapolation", "generalization"]
     ]
 
-    callbacks = [
+    task_callbacks = [
         task.get_callback(writer) for task in tasks
     ]
 
@@ -376,14 +434,14 @@ def main(_):
 
     actions = [
         ml_tools.actions.PeriodicCallback(
-            every_steps=1,
+            every_steps=10,
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
         ml_tools.actions.PeriodicCallback(
             every_steps=num_steps_per_epoch,
             # every_steps=1,
             callback_fn=lambda step, t, **kwargs: [
-                cb(step, t, **kwargs) for cb in callbacks
+                cb(step, t, **kwargs) for cb in task_callbacks
             ]
         ),
         ml_tools.actions.PeriodicCallback(
@@ -392,10 +450,10 @@ def main(_):
                 step, callback_plot_prior(kwargs["state"], kwargs["key"])
             )
         ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=500,
-            callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
-        )
+        # ml_tools.actions.PeriodicCallback(
+        #     every_steps=500,
+        #     callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
+        # )
     ]
     train_ds = regression1d.get_dataset(
         config.data.dataset,
@@ -413,22 +471,29 @@ def main(_):
     #     batch_size=config.optimization.batch_size,
     #     num_epochs=config.optimization.num_epochs,
     # )
-
+    if config.mode == "eval_only": num_steps = 0
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
     for step, batch, key in zip(progress_bar, train_ds, key_iter):
         # print("num_points", batch.xs.shape[1] - jnp.count_nonzero(batch.mask[0]))
-        # if USE_TRUE_SCORE:
-            # metrics = {'loss': 0.0, 'step': step}
-        # else:
-        state, metrics = update_step(state, batch)
+        if USE_TRUE_SCORE:
+            metrics = {'loss': 0.0, 'step': step}
+        else:
+            state, metrics = update_step(state, batch)
         metrics["lr"] = learning_rate_schedule(step)
 
-        # for action in actions:
-        #     action(step, t=None, metrics=metrics, state=state, key=key)
+        for action in actions:
+            action(step, t=None, metrics=metrics, state=state, key=key)
 
         if step % 100 == 0:
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")
+
+
+    for task, callback in zip(tasks, task_callbacks):
+        print(task._task)
+        task._num_data = config.data.num_samples_in_epoch
+        callback(num_steps + 1, None, state=state, key=next(key_iter))
+    
 
 
 if __name__ == "__main__":

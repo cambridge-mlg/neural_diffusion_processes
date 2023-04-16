@@ -353,7 +353,6 @@ def data_generator(key, dataset, task, total_num_samples, batch_size, num_epochs
     def batch(key) -> DataBatch:
         return get_batch(key, batch_size, dataset, task)
 
-    print("run once...")
     _ = batch(key)
 
     if num_epochs is None:
