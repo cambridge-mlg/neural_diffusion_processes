@@ -111,9 +111,10 @@ def run(cfg):
     ####### init relevant diffusion classes
     limiting_kernel = instantiate(cfg.kernel.cls)
     kernel_params = limiting_kernel.init_params(key)
-    limiting_kernel = SumKernel([limiting_kernel, WhiteVec(y_dim)])
     kernel_params.update(OmegaConf.to_container(cfg.kernel.params, resolve=True)) # NOTE: breaks RFF?
-    kernel_params = [kernel_params, {"variance": cfg.kernel.noise}]
+    if not isinstance(limiting_kernel, WhiteVec):
+        limiting_kernel = SumKernel([limiting_kernel, WhiteVec(y_dim)])
+        kernel_params = [kernel_params, {"variance": cfg.kernel.noise}]
     limiting_mean_fn = instantiate(cfg.sde.limiting_mean_fn)
     limiting_params = {
         "kernel": kernel_params,

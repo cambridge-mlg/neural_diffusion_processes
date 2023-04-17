@@ -72,17 +72,18 @@ eval:
 
 data:
   _target_: neural_diffusion_processes.data.get_vec_gp_data
-  num_samples_train: 70_000
+  num_samples_train: 80_000
   num_points: 30
   x_radius: 10
   # x_radius: 20
   kernel: ${data_kernel.cls}
-  variance: 10
+  # variance: 10
+  variance: 0.2
   # hyperparameters: ${data_kernel.params}
   params:
     kernel:
-      # lengthscale: ${eval:math.sqrt(5.)}
-      lengthscale: 2.23606797749979
+      lengthscale: ${sqrt:5.}
+      # lengthscale: 2.23606797749979
       variance: ${data.variance}
     mean_function: {}
   mean_function:
@@ -90,19 +91,20 @@ data:
     output_dim: 2
   obs_noise: 0.02
   seed_test: 1
-  num_samples_test:  64
+  num_samples_test:  1_000
   # num_samples_test: 20_000
   seed: 0
   # min_context: 5
   # max_context: 50
-  min_context: 30
+  min_context: 25
   max_context: ${data.min_context}
   # n_points: 50
   n_points: -1
 
 kernel:
   params:
-    variance: ${data.variance}
+    variance: 1.
+    # variance: ${data.variance}
     lengthscale: 1.
   noise: .1
 
