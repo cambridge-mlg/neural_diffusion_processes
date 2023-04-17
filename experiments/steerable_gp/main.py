@@ -328,11 +328,11 @@ def run(cfg):
     
 
     # #############
-    def prior_log_prob(key, x, y, params):
+    def log_prob(key, x, y, params, xc = None, yc = None):
         print("log_prob")
         net_ = partial(net, params) if not cfg.sde.exact_score else exact_score
         config = cfg.eval.like
-        return ndp.sde.log_prob(sde, net_, x, y, key=key, num_steps=config.n_steps, rtol=config.rtol, atol=config.atol, hutchinson_type=config.hutchinson_type, hutchinson_samples=config.hutchinson_samples)
+        return ndp.sde.log_prob(sde, net_, x, y, x_known=xc, y_known=yc, key=key, num_steps=config.n_steps, rtol=config.rtol, atol=config.atol, hutchinson_type=config.hutchinson_type, hutchinson_samples=config.hutchinson_samples)
 
     # @partial(jax.vmap, in_axes=[None, None, None, 0])
     # @partial(jax.vmap)
@@ -342,14 +342,16 @@ def run(cfg):
     #     return posterior_log_prob(xc, yc, xs, ys)
 
     cfg.data._target_ = "neural_diffusion_processes.data.get_vec_gp_prior"
-    prior = call(cfg.data)
+    true_prior = call(cfg.data)
+    cfg.data._target_ = "neural_diffusion_processes.data.get_vec_gp_cond"
+    true_posterior = call(cfg.data)
    
     # @jit
     def eval(state: TrainingState, key, step) -> Mapping[str, float]:
         num_samples = 32
         # num_samples = 20
         metrics = defaultdict(list)
-        prior_logp = jit(vmap(partial(prior_log_prob, params=state.params_ema)))
+        eval_log_prob = jit(vmap(partial(log_prob, params=state.params_ema)))
 
 
         for i, batch in enumerate(data_test):
@@ -358,11 +360,43 @@ def run(cfg):
             # # NOTE: only eval on 1 batch appart at the end
             if step >= cfg.optim.num_steps or i < 1:
                 print(step, i, batch.xs.shape, batch.ys.shape, key.shape)
+                subkeys = jax.random.split(key, num=batch.ys.shape[0])
+                
+                # predictive log-likelihood
+                n_test = batch.ys.shape[-2]
+                true_cond_logp = jax.vmap(lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(flatten(y)))(batch.xc, batch.yc, batch.xs, batch.ys)
+
+                cond_logp2, nfe = eval_log_prob(subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc)
+                metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
+                metrics["cond_nfe"].append(jnp.mean(nfe))
+                metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
+                print("cond_logp2", cond_logp2.shape)
+                print("true_cond_logp", true_cond_logp.shape)
+                print("cond logp", metrics["true_cond_logp"][-1], metrics["cond_logp2"][-1])
+
+                logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
+                x = jnp.concatenate([batch.xs, batch.xc], axis=1)
+                y = jnp.concatenate([batch.ys, batch.yc], axis=1)
+                logp_joint, nfe = eval_log_prob(subkeys, x, y)
+                cond_logp = logp_joint - logp_context
+                metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
+                print("cond logp", metrics["true_cond_logp"][-1], metrics["cond_logp"][-1])
+                raise
+
+                # prior likelihood
+                true_logp = jax.vmap(lambda x, y: true_prior(x).log_prob(flatten(y)))(x, y)
+                n = y.shape[-2]
+                metrics["true_logp"].append(jnp.mean(true_logp / n))
+                metrics["prior_logp"].append(jnp.mean(logp_joint / n))
+                metrics["prior_nfe"].append(jnp.mean(nfe))
+                print("prior logp", metrics["true_logp"][-1], metrics["prior_logp"][-1], metrics["prior_nfe"][-1])
+
+                # predictive mean and covariance mse
                 # TODO: depends on dataset if dist is avail or not
                 # true_mean = batch.ys
-                true_mean = vmap(lambda x: unflatten(prior(x).mean(), y_dim))(batch.xs)
+                true_mean = vmap(lambda x: unflatten(true_prior(x).mean(), y_dim))(batch.xs)
                 def f(x):
-                    ktt = prior(x).covariance()
+                    ktt = true_prior(x).covariance()
                     ktt = rearrange(ktt, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=y_dim, p2=y_dim)
                     return ktt[jnp.diag_indices(ktt.shape[0])]
                 true_cov = vmap(f)(batch.xs)
@@ -379,37 +413,6 @@ def run(cfg):
                 mse_cov_pred = jnp.sum((true_cov - f_pred).reshape(*true_cov.shape[:-2], -1) ** 2, -1)
                 mse_cov_pred = mse_cov_pred.mean(1).mean(0)
                 metrics["mse_cov_pred"].append(mse_cov_pred)
-
-            
-            # #TODO: clean
-            # logp = cond_log_prob(batch.xc, batch.yc, batch.xs, samples)
-            # metrics["cond_log_prob"].append(jnp.mean(jnp.mean(logp, axis=-1)))
-        
-            # x_augmented = jnp.concatenate([batch.xs, batch.xc], axis=1)
-            # y_augmented = jnp.concatenate([batch.ys, batch.yc], axis=1)
-            # augmented_logp = prior_log_prob(x_augmented, y_augmented, key)
-            # context_logp = prior_log_prob(batch.xc, batch.yc, key)
-            # metrics["cond_log_prob2"].append(jnp.mean(augmented_logp - context_logp))
-
-            if step >= cfg.optim.num_steps or i < 1:
-                true_logp = jax.vmap(lambda x, y: prior(x).log_prob(flatten(y)))(batch.xs, batch.ys)
-                metrics["true_bpd"].append(jnp.mean(true_logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
-                # metrics["true_logp"].append(jnp.mean(true_logp))
-                # logp, nfe = prior_log_prob(key, batch.xs, batch.ys)
-                subkeys = jax.random.split(key, num=batch.ys.shape[0])
-                # logp_prior, delta_logp, nfe, yT = prior_log_prob(subkeys, batch.xs, batch.ys)
-                # logp = logp_prior + delta_logp
-                # print("logp_prior, delta_logp", logp_prior.shape, delta_logp.shape)
-                # print("true_logp", true_logp)
-                # print(logp_prior.squeeze())
-                # print(delta_logp.squeeze())
-                # print(logp.squeeze())
-                logp, nfe = prior_logp(subkeys, batch.xs, batch.ys)
-                metrics["bpd"].append(jnp.mean(logp) * np.log2(np.exp(1)) / np.prod(batch.ys.shape[-2:]))
-                # metrics["logp"].append(jnp.mean(logp))
-                metrics["nfe"].append(jnp.mean(nfe))
-                # print(metrics["true_logp"][-1], metrics["logp"][-1], metrics["nfe"][-1])
-                print(metrics["true_bpd"][-1], metrics["bpd"][-1], metrics["nfe"][-1])
 
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
@@ -460,6 +463,10 @@ def run(cfg):
     # raise
 
     if cfg.mode == "train":
+        miniters = 50
+        progress_bar = tqdm.tqdm(
+            list(range(1, cfg.optim.num_steps + 1)), miniters=miniters
+        )
         for step, batch, key in zip(progress_bar, dataloader, key_iter):
             state, metrics = update_step(state, batch)
             if jnp.isnan(metrics['loss']).any():
@@ -470,7 +477,7 @@ def run(cfg):
             for action in actions:
                 action(step, t=None, metrics=metrics, state=state, key=key)
 
-            if step % 100 == 0:
+            if step == 1 or step % miniters == 0:
                 progress_bar.set_description(f"loss {metrics['loss']:.2f}")
     else:
         # for action in actions[3:]:

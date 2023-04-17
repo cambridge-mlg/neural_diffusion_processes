@@ -85,13 +85,13 @@ class SDE:
     is_score_preconditioned: bool = True
     exact_score: bool = False
 
-    def __post_init__(self):
-        if self.exact_score:
-            assert (
-                not self.std_trick and
-                not self.residual_trick# and
-                # not self.is_score_preconditioned
-            ), "Exact score. Do not apply re-parameterizations or preconditioning"
+    # def __post_init__(self):
+    #     if self.exact_score:
+    #         assert (
+    #             not self.std_trick and
+    #             not self.residual_trick# and
+    #             # not self.is_score_preconditioned
+    #         ), "Exact score. Do not apply re-parameterizations or preconditioning"
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
@@ -653,12 +653,12 @@ def get_estimate_div_fn(fn):
     def div_fn(t, y: jnp.ndarray, arg, eps: jnp.ndarray, num_context = None) -> jnp.ndarray:
         y_dim = y.shape[-1]
         if num_context:
-            yc = y[:num_context * y_dim]
-            y = y[num_context * y_dim :]
-            flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg))[num_context * y_dim :]
+            yc = y[:num_context]
+            y = y[num_context:]
+            flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg)[num_context:])
         else:
             flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
-        _, vjp_fn = jax.vjp(flattened_fn, flatten(y) )
+        _, vjp_fn = jax.vjp(flattened_fn, flatten(y))
 
         # NOTE: sequential
         # def f(carry, eps):
@@ -685,14 +685,21 @@ def get_exact_div_fn(fn):
 
     @check_shapes("t: []", "y: [N, y_dim]", "return: []")
     def div_fn(t, y, arg, num_context = None) -> jnp.ndarray:
+        # print("y", y.shape)
+        # print("num_context", num_context)
         y_dim = y.shape[-1]
         if num_context:
-            yc = y[:num_context * y_dim]
-            y = y[num_context * y_dim :]
-            flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg))[num_context * y_dim :]
+            yc = y[:num_context]
+            y = y[num_context:]
+            flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg)[num_context:])
+            # flattened_fn = lambda y: fn(t, jnp.concatenate([yc, y], axis=0), arg)[num_context:]
         else:
             flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
         jac = jax.jacrev(flattened_fn)(flatten(y))
+        # jac = jax.jacrev(flattened_fn)(y)
+        # print("jac", jac.shape)
+        # jac = jac.reshape(np.prod(jac.shape[:2]), np.prod(jac.shape[:2]))
+        # print("jac", jac.shape)
         return jnp.trace(jac, axis1=-1, axis2=-2)
 
     return div_fn
@@ -715,7 +722,7 @@ def div_noise(
         epsilon = jax.random.normal(rng, shape)
     elif hutchinson_type == "Rademacher":
         epsilon = (
-            jax.random.randint(rng, shape, minval=0, maxval=2).astype(jnp.float32) * 2 - 1
+            jax.random.randint(rng, shape, minval=0, maxval=2).astype(float) * 2 - 1
         )
     elif hutchinson_type == "None":
         epsilon = None
