@@ -12,8 +12,8 @@ defaults:
   # - lr_schedule: constant
   - beta_schedule: linear
   - kernel: whitevec
-  # - data_kernel: divfree
-  - data_kernel: curlfree
+  - data_kernel: divfree
+  # - data_kernel: curlfree
   
   # enable color logging
   - override hydra/hydra_logging: default

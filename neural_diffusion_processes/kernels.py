@@ -354,7 +354,7 @@ class WhiteVec(DiagMultiOutputKernel):
 
 
 @dataclasses.dataclass
-class RBFDivFree(AbstractKernel):
+class RBFCurlFree(AbstractKernel):
     """Based on the kernels defined in equation (24) in
     "Kernels for Vector-Valued Functions: a Review" by Alvarez et al
     """
@@ -362,7 +362,7 @@ class RBFDivFree(AbstractKernel):
     def __init__(
         self,
         active_dims: Optional[List[int]] = None,
-        name: Optional[str] = "RBFDivFree kernel",
+        name: Optional[str] = "RBFCurlFree kernel",
     ) -> None:
         super().__init__(
             compute_engine=MultiOutputDenseKernelComputation,
@@ -400,7 +400,7 @@ class RBFDivFree(AbstractKernel):
 
 
 @dataclasses.dataclass
-class RBFCurlFree(AbstractKernel):
+class RBFDivFree(AbstractKernel):
     """Based on the kernels defined in equation (24) in
     "Kernels for Vector-Valued Functions: a Review" by Alvarez et al
     """
@@ -408,7 +408,7 @@ class RBFCurlFree(AbstractKernel):
     def __init__(
         self,
         active_dims: Optional[List[int]] = None,
-        name: Optional[str] = "RBFCurlFree kernel",
+        name: Optional[str] = "RBFDivFree kernel",
     ) -> None:
         super().__init__(
             compute_engine=MultiOutputDenseKernelComputation,
