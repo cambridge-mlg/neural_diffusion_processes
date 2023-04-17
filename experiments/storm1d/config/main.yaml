@@ -22,7 +22,7 @@ defaults:
 #   n_layers: 5
 #   hidden_dim: 64
 
-name: storm_data
+name: storm_data_1d
 mode: train
 seed: 0
 
@@ -76,7 +76,7 @@ sde:
     # output_dim: 2
   limiting_mean_fn:
     _target_: gpjax.Zero
-    output_dim: 2
+    output_dim: 1
 
 net:
   n_layers: 5

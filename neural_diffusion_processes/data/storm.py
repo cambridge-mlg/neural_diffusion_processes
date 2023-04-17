@@ -3,60 +3,91 @@ import os
 import jax.numpy as jnp
 import pandas as pd
 
+from check_shapes import check_shapes
 
 TWOPI = 2 * jnp.pi
-RADDEG = TWOPI/360
+RADDEG = TWOPI / 360
 
+
+@check_shapes("return[0]: [B , N, 1]", "return[1]: [B, N, y_dim]")
 def storm_data(
-            data_dir,
-            max_len=50,
-            **kwargs,
-    ):
-        data = pd.read_csv(os.path.join(data_dir, "storm", "all_processes.csv"), header=[0,1])
-        lats = jnp.array(data['LAT'].to_numpy(), dtype=jnp.float32)[:, :max_len]
-        lons = jnp.array(data['LON'].to_numpy(), dtype=jnp.float32)[:, :max_len]
-        nan_index = jnp.isnan(lats) & jnp.isnan(lons)
-        full_data = jnp.sum(nan_index[:, :max_len], axis=-1)==0
-        latlons = jnp.stack(
-            (lats, lons), axis=-1
-        )[full_data] * RADDEG
-        times = pd.to_timedelta(data['LAT'].columns).map(lambda x: x.total_seconds() / (60**2 * 24))[:max_len]
-        return times, latlons
+    data_dir: str,
+    max_len=50,
+    max_data_points=-1,
+    limit_and_normalise=False,
+    **kwargs,
+):
+    data = pd.read_csv(
+        os.path.join(data_dir, "storm", "all_processes.csv"), header=[0, 1]
+    )
+    lats = jnp.array(data["LAT"].to_numpy(), dtype=jnp.float32)[:, :max_len]
+    lons = jnp.array(data["LON"].to_numpy(), dtype=jnp.float32)[:, :max_len]
+    nan_index = jnp.isnan(lats) & jnp.isnan(lons)
+    full_data = jnp.sum(nan_index[:, :max_len], axis=-1) == 0
+    latlons = jnp.stack((lats, lons), axis=-1)[full_data] * RADDEG
+    times = jnp.array(
+        (
+            pd.to_timedelta(data["LAT"].columns).map(
+                lambda x: x.total_seconds() / (60**2 * 24)
+            )[:max_len]
+        ).to_numpy(),
+        dtype=jnp.float32,
+    )
+    times = jnp.repeat(times[None, :, None], repeats=latlons.shape[0], axis=0)
+
+    if limit_and_normalise:
+        keep = jnp.all((latlons[..., 1] < 0) & (latlons[..., 1] > -100), axis=-1)
+        latlons = latlons[keep]
+        times = times[keep]
+
+        latlons = latlons - jnp.mean(latlons, axis=(0, 1), keepdims=True)
+
+    if max_data_points > 0 and max_data_points < latlons.shape[0]:
+        offset = 35
+        latlons = latlons[offset : (offset + max_data_points)]
+        times = times[offset : (offset + max_data_points)]
+
+        latlons = jnp.repeat(latlons, 100, axis=0)
+        times = jnp.repeat(times, 100, axis=0)
+
+    return times, latlons
+
 
 def proj_3d(x, reverse=False):
     if reverse:
         return jnp.stack(
             (
-                jnp.arccos(x[..., 2]) - jnp.pi/2,
-                jnp.sign(x[..., 1])*jnp.arccos(x[..., 0] / jnp.sqrt(1-x[..., 2]**2))
-            ), axis=-1
+                jnp.arccos(x[..., 2]) - jnp.pi / 2,
+                jnp.sign(x[..., 1])
+                * jnp.arccos(x[..., 0] / jnp.sqrt(1 - x[..., 2] ** 2)),
+            ),
+            axis=-1,
         )
     else:
         lat = x[..., 0]
         lon = x[..., 1]
         return jnp.stack(
             (
-                jnp.sin(lat+jnp.pi/2) * jnp.cos(lon),
-                jnp.sin(lat+jnp.pi/2) * jnp.sin(lon),
-                jnp.cos(lat+jnp.pi/2),
-            ), axis=-1
+                jnp.sin(lat + jnp.pi / 2) * jnp.cos(lon),
+                jnp.sin(lat + jnp.pi / 2) * jnp.sin(lon),
+                jnp.cos(lat + jnp.pi / 2),
+            ),
+            axis=-1,
         )
+
 
 def proj_stereo(x, reverse=False):
     if reverse:
-        norm = x[..., 0]**2 + x[..., 1]**2
+        norm = x[..., 0] ** 2 + x[..., 1] ** 2
         denom = 1 + norm
         x = jnp.stack(
-            (
-                2 * x[..., 0] / denom,
-                2 * x[..., 1] / denom,
-                (1 - norm) / denom
-            ), axis=-1
+            (2 * x[..., 0] / denom, 2 * x[..., 1] / denom, (1 - norm) / denom), axis=-1
         )
         return proj_3d(x, reverse=True)
     else:
         x = proj_3d(x)
-        return x[..., :2] / (1+x[..., 2:3])
-    
+        return x[..., :2] / (1 + x[..., 2:3])
+
+
 def proj_none(x, reverse=False):
     return x

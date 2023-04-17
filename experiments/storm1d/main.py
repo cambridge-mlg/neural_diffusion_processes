@@ -92,6 +92,7 @@ def run(cfg):
     data = call(
         cfg.data,
     )
+    data = (data[0], data[1][..., 0:1])  # only lat
     dataloader = ndp.data.dataloader(
         data,
         batch_size=cfg.optim.batch_size,
@@ -259,23 +260,33 @@ def run(cfg):
         ts = [0.1, 0.2, 0.5, 0.8, float(sde.beta_schedule.t1)]
 
         def plot_tracks(xs, ys, axes, title=""):
-            ys = jnp.stack(
-                (
-                    ((ys[..., 0] + jnp.pi) / 2 % jnp.pi) - jnp.pi / 2,
-                    ((ys[..., 1] + jnp.pi) % (2 * jnp.pi)) - jnp.pi,
-                ),
-                axis=-1,
-            )
-            for x, y in zip(xs, ys):
-                # m = Basemap(ax=axes, fix_aspect=True)
-                axes.plot(
-                    y[..., 1] / RADDEG,
-                    y[..., 0] / RADDEG,
-                    # latlon=True,
-                    linewidth=0.3,
-                )
+            # ys = jnp.stack(
+            #     (
+            #         ((ys[..., 0] + jnp.pi) / 2 % jnp.pi) - jnp.pi / 2,
+            #         ((ys[..., 1] + jnp.pi) % (2 * jnp.pi)) - jnp.pi,
+            #     ),
+            #     axis=-1,
+            # )
+            if len(xs.shape) == 2:
+                for y in ys:
+                    # m = Basemap(ax=axes, fix_aspect=True)
+                    axes.plot(
+                        xs[..., 0],
+                        y[..., 0],
+                        # latlon=True,
+                        linewidth=0.3,
+                    )
+            elif len(xs.shape) == 3:
+                for x, y in zip(xs, ys):
+                    # m = Basemap(ax=axes, fix_aspect=True)
+                    axes.plot(
+                        x[..., 0],
+                        y[..., 0],
+                        # latlon=True,
+                        linewidth=0.3,
+                    )
             axes.set_title(title)
-            axes.set_aspect("equal")
+            # axes.set_aspect("equal")
             # axes.set_xlim([-180, 180])
             # axes.set_ylim([-90, 90])
 
@@ -291,29 +302,30 @@ def run(cfg):
         # plot limiting
         y_ref = vmap(sde.sample_prior, in_axes=[0, None])(
             jax.random.split(keys[3], n_samples), x_grid
-        ).squeeze()
-        # plot_vf_and_cov(x_grid, y_ref, axes[:, 1], rf"$p_{{ref}}$")
+        )
+        # y_ref =
+        # plot_vf_and_cov(x_grid, y_ref, axes[:, 1], rf"$p_{{ref}}$")t
         plot_tracks(x_grid, y_ref, axes[-1], rf"$p_{{ref}}$")
 
         # plot generated samples
         # TODO: start from same limiting samples as above with yT argument
-        y_model = vmap(reverse_sample, in_axes=[0, None, None, 0])(
-            jax.random.split(keys[3], n_samples), x_grid, state.params_ema, y_ref
-        ).squeeze()
+        # y_model = vmap(reverse_sample, in_axes=[0, None, None, 0])(
+        #     jax.random.split(keys[3], n_samples), x_grid, state.params_ema, y_ref
+        # ).squeeze()
         y_model = vmap(reverse_sample_times, in_axes=[0, None, None, 0, None])(
             jax.random.split(keys[3], n_samples),
             x_grid,
             state.params_ema,
             y_ref,
             ts[::-1],
-        ).squeeze()
+        )
 
         # ax.plot(x_grid, y_model[:, -1, :, 0].T, "C0", alpha=0.3)
         # plot_vf_and_cov(x_grid, y_model, axes[:, 2], rf"$p_{{model}}$")
-        for i in range(nb_cols):
+        for i in range(nb_cols - 2):
             plot_tracks(
                 x_grid,
-                y_model[:, i],
+                y_model[:, len(ts) - i - 1],
                 axes[nb_cols - 2 - i],
                 rf"$p_{{model}} t={ts[len(ts) - i - 1]}$",
             )
@@ -375,7 +387,7 @@ def run(cfg):
                         lambda key: sde.sample_marginal(
                             key, t * jnp.ones(()), batch.xs[idx + i], batch.ys[idx + i]
                         )
-                    )(jax.random.split(keys[1], n_samples)).squeeze()
+                    )(jax.random.split(keys[1], n_samples))
                     # plot_vf_and_cov(batch.xs[idx], yt, axes[:, k+1], rf"$p_{{t={t}}}$")
                     plot_tracks(batch.xs, yt, axes[i, k + 1], rf"$p_{{t={t}}}$")
 
