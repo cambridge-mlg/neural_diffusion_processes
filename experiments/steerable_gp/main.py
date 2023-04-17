@@ -129,6 +129,15 @@ def run(cfg):
 
 
     ####### Forward haiku model
+    if cfg.sde.exact_score:
+        mean0 = instantiate(cfg.sde.limiting_mean_fn)
+        kernel0 = instantiate(cfg.data.kernel)
+        kernel0 = SumKernel([kernel0, WhiteVec(y_dim)])
+        params0 = OmegaConf.to_container(cfg.data.params, resolve=True)
+        params0["kernel"] = [params0["kernel"], {"variance": cfg.data.obs_noise}]
+        exact_score = sde.get_exact_score(mean0, kernel0, params0)
+        sde.std_trick = False
+        sde.residual_trick = False
 
     @hk.without_apply_rng
     @hk.transform
@@ -201,22 +210,19 @@ def run(cfg):
     logger.log_hyperparams({"nb_params": nb_params})
 
 
-    progress_bar = tqdm.tqdm(
-        list(range(1, cfg.optim.num_steps + 1)), miniters=1
-    )
     # exp_root_dir = get_experiment_dir(config)
 
     # ########## Plotting
     @jit
     def reverse_sample(key, x_grid, params, yT=None):
         print("reverse_sample", x_grid.shape)
-        net_ = partial(net, params)
+        net_ = partial(net, params) if not cfg.sde.exact_score else exact_score
         config = cfg.eval.prior
         return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, num_steps=config.n_steps, rtol=config.rtol, atol=config.atol, prob_flow=config.prob_flow)
 
     @jit
     def cond_sample(key, x_grid, x_context, y_context, params):
-        net_ = partial(net, params)
+        net_ = partial(net, params) if not cfg.sde.exact_score else exact_score
         config = cfg.eval.cond
         x_context += 1.0e-5 #NOTE: to avoid context overlapping with grid
         return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_steps=config.n_steps, num_inner_steps=config.n_inner_steps, tau=config.tau, psi=config.psi, lambda0=config.lambda0, prob_flow=config.prob_flow)
@@ -324,7 +330,7 @@ def run(cfg):
     # #############
     def prior_log_prob(key, x, y, params):
         print("log_prob")
-        net_ = partial(net, params)
+        net_ = partial(net, params) if not cfg.sde.exact_score else exact_score
         config = cfg.eval.like
         return ndp.sde.log_prob(sde, net_, x, y, key=key, num_steps=config.n_steps, rtol=config.rtol, atol=config.atol, hutchinson_type=config.hutchinson_type, hutchinson_samples=config.hutchinson_samples)
 

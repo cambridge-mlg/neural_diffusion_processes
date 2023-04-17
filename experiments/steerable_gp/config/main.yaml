@@ -120,6 +120,7 @@ sde:
   limiting_mean_fn:
     _target_: gpjax.Zero
     output_dim: 2
+  exact_score: false
 
 net:
   n_layers: 5
