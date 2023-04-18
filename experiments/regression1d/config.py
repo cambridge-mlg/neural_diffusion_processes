@@ -15,27 +15,33 @@ class SdeConfig:
     limiting_kernel: str = "white"
     t0: float = 5e-4
     is_score_precond: bool = True
-    std_trick: bool = True
-    residual_trick: bool = True
+    std_trick: bool = False
+    residual_trick: bool = False
+    weighted: bool = True
 
 
 @dataclasses.dataclass
 class OptimizationConfig:
-    batch_size: int = 32
-    num_epochs: int = 25
+    batch_size: int = 16
+    num_epochs: int = 50
+    num_warmup_epochs: int = 5
+    lr: float = 1e-3
     ema_rate: float = 0.999
+
+    def __post_init__(self):
+        assert self.num_epochs > self.num_warmup_epochs
 
 
 @dataclasses.dataclass
 class NetworkConfig:
-    num_bidim_attention_layers: int = 5
-    hidden_dim: int = 64
-    num_heads: int = 8
+    num_bidim_attention_layers: int = 2
+    hidden_dim: int = 16
+    num_heads: int = 4
 
 
 @dataclasses.dataclass
 class EvalConfig:
-    batch_size: int = 64
+    batch_size: int = 32
     num_samples_in_epoch: int = 128
 
 

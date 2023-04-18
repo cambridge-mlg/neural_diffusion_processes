@@ -93,6 +93,7 @@ class SDE:
     std_trick: bool = True
     residual_trick: bool = True
     is_score_preconditioned: bool = True
+    weighted: bool = False
     exact_score: bool = False
 
     def __post_init__(self):
@@ -281,11 +282,16 @@ class SDE:
 
         factor = (1.0 - jnp.exp(-self.beta_schedule.B(t)))
         std = jnp.sqrt(factor)
+
         # TODO: allow for 'likelihood' weight with weight=diffusion**2?
         # if self.weighted:
         #     weight = factor
         # else:
         #     weight = 1.0
+        if self.weighted:
+            w = 1. - jnp.exp(-self.beta_schedule.B(t))
+        else:
+            w = 1.0
 
         ekey, nkey = jax.random.split(key)
         μ0t, k0t, params = self.p0t(t, y)
@@ -310,7 +316,7 @@ class SDE:
         loss = loss * (1. - mask[:, None])
         num_points = len(x) - jnp.count_nonzero(mask)
         loss = jnp.sum(jnp.sum(loss, -1)) / num_points
-        return loss
+        return w * loss
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):

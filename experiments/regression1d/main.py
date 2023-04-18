@@ -114,7 +114,9 @@ def get_log_prob(sde, network):
             xc, yc, mc = context
             x = jnp.concatenate([x, xc], axis=1)
             y = jnp.concatenate([y, yc], axis=1)
-            mask = jnp.concatenate([mask, mc], axis=1)
+            if mask is not None and mc is not None:
+                mask = jnp.concatenate([mask, mc], axis=1)
+
             key, skey = jax.random.split(key)
             keys = jax.random.split(skey, batch_size)
             logp_context = log_prob(params, xc, yc, mc, keys)
@@ -146,6 +148,31 @@ class Task:
         self._sampler = conditional_sampler
         self._logp = logp
     
+    def plot2(self, params, key):
+        """Plots continuous samples"""
+        fig, axes = plt.subplots(4, 1, figsize=(8, 8), sharex=True, sharey=True, tight_layout=True)
+        keys = jax.random.split(key, 10)
+        lo = regression1d._TASK_CONFIGS[self._task].x_context_dist._low
+        hi = regression1d._TASK_CONFIGS[self._task].x_context_dist._high
+        xs = jnp.linspace(lo, hi, 50)[:, None]
+        xs = jnp.tile(xs[None], [self._plt_batch.batch_size, 1, 1])
+        samples = self._sampler(
+            params,
+            keys,
+            self._plt_batch.xc,
+            self._plt_batch.yc,
+            None,
+            xs,
+            None,
+        )
+        for i, ax in enumerate(axes):
+            # idx = m2i(self._plt_batch.mask_context[i])
+            ax.plot(self._plt_batch.xc[i], self._plt_batch.yc[i], 'kx')
+            ax.plot(self._plt_batch.xs[i], self._plt_batch.ys[i], 'rx')
+            ax.plot(xs[i].ravel(), samples[:, i, :, 0].T, "C0", alpha=.2)
+
+        return fig
+
     def plot(self, params, key):
         fig, axes = plt.subplots(4, 1, figsize=(8, 8), sharex=True, sharey=True, tight_layout=True)
         keys = jax.random.split(key, 10)
@@ -154,9 +181,9 @@ class Task:
             keys,
             self._plt_batch.xc,
             self._plt_batch.yc,
-            self._plt_batch.mask_context,
+            None,
             self._plt_batch.xs,
-            self._plt_batch.mask,
+            None,
         )
         means = jnp.mean(samples, axis=0)
         stds = jnp.std(samples, axis=0)
@@ -224,10 +251,14 @@ class Task:
             del t
             params = kwargs["state"].params_ema
             key = kwargs["key"]
-            metrics = self.eval(params, key)
-            writer.write_scalars(step, {f"{self._task}_{k}": v for k, v in metrics.items()})
             fig = self.plot(params, key)
             writer.write_figures(step, {f"{self._task}": fig})
+            if "extrapolation" not in self._task:
+                fig2 = self.plot2(params, key)
+                writer.write_figures(step, {f"{self._task}_cont": fig2})
+
+            metrics = self.eval(params, key)
+            writer.write_scalars(step, {f"{self._task}_{k}": v for k, v in metrics.items()})
             
         return callback
 
@@ -258,17 +289,20 @@ def main(_):
         hyps,
         beta,
         # Below parameterisations are all set to False if we use the true score.
-        is_score_preconditioned=config.sde.is_score_precond,
-        std_trick=config.sde.std_trick,
-        residual_trick=config.sde.residual_trick,
+        is_score_preconditioned=config.sde.is_score_precond if not USE_TRUE_SCORE else False,
+        std_trick=config.sde.std_trick if not USE_TRUE_SCORE else False,
+        residual_trick=config.sde.residual_trick if not USE_TRUE_SCORE else False,
+        weighted=config.sde.weighted,
         exact_score=USE_TRUE_SCORE,
     )
 
-    # factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
-    # assert isinstance(factory, regression1d.GPFunctionalDistribution)
-    # mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
-    # true_score_network = sde.get_exact_score(mean0, kernel0, params0)
-    true_score_network = None
+    if USE_TRUE_SCORE:
+        factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
+        assert isinstance(factory, regression1d.GPFunctionalDistribution)
+        mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
+        true_score_network = sde.get_exact_score(mean0, kernel0, params0)
+    else:
+        true_score_network = None
 
     ##### Plot a training databatch
     batch0 = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "training")
@@ -308,7 +342,11 @@ def main(_):
     num_steps_per_epoch = config.data.num_samples_in_epoch // config.optimization.batch_size
     num_steps = num_steps_per_epoch * config.optimization.num_epochs
     learning_rate_schedule = optax.warmup_cosine_decay_schedule(
-        init_value=1e-4, peak_value=1e-3, warmup_steps=1000, decay_steps=num_steps, end_value=1e-4
+        init_value=1e-8,
+        peak_value=config.optimization.lr,
+        warmup_steps=num_steps_per_epoch * config.optimization.num_warmup_epochs,
+        decay_steps=num_steps,
+        end_value=1e-4,
     )
 
     optimizer = optax.chain(
@@ -397,7 +435,7 @@ def main(_):
             conditional_sampler=conditional,
             logp=logp
         )
-        for task in ["interpolation", "extrapolation", "generalization"]
+        for task in ["interpolation"] #, "extrapolation", "generalization"]
     ]
 
     task_callbacks = [
