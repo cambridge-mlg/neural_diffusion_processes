@@ -39,7 +39,7 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = True
+USE_TRUE_SCORE = False
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -51,7 +51,7 @@ _CONFIG = config_flags.DEFINE_config_dict("config", config_utils.to_configdict(C
 
 
 def get_experiment_name(config: Config):
-    return f"{_DATETIME}_{config_utils.get_id(config)}"
+    return f"{_DATETIME}_{config.data.dataset}_{str(config_utils.get_id(config))[:5]}"
 
 
 def get_experiment_dir(config: Config, output: str = "root", exist_ok: bool = True) -> pathlib.Path:
@@ -143,16 +143,6 @@ class Task:
         _key = jax.random.PRNGKey(0)
         # just for plotting - it doesn't matter that we use the same key across tasks/datasets.
         self._plt_batch = regression1d.get_batch(_key, batch_size, dataset, task)
-
-        # @functools.partial(jax.vmap, in_axes=[None, None, None, None, 0])
-        # @functools.partial(jax.vmap, in_axes=[None, 0, 0, 0, None])
-        # def vmapped_sampler(params, x_context, y_context, x_target, key):
-        #     return conditional_sampler(params, x_context, y_context, x_target, key)
-
-        # @functools.partial(jax.vmap, in_axes=[None, 0, 0, None])
-        # def vmapped_logp(params, x, y, key):
-        #     return logp(params, x, y, key)
-        
         self._sampler = conditional_sampler
         self._logp = logp
     
@@ -247,7 +237,6 @@ def main(_):
     policy = jmp.get_policy('params=float32,compute=float32,output=float32')
 
     config = config_utils.to_dataclass(Config, _CONFIG.value)
-    print(config.data.dataset)
 
     path = get_experiment_dir(config, 'root') / 'config.yaml'
     with open(str(path), 'w') as f:
@@ -269,16 +258,17 @@ def main(_):
         hyps,
         beta,
         # Below parameterisations are all set to False if we use the true score.
-        is_score_preconditioned=not USE_TRUE_SCORE,
-        std_trick=not USE_TRUE_SCORE,
-        residual_trick=False,
+        is_score_preconditioned=config.sde.is_score_precond,
+        std_trick=config.sde.std_trick,
+        residual_trick=config.sde.residual_trick,
         exact_score=USE_TRUE_SCORE,
     )
 
-    factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
-    assert isinstance(factory, regression1d.GPFunctionalDistribution)
-    mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
-    true_score_network = sde.get_exact_score(mean0, kernel0, params0)
+    # factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
+    # assert isinstance(factory, regression1d.GPFunctionalDistribution)
+    # mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
+    # true_score_network = sde.get_exact_score(mean0, kernel0, params0)
+    true_score_network = None
 
     ##### Plot a training databatch
     batch0 = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "training")
@@ -308,7 +298,7 @@ def main(_):
     def net(params, t, yt, x, mask, *, key):
         del key  # the network is deterministic
         #NOTE: Network awkwardly requires a batch dimension for the inputs
-        print("compiling network")
+        print("compiling network", yt.shape, x.shape, mask.shape)
         return network.apply(params, t[None], yt[None], x[None], mask[None])[0]
 
     def loss_fn(params, batch: ndp.data.DataBatch, key):
@@ -345,7 +335,6 @@ def main(_):
 
     @jax.jit
     def update_step(state: TrainingState, batch: ndp.data.DataBatch) -> Tuple[TrainingState, Mapping]:
-        print("compiling update_step")
         new_key, loss_key = jax.random.split(state.key)
         loss_and_grad_fn = jax.value_and_grad(loss_fn)
         loss_value, grads = loss_and_grad_fn(state.params, batch, loss_key)
@@ -437,21 +426,21 @@ def main(_):
             every_steps=10,
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=num_steps_per_epoch,
-            # every_steps=1,
-            callback_fn=lambda step, t, **kwargs: [
-                cb(step, t, **kwargs) for cb in task_callbacks
-            ]
-        ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=num_steps_per_epoch,
-            callback_fn=lambda step, t, **kwargs: writer.write_figures(
-                step, callback_plot_prior(kwargs["state"], kwargs["key"])
-            )
-        ),
         # ml_tools.actions.PeriodicCallback(
-        #     every_steps=500,
+        #     every_steps=num_steps // 4,
+        #     # every_steps=1,
+        #     callback_fn=lambda step, t, **kwargs: [
+        #         cb(step, t, **kwargs) for cb in task_callbacks
+        #     ]
+        # ),
+        # ml_tools.actions.PeriodicCallback(
+        #     every_steps=num_steps_per_epoch,
+        #     callback_fn=lambda step, t, **kwargs: writer.write_figures(
+        #         step, callback_plot_prior(kwargs["state"], kwargs["key"])
+        #     )
+        # ),
+        # ml_tools.actions.PeriodicCallback(
+        #     every_steps=num_steps_per_epoch,
         #     callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
         # )
     ]
@@ -463,19 +452,11 @@ def main(_):
         batch_size=config.optimization.batch_size,
         num_epochs=config.optimization.num_epochs,
     )
-    # train_dataloader = data_generator(
-    #     next(key_iter),
-    #     config.data.dataset,
-    #     "training",
-    #     total_num_samples=config.data.num_samples_in_epoch,
-    #     batch_size=config.optimization.batch_size,
-    #     num_epochs=config.optimization.num_epochs,
-    # )
+
     if config.mode == "eval_only": num_steps = 0
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
     for step, batch, key in zip(progress_bar, train_ds, key_iter):
-        # print("num_points", batch.xs.shape[1] - jnp.count_nonzero(batch.mask[0]))
         if USE_TRUE_SCORE:
             metrics = {'loss': 0.0, 'step': step}
         else:
@@ -490,11 +471,9 @@ def main(_):
 
 
     for task, callback in zip(tasks, task_callbacks):
-        print(task._task)
-        task._num_data = config.data.num_samples_in_epoch
+        # task._num_data = config.data.num_samples_in_epoch
         callback(num_steps + 1, None, state=state, key=next(key_iter))
     
-
 
 if __name__ == "__main__":
     app.run(main)

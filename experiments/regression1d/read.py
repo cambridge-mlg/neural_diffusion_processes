@@ -20,13 +20,14 @@ TASKS = [
     "generalization",
 ]
 
-mat = "Apr16_171012_7063364153930192415"
-weakp = "Apr16_171404_1789127319741651408"
-filename = f"{weakp}/metrics.csv"
+
+exp = "Apr16_181930_se_10841"
+filename = f"{exp}/metrics.csv"
 path = _HERE / _LOG_DIR / filename
 
 df = pd.read_csv(path, index_col=0)
 df = df.groupby("step").first().reset_index()
+
 
 def get_metrics(task):
     c1 = f'{task}_loglik_mean'

@@ -29,6 +29,16 @@ from .utils.misc import flatten, unflatten
 from .config import get_config
 
 
+@check_shapes("x: [N, D]", "mask: [N]", "return: [N, D]")
+def move_far_away(x, mask):
+    """
+    Move values in `x` where mask is `1` to "infinity".
+    """
+    mask = mask[:, None]
+    return x + mask * 1e6
+    
+
+
 class AbstractMeanFunction(gpjax.mean_functions.AbstractMeanFunction):
     def init_params(self, key):
         return {}
@@ -215,7 +225,8 @@ class SDE:
             score += residual
 
         # set score of masked values (i.e. mask == 1) to zero
-        score = jnp.where(mask[:, None] == 0.0, score, jnp.zeros_like(score))
+        score = score * (1. - mask[:, None])
+        # score = jnp.where(mask[:, None] == 0.0, score, jnp.zeros_like(score))
         return score
     
     def get_exact_score(self, mean0: AbstractMeanFunction, k0: jaxkern.base.AbstractKernel, params0: Mapping) -> ScoreNetwork:
@@ -224,7 +235,8 @@ class SDE:
         class _ExactScoreNetwork(ScoreNetwork):
             "Exact marginal score in Gaussian setting"
             def __call__(self2, t: Array, yt: Array, x: Array, mask, *, key) -> Array:
-                x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e12)
+                # x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e12)
+                x = move_far_away(x, mask)
 
                 y0 = mean0(params0["mean_function"], x)
                 mu_t, k_t, params = self.pt(t, y0, k0, params0["kernel"])
@@ -264,6 +276,9 @@ class SDE:
             # consider all points
             mask = jnp.zeros_like(x[:,0])
 
+        # x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e6)
+        x = move_far_away(x, mask)
+
         factor = (1.0 - jnp.exp(-self.beta_schedule.B(t)))
         std = jnp.sqrt(factor)
         # TODO: allow for 'likelihood' weight with weight=diffusion**2?
@@ -280,15 +295,19 @@ class SDE:
         Z = jax.random.normal(ekey, flatten(y).shape)
         affine_transformation = lambda x: dist.loc + sqrt @ x
         yt = unflatten(affine_transformation(Z), y.shape[-1])
-
-        precond_score_net = self.score(nkey, t, yt, x, mask, network)
         precond_noise = sqrt @ Z
+
+        # yt = jnp.where(mask[:, None] == 1, yt, jnp.ones_like(yt) * -666.)
+        precond_score_net = self.score(nkey, t, yt, x, mask, network)
+
         if not self.is_score_preconditioned:
             precond_noise = self.limiting_gram(x).solve(precond_noise)
+
         loss = jnp.square(std * precond_score_net + unflatten(precond_noise, y.shape[-1]))  # [N, y_dim]
 
         # Set values of loss to zero where mask is nonzero
-        loss = jnp.where(mask == 0.0, loss, jnp.zeros_like(loss))
+        # loss = jnp.where(mask[:, None] == 0.0, loss, jnp.zeros_like(loss))
+        loss = loss * (1. - mask[:, None])
         num_points = len(x) - jnp.count_nonzero(mask)
         loss = jnp.sum(jnp.sum(loss, -1)) / num_points
         return loss
@@ -347,7 +366,8 @@ def sde_solve(
         mask = jnp.zeros_like(x[..., 0])
 
     # push the masked points far away
-    x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e12)
+    # x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e12)
+    x = move_far_away(x, mask)
 
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
@@ -529,8 +549,10 @@ def conditional_sample2(
         mask_test = jnp.zeros_like(x_test[:, 0])
 
     # push the masked points far away
-    x_context = jnp.where(mask_context[:, None] == 0, x_context, jnp.ones_like(x_context) * 1e12)
-    x_test = jnp.where(mask_test[:, None] == 0, x_test, jnp.ones_like(x_test) * 1e12)
+    # x_context = jnp.where(mask_context[:, None] == 0, x_context, jnp.ones_like(x_context) * 1e12)
+    x_context = move_far_away(x_context, mask_context)
+    # x_test = jnp.where(mask_test[:, None] == 0, x_test, jnp.ones_like(x_test) * 1e12)
+    x_test = move_far_away(x_test, mask_test)
 
     num_context = len(x_context)
     num_target = len(x_test)
@@ -637,7 +659,6 @@ def conditional_sample2(
         return (yt, yt_context), yt_m_dt
 
     def outer_loop(key, yt, t):
-        # jax.debug.print("time {t}", t=t)
 
         # yt_context = sde.sample_marginal(key, t, x_context, y_context)
         yt_context = sample_marginal(key, t, x_context, y_context)
@@ -727,7 +748,8 @@ def get_exact_div_fn(fn):
         y_dim = y.shape[-1]
         flattened_fn = lambda t, y, arg: flatten(fn(t, unflatten(y, y_dim), arg))
         jac = jax.jacrev(flattened_fn, argnums=1)(t, flatten(y), args)
-        jac = jnp.where(mask[:, None] == 0, jac, jnp.zeros_like(jac))
+        # jac = jnp.where(mask[:, None] == 0, jac, jnp.zeros_like(jac))
+        jac = jac * (1. - mask[:, None])
         return jnp.trace(jac, axis1=-1, axis2=-2)
 
     return div_fn

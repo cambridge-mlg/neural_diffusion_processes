@@ -14,12 +14,15 @@ class DataConfig:
 class SdeConfig:
     limiting_kernel: str = "white"
     t0: float = 5e-4
+    is_score_precond: bool = True
+    std_trick: bool = True
+    residual_trick: bool = True
 
 
 @dataclasses.dataclass
 class OptimizationConfig:
-    batch_size: int = 16
-    num_epochs: int = 50
+    batch_size: int = 32
+    num_epochs: int = 25
     ema_rate: float = 0.999
 
 
