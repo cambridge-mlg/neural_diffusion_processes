@@ -1,2 +1,2 @@
 _target_: optax.constant_schedule
-value: ${optim.lr}
+value: ${optim.learning_rate}

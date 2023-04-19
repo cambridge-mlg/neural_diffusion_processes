@@ -25,7 +25,7 @@ from neural_diffusion_processes.sde import LinearBetaSchedule, SDE, LinOpControl
 from neural_diffusion_processes.utils import flatten, unflatten
 from neural_diffusion_processes.data import radial_grid_2d
 from neural_diffusion_processes.utils.vis import plot_scalar_field, plot_vector_field, plot_covariances
-from neural_diffusion_processes.kernels import sample_prior_gp, prior_gp
+from neural_diffusion_processes.kernels import sample_prior_gp, prior_gp, posterior_gp
 from neural_diffusion_processes.sde import log_prob
 from neural_diffusion_processes.config import get_config
 JITTER = get_config().jitter
@@ -37,12 +37,6 @@ config.update("jax_enable_x64", True)
 norm = matplotlib.colors.Normalize()
 cm = sns.cubehelix_palette(start=0.5, rot=-0.75, as_cmap=True, reverse=True)
 
-# def get_2d_grid(num, min_=-1, max_=1):
-#     x = jnp.linspace(min_, max_, num)
-#     x1, x2 = jnp.meshgrid(x, x)
-#     x = jnp.stack([x1.flatten(), x2.flatten()], axis=-1)
-#     return x
-
 from jaxtyping import Array
 key = jax.random.PRNGKey(42)
 key, subkey = jax.random.split(key)
@@ -51,20 +45,21 @@ output_dim = 2
 beta_schedule = ndp.sde.LinearBetaSchedule(t0 = 1e-5, beta0 = 1e-4, beta1 = 15.0)
 x = radial_grid_2d(10, 30)
 
-# k0 = ndp.kernels.RBFVec(output_dim)
-k0 = ndp.kernels.RBFCurlFree()
+k0 = ndp.kernels.RBFVec(output_dim)
+# k0 = ndp.kernels.RBFCurlFree()
 # k0 = ndp.kernels.RBFDivFree()
 # k0_params = k0.init_params(None)
-k0_variance = 10
+# k0_variance = 10
+k0_variance = 1.
 lengthscale = 2.23606797749979
 k0_params = {"variance": k0_variance, "lengthscale": lengthscale}
 k0 = SumKernel([k0, ndp.kernels.WhiteVec(output_dim)])
 k0_params = [k0_params, {"variance": 0.02}] 
 
-k1 = ndp.kernels.RBFVec(output_dim)
-# k1 = ndp.kernels.WhiteVec(output_dim)
-# k1_params = {"variance": k0_variance, "lengthscale": 2.}
-k1_params = {"variance": 10., "lengthscale": 1.}
+# k1 = ndp.kernels.RBFVec(output_dim)
+k1 = ndp.kernels.WhiteVec(output_dim)
+# k1_params = {"variance": k0_variance, "lengthscale": 1.}
+k1_params = {"variance": 1., "lengthscale": 1.}
 # k1 = SumKernel([k1, ndp.kernels.WhiteVec(output_dim)])
 # k1_params = [k1_params, {"variance": .1}]
 
@@ -89,28 +84,29 @@ data_params = {
 # kxx = rearrange(kxx, 'n1 n2 p1 p2 -> (p1 n1) (p2 n2)') 
 # plt.matshow(kxx)
 
-sde = ndp.sde.SDE(k1, mean_function, limiting_params, beta_schedule, False, False, is_score_preconditioned=False, exact_score=True)
-# network = sde.get_exact_score(mean_function, k0, data_params)
-import jmp
-import haiku as hk
-from neural_diffusion_processes.models.attention import MultiOutputAttentionModel
-policy = jmp.get_policy('params=float32,compute=float32,output=float32')
-@hk.without_apply_rng
-@hk.transform
-def network_def(t, y, x):
-    t, y, x = policy.cast_to_compute((t, y, x))
-    model = MultiOutputAttentionModel(n_layers=3, hidden_dim=64, num_heads=4, sparse=False)
-    return model(x, y, t)
+sde = ndp.sde.SDE(k1, mean_function, limiting_params, beta_schedule, is_score_preconditioned=False, std_trick=False, residual_trick=False)
+network = sde.get_exact_score(mean_function, k0, data_params)
 
-dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.)(x)
-y0 = unflatten(dist.sample(seed=subkey, sample_shape=(8)), 2)
-key, subkey = jax.random.split(key)
-params = policy.cast_to_param((network_def.init(subkey, t= 1. * jnp.zeros((y0.shape[0])), y=y0, x=jnp.repeat(x[None, ...], 8, 0))))
-@jax.jit
-def network(t, yt, x, *, key):
-    #NOTE: Network awkwardly requires a batch dimension for the inputs
-    # return network_def.apply(params, t[None], yt[None], x[None])[0]
-    return network_def.apply(params, t[None], yt[None], x[None])[0]
+# import jmp
+# import haiku as hk
+# from neural_diffusion_processes.models.attention import MultiOutputAttentionModel
+# policy = jmp.get_policy('params=float32,compute=float32,output=float32')
+# @hk.without_apply_rng
+# @hk.transform
+# def network_def(t, y, x):
+#     t, y, x = policy.cast_to_compute((t, y, x))
+#     model = MultiOutputAttentionModel(n_layers=3, hidden_dim=64, num_heads=4, sparse=False)
+#     return model(x, y, t)
+
+# dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.)(x)
+# y0 = unflatten(dist.sample(seed=subkey, sample_shape=(8)), 2)
+# key, subkey = jax.random.split(key)
+# params = policy.cast_to_param((network_def.init(subkey, t= 1. * jnp.zeros((y0.shape[0])), y=y0, x=jnp.repeat(x[None, ...], 8, 0))))
+# @jax.jit
+# def network(t, yt, x, *, key):
+#     #NOTE: Network awkwardly requires a batch dimension for the inputs
+#     # return network_def.apply(params, t[None], yt[None], x[None])[0]
+#     return network_def.apply(params, t[None], yt[None], x[None])[0]
 
 
 
@@ -195,34 +191,121 @@ rev_out2 = jax.vmap(reverse_solve)(np.stack(subkeys), yT)
 plot(rev_out, ts)
 # plot(rev_out2, ts)
 
+# %%
+#Likelihood evaluation of data proces
+
+key = jax.random.PRNGKey(1)
+num_samples = 2
+subkeys = jax.random.split(key, num=num_samples)
+
+# dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.02)(x)
+dist_T = prior_gp(mean_function, k1, {"kernel": k1_params, "mean_function": {}}, obs_noise=0.)(x)
+yT = dist_T.sample(seed=subkey, sample_shape=(num_samples))
+
+# ts = get_timesteps(sde.beta_schedule.t0+1e-6, sde.beta_schedule.t1, num_ts=5)
+ts = get_timesteps(sde.beta_schedule.t1, sde.beta_schedule.t0+1e-6, num_ts=5)
+# ts = None
+num_steps = 100
+# solver = dfx.Tsit5()
+solver = dfx.Euler()
+# solver = dfx.Dopri5()
+# rtol: float = 1e-3
+# atol: float = 1e-4
+rtol = atol = None
+hutchinson_type = "None"
+
+log_prior, delta_logp, nfe, ys = jax.vmap(lambda y, key: log_prob(sde, network, x, y, key=key, 
+num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=False, return_all=True))(unflatten(yT, output_dim), subkeys)
+
+plot(ys)
+
+#%%
+# Likelihood evaluation of model
+
+num_samples = 2
+key, subkey = jax.random.split(key)
+dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.)(x)
+y0s = dist.sample(seed=subkey, sample_shape=(num_samples))
+n_test = y0s.shape[-2]
+# print("mean var", (jnp.std(y0s, 0) ** 2).mean())
+true_logp = jax.vmap(dist.log_prob)(y0s).squeeze()
+print("true_logp", true_logp.shape, true_logp / n_test)
+
+# log_prior = jax.vmap(dist_T.log_prob)(y0s).squeeze()
+# print("log_prior", log_prior.shape, log_prior)
+
+y0s = unflatten(y0s, output_dim)
+
+num_steps = 100
+solver = dfx.Tsit5()
+# solver = dfx.Euler()
+rtol: float = 1e-6
+atol: float = 1e-6
+# rtol: float = 1e-3
+# atol: float = 1e-3
+# rtol = atol = None
+print(solver, rtol, atol)
+
+key = jax.random.PRNGKey(4)
+subkeys = jax.random.split(key, num=num_samples)
+# hutchinson_type="Gaussian"
+# hutchinson_type="Rademacher"
+hutchinson_samples = 16
+hutchinson_type = "None"
+
+ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1-1e-3, num_ts=5)
+# ts = None
+
+log_prior, delta_logp, nfe, ys = jax.vmap(jax.jit(lambda y, key: log_prob(sde, network, x, y, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, hutchinson_samples=hutchinson_samples, ts=ts, forward=True, return_all=True)))(y0s, subkeys)
+plot(ys, ts)
+
+log_prior = log_prior[:, -1]
+delta_logp = delta_logp[:, -1]
+
+model_logp = log_prior + delta_logp
+print("log_prior ode", log_prior.shape, log_prior / n_test)
+print("delta_logp", delta_logp.shape, delta_logp / n_test)
+print("model_logp", model_logp.shape, model_logp / n_test)
+print("true_logp", true_logp.shape, true_logp / n_test)
+print("nfe", nfe)
+print("norm diff", jnp.linalg.norm(model_logp-true_logp) / num_samples)
+
 #%%
 # Solve for conditional samples
 
 key = jax.random.PRNGKey(0)
 
-x_test = radial_grid_2d(10, 30)
+num_context = 30
+x = radial_grid_2d(10, 30)
+num_points = x.shape[-2]
+indices = jnp.arange(num_points)
+# num_context = jax.random.randint(key1, (), minval=min_context, maxval=max_context)
+num_target = num_points - num_context
+perm = jax.random.permutation(key, indices)
+x_test=jnp.take(x, axis=-2, indices=perm[:num_target])
+x_known=jnp.take(x, axis=-2, indices=perm[-num_context:])
+
+
 idx = jax.random.permutation(key, jnp.arange(len(x_test)))
-x_known = x_test[idx[:20]] + 1e-5
+x_known = x_test[idx[:num_context]] + 1e-5
 
-from neural_diffusion_processes.kernels import prior_gp, posterior_gp
-num_samples = 20
+num_samples = 10
 
-# key, subkey = jax.random.split(key)
+key, subkey = jax.random.split(key)
 y_known = unflatten(prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}})(x_known).sample(seed=key, sample_shape=()), output_dim)
-# y_known = unflatten(prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}})(x_test).sample(seed=subkey, sample_shape=()), output_dim)
 
-# key, subkey = jax.random.split(key)
+key, subkey = jax.random.split(key)
 data_posterior_gp = posterior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, x_known, y_known)(x_test)
 y_test = unflatten(data_posterior_gp.sample(seed=subkey, sample_shape=(num_samples)), output_dim)
-# y_test = unflatten(data_posterior_gp.mean(), output_dim)[None, ...]
 
+#%%
 num_steps = 50
 num_inner_steps = 50
 print(f"num_steps={num_steps} and num_inner_steps={num_inner_steps}")
 import time
 start = time.time()
 # conditional_sample = jax.jit(lambda  x, y, x_eval, key: ndp.sde.conditional_sample2(sde, None, x, y, x_eval, key=key, num_steps=num_steps, num_inner_steps=num_inner_steps, langevin_kernel=True, alpha=3.))
-conditional_sample = jax.jit(lambda  x, y, x_eval, key: ndp.sde.conditional_sample2(sde, network, x, y, x_eval, key=key, num_steps=num_steps, num_inner_steps=num_inner_steps, langevin_kernel=True, tau=.5, psi=2., lambda0=1., prob_flow=True))
+conditional_sample = jax.jit(lambda  x, y, x_eval, key: ndp.sde.conditional_sample2(sde, network, x, y, x_eval, key=key, num_steps=num_steps, num_inner_steps=num_inner_steps, langevin_kernel=True, tau=.5, psi=1., lambda0=1.5, prob_flow=True))
 
 samples = jax.jit(jax.vmap(lambda key:conditional_sample(x_known, y_known, x_test, key=key)))(jax.random.split(key, num_samples))
 end = time.time()
@@ -241,10 +324,10 @@ fig.subplots_adjust(wspace=0, hspace=0.)
 
 for ax, ys in zip(axes.T, [samples, y_test]):
     samples_mean = jnp.mean(ys, 0)
-    plot_vf(x, samples_mean, ax[0])
+    plot_vf(x_test, samples_mean, ax[0])
     plot_vf(x_known, y_known, ax[0], color='r')
 
-    plot_vf(x, samples_mean, ax[1])
+    plot_vf(x_test, samples_mean, ax[1])
     plot_vf(x_known, y_known, ax[1], color='r')
     covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(ys)
     plot_cov(x, covariances, ax=ax[1])
@@ -276,55 +359,48 @@ for k, rot in enumerate([I, R]):
     plot_cov(x, covariances, ax=axes[k])
 plt.savefig('conditional_ndp_rot.png', dpi=300, facecolor='white', edgecolor='none')
 
-# %%
-#Likelihood evaluation
+#%%
+# Conditional likelihood evaluation of model
+key = jax.random.PRNGKey(0)
 
-key = jax.random.PRNGKey(1)
-num_samples = 2
-subkeys = jax.random.split(key, num=num_samples)
+batch_size = 10
+num_context = 30
 
-# dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.02)(x)
-dist_T = prior_gp(mean_function, k1, {"kernel": k1_params, "mean_function": {}}, obs_noise=0.)(x)
-yT = dist_T.sample(seed=subkey, sample_shape=(num_samples))
+# x = jnp.repeat(radial_grid_2d(10, 30)[None], batch_size, 0)
+x = radial_grid_2d(10, 30)
+y = unflatten(prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}})(x).sample(seed=key, sample_shape=(batch_size)), output_dim)
+num_points = x.shape[-2]
+indices = jnp.arange(num_points)
+# num_context = jax.random.randint(key1, (), minval=min_context, maxval=max_context)
+num_target = num_points - num_context
+perm = jax.random.permutation(key, indices)
+x = jnp.repeat(x[None], batch_size, 0)
+x_test=jnp.take(x, axis=-2, indices=perm[:num_target])
+x_known=jnp.take(x, axis=-2, indices=perm[-num_context:])
+y_test=jnp.take(y, axis=-2, indices=perm[:num_target])
+y_known=jnp.take(y, axis=-2, indices=perm[-num_context:])
 
-# ts = get_timesteps(sde.beta_schedule.t0+1e-6, sde.beta_schedule.t1, num_ts=5)
-ts = get_timesteps(sde.beta_schedule.t1, sde.beta_schedule.t0+1e-6, num_ts=5)
-# ts = None
-num_steps = 100
-# solver = dfx.Tsit5()
-solver = dfx.Euler()
-# solver = dfx.Dopri5()
-# rtol: float = 1e-3
-# atol: float = 1e-4
-rtol = atol = None
-hutchinson_type = "None"
+print("x_context", x_known.shape)
+print("y_context", y_known.shape)
+print("x_target", x_test.shape)
+print("y_target", y_test.shape)
 
-log_prior, delta_logp, nfe, ys = jax.vmap(lambda y, key: log_prob(sde, network, x, y, key=key, 
-num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=False, return_all=True))(unflatten(yT, output_dim), subkeys)
+# num_samples = 10
+# key, subkey = jax.random.split(key)
+# key, subkey = jax.random.split(key)
+# data_posterior_gp = posterior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, x_known, y_known)(x_test)
+# y_test = unflatten(data_posterior_gp.sample(seed=subkey, sample_shape=(num_samples)), output_dim)
 
-plot(ys)
+n_test = y_test.shape[-2]
+
+# true_logp = jax.vmap(data_posterior_gp.log_prob)(flatten(y_test)).squeeze()[:2]
+true_logp = jax.vmap(lambda x_known, y_known, x_test, y_test: posterior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, x_known, y_known)(x_test).log_prob(flatten(y_test)))(x_known, y_known, x_test, y_test).squeeze()
+print("true_logp", true_logp.shape, true_logp.mean() / n_test)
 
 #%%
-# Solves forward SDE for multiple initia states using vmap.
-
-num_samples = 2
-key, subkey = jax.random.split(key)
-dist = prior_gp(mean_function, k0, {"kernel": k0_params, "mean_function": {}}, obs_noise=0.)(x)
-y0s = dist.sample(seed=subkey, sample_shape=(num_samples))
-print("mean var", (jnp.std(y0s, 0) ** 2).mean())
-true_logp = jax.vmap(dist.log_prob)(y0s).squeeze()
-print("true_logp", true_logp.shape, true_logp)
-
-# log_prior = jax.vmap(dist_T.log_prob)(y0s).squeeze()
-# print("log_prior", log_prior.shape, log_prior)
-
-y0s = unflatten(y0s, output_dim)
-
 num_steps = 100
 solver = dfx.Tsit5()
-# solver = dfx.Heun()
 # solver = dfx.Euler()
-# solver = dfx.Dopri5()
 rtol: float = 1e-6
 atol: float = 1e-6
 # rtol: float = 1e-3
@@ -333,32 +409,35 @@ atol: float = 1e-6
 print(solver, rtol, atol)
 
 key = jax.random.PRNGKey(4)
-subkeys = jax.random.split(key, num=num_samples)
-# ts = get_timesteps(sde.beta_schedule. t0,sde.beta_schedule.t1, num_ts=5)
-hutchinson_type="Gaussian"
-# hutchinson_type = "None"
+subkeys = jax.random.split(key, num=batch_size)
+k = 8
+# hutchinson_type="Gaussian"
+hutchinson_type = "None"
 
 ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1-1e-3, num_ts=5)
-# ts = None
 
-log_prior, delta_logp, nfe, ys = jax.vmap(jax.jit(lambda y, key: log_prob(sde, network, x, y, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=True, return_all=True)))(y0s, subkeys)
-# log_prior, delta_logp, nfe, yT = jax.vmap(jax.jit(lambda y, key: log_prob(sde, None, x, y, key=key, hutchinson_type=hutchinson_type, ts=ts)))(y0s, subkeys)
 
-# ys = unflatten(y0s, output_dim)[:, None, ...]
-# ys = yT
-plot(ys, ts)
+model_logp2, nfe = jax.vmap(jax.jit(lambda xc, yc, xs, ys, key: log_prob(sde, network, xs, ys, x_known=xc, y_known=yc, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=True)))(x_known[:k], y_known[:k], x_test[:k], y_test[:k], subkeys[:k])
 
-# print("mean var ys", (jnp.std(yT, 0) ** 2).mean())
-# print("mean mean ys", (jnp.mean(yT, 0) ** 2).mean())
-log_prior = log_prior[:, -1]
-delta_logp = delta_logp[:, -1]
+# x = jnp.concatenate([x_test, x_known], axis=-2)
+# y = jnp.concatenate([y_test, jnp.repeat(y_known[None], y_test.shape[0], 0)], axis=-2)
+joint_logp, nfe = jax.vmap(jax.jit(lambda x, y, key: log_prob(sde, network, x, y, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=True)))(x[:k], y[:k], subkeys[:k])
 
-model_logp = log_prior + delta_logp
-print("log_prior ode", log_prior.shape, log_prior)
-print("delta_logp", delta_logp.shape, delta_logp)
-print("model_logp", model_logp.shape, model_logp)
-print("true_logp", true_logp.shape, true_logp)
+context_logp, nfe = jax.vmap(jax.jit(lambda x, y, key: log_prob(sde, network, x, y, key=key, num_steps=num_steps, solver=solver, rtol=rtol, atol=atol, hutchinson_type=hutchinson_type, ts=ts, forward=True)))(x_known[:k], y_known[:k], subkeys[:k])
+model_logp = (joint_logp - context_logp)
+# plot(ys, ts)
+
+# log_prior = log_prior[:, -1]
+# delta_logp = delta_logp[:, -1]
+model_logp = model_logp[:, -1]
+model_logp2 = model_logp2[:, -1]
+
+# model_logp = log_prior + delta_logp
+# print("log_prior ode", log_prior.shape, log_prior)
+# print("delta_logp", delta_logp.shape, delta_logp)
+print("model_logp", model_logp.shape, model_logp / n_test)
+print("model_logp2", model_logp2.shape, model_logp2 / n_test)
+print("true_logp", true_logp.shape, true_logp[:k] / n_test)
 print("nfe", nfe)
-print("norm diff", jnp.linalg.norm(model_logp-true_logp) / num_samples)
-
+print("norm diff", jnp.linalg.norm(model_logp-true_logp[:k]) / batch_size)
 # %%

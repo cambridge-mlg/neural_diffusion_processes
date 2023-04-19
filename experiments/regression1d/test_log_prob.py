@@ -1,3 +1,5 @@
+
+#%%
 from typing import Mapping
 from dataclasses import dataclass
 
@@ -46,6 +48,7 @@ paramsT = {
     "kernel": kernelT.init_params(None),
     "noise_variance": 0.0
 }
+paramsT["kernel"]["variance"] = 1.
 p_ref = GP(meanT, kernelT, paramsT)
 
 sde = ndp.sde.SDE(
@@ -68,8 +71,14 @@ true_score_network = sde.get_exact_score(mean0, kernel0, params0)
 
 key, bkey = jax.random.split(key)
 
+
 def log_prob(x, y, key):
-    return ndp.sde.log_prob(sde, true_score_network, x, y, key=key, rtol=None)[0][0]
+    return ndp.sde.log_prob(sde, true_score_network, x, y, key=key, rtol=1e-6, atol=1e-6)[0][0]
+
+
+def log_prob_cond(x, y, xc, yc, key):
+    return ndp.sde.log_prob(sde, true_score_network, x, y, x_known=xc, y_known=yc, key=key, rtol=1e-6, atol=1e-6)[0][0]
+    # return ndp.sde.log_prob(sde, true_score_network, x, y, x_known=xc, y_known=yc, key=key, rtol=1e-6, atol=1e-6, hutchinson_type="Gaussian")[0][0]
 
 
 values = []
@@ -85,6 +94,7 @@ for ji in [1e-6, 1e-8, 1e-12]:
     logp_joint = log_prob(x, y, jkey)
     logp_context = log_prob(batch.xc[0], batch.yc[0], ckey)
     logp_ndp_cond = logp_joint - logp_context
+    logp_ndp_cond2 = log_prob_cond(x, y, batch.xc[0]+1e-8, batch.yc[0], jkey)
 
     logp_gp_prior = p_data.log_prob(x, y)
     D = (batch.xc[0], batch.yc[0])
@@ -94,7 +104,8 @@ for ji in [1e-6, 1e-8, 1e-12]:
         "jitter": ji,
         "logp_ndp_prior": logp_joint,
         "logp_gp_prior": logp_gp_prior,
-        "logp_ndp_cond": logp_ndp_cond,
+        "logp_ndp_cond (diff)": logp_ndp_cond,
+        "logp_ndp_cond (direct)": logp_ndp_cond2,
         "logp_gp_cond": logp_gp_cond,
     })
     print(values[-1])
