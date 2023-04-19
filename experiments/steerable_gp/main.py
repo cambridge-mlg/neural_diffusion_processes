@@ -369,11 +369,11 @@ def run(cfg):
                 # predictive log-likelihood
                 n_test = batch.ys.shape[-2]
                 true_cond_logp = jax.vmap(lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(flatten(y)))(batch.xc, batch.yc, batch.xs, batch.ys)
+                metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
 
                 # cond_logp2, nfe = eval_log_prob(subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc)
                 # metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
                 # metrics["cond_nfe"].append(jnp.mean(nfe))
-                # metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
                 # print("cond_logp2", cond_logp2.shape)
                 # print("true_cond_logp", true_cond_logp.shape)
                 # print("cond logp", metrics["true_cond_logp"][-1], metrics["cond_logp2"][-1], metrics["cond_nfe"][-1])
@@ -425,7 +425,7 @@ def run(cfg):
 
     actions = [
         ml_tools.actions.PeriodicCallback(
-            every_steps=1,
+            every_steps=10,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 kwargs["metrics"], step
             ),
@@ -437,14 +437,14 @@ def run(cfg):
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=cfg.optim.num_steps // 10,
+            every_steps=cfg.optim.num_steps // 5,
             # every_steps=cfg.optim.num_steps // 20,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 eval(kwargs["state"], kwargs["key"], step), step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=cfg.optim.num_steps // 10,
+            every_steps=cfg.optim.num_steps // 5,
             # every_steps=cfg.optim.num_steps // 100,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"], step), step
@@ -470,7 +470,7 @@ def run(cfg):
     if cfg.mode == "train":
         miniters = 50
         progress_bar = tqdm.tqdm(
-            list(range(1, cfg.optim.num_steps + 1)), miniters=miniters
+            list(range(1, cfg.optim.num_steps + 1)), mininterval=5.,
         )
         for step, batch, key in zip(progress_bar, dataloader, key_iter):
             state, metrics = update_step(state, batch)
@@ -483,7 +483,7 @@ def run(cfg):
                 action(step, t=None, metrics=metrics, state=state, key=key)
 
             if step == 1 or step % miniters == 0:
-                progress_bar.set_description(f"loss {metrics['loss']:.2f}")
+                progress_bar.set_description(f"loss {metrics['loss']:.2f}", refresh=False)
     else:
         # for action in actions[3:]:
         action = actions[2]
