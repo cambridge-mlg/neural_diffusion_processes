@@ -279,6 +279,11 @@ class SDE:
 
         x = move_far_away(x, mask)
 
+        if self.weighted:
+            w = 1. - jnp.exp(-self.beta_schedule.B(t))
+        else:
+            w = 1.0
+
         ekey, nkey = jax.random.split(key)
         μ0t, k0t, params0t = self.p0t(t, y)
         dist = prior_gp(μ0t, k0t, params0t)(x)
@@ -291,15 +296,9 @@ class SDE:
         Sigma_inv_b = Sigma_t.solve(yt - dist.loc[:, None])
         out = - Sigma_inv_b
 
-        if self.weighted:
-            w = 1. - jnp.exp(-self.beta_schedule.B(t))
-        else:
-            w = 1.0
-
         precond_score_net = self.score(nkey, t, yt, x, mask, network)
-        # precond_noise = sqrt.T.solve(Z)
-        # return w * jnp.mean((out - precond_score_net)**2) 
         loss = (out - precond_score_net) ** 2
+
         loss = loss * (1. - mask[:, None])
         num_points = len(x) - jnp.count_nonzero(mask)
         loss = jnp.sum(jnp.sum(loss, -1)) / num_points
