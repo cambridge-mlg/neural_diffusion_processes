@@ -277,6 +277,8 @@ class SDE:
             # consider all points
             mask = jnp.zeros_like(x[:,0])
 
+        x = move_far_away(x, mask)
+
         ekey, nkey = jax.random.split(key)
         μ0t, k0t, params0t = self.p0t(t, y)
         dist = prior_gp(μ0t, k0t, params0t)(x)
@@ -296,7 +298,12 @@ class SDE:
 
         precond_score_net = self.score(nkey, t, yt, x, mask, network)
         # precond_noise = sqrt.T.solve(Z)
-        return w * jnp.mean((out - precond_score_net)**2) 
+        # return w * jnp.mean((out - precond_score_net)**2) 
+        loss = (out - precond_score_net) ** 2
+        loss = loss * (1. - mask[:, None])
+        num_points = len(x) - jnp.count_nonzero(mask)
+        loss = jnp.sum(jnp.sum(loss, -1)) / num_points
+        return w * loss
 
 
         if mask is None:

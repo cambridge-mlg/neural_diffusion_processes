@@ -413,7 +413,7 @@ def get_dataset(dataset: str, task: str, *, key, batch_size: int, samples_per_ep
     gkey, dskey = jax.random.split(key)
     gen = data_generator(gkey, dataset, task, samples_per_epoch, batch_size, num_epochs)
     ds = DatasetFromGenerator(gen, dskey)
-    # ds.map(get_padding_function(dataset, task))
+    ds.map(get_padding_function(dataset, task))
     return ds
 
 
