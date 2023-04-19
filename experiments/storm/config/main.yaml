@@ -78,10 +78,10 @@ sde:
     _target_: gpjax.Zero
     output_dim: 2
 
-net:
-  n_layers: 5
-  hidden_dim: 64
-  num_heads: 4
+# net:
+#   n_layers: 5
+#   hidden_dim: 64
+#   num_heads: 8
 
 # eval_batch_size: ${batch_size}
 now: ${now:%Y-%m-%d}/${now:%H-%M-%S}

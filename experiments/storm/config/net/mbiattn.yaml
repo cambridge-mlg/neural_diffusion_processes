@@ -1,5 +1,5 @@
 _target_: neural_diffusion_processes.models.attention.MultiOutputBiAttentionModel
-n_layers: 2
-hidden_dim: 16
-num_heads: 4
+n_layers: 5
+hidden_dim: 64
+num_heads: 8
 sparse: false
