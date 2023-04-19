@@ -86,7 +86,7 @@ def run(cfg):
 
     # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
     v = {k: jnp.mean(jnp.stack(v)) for k, v in metrics.items()}
-    logger.log_metrics(v, 0)
+    logger.log_metrics(v, cfg.optim.num_steps)
     logger.save()
     print(v)
 

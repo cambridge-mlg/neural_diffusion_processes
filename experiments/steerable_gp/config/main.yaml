@@ -37,14 +37,13 @@ beta_schedule:
   beta1: 15.0
 
 optim:
-  batch_size: 30
-  # batch_size: 20
+  batch_size: 40
   num_steps: 100_000
   lr: 1e-3
   ema_rate: 0.999
 
 eval:
-  batch_size: ${eval:${optim.batch_size}//8}
+  batch_size: ${eval:${optim.batch_size}//4}
   prior:
     n_steps: 100
     rtol: 1e-4
