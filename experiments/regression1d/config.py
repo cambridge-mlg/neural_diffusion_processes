@@ -15,7 +15,7 @@ class SdeConfig:
     limiting_kernel: str = "white"
     t0: float = 5e-4
     is_score_precond: bool = False
-    std_trick: bool = True
+    std_trick: bool = False
     residual_trick: bool = False
     weighted: bool = True
 
@@ -23,7 +23,7 @@ class SdeConfig:
 @dataclasses.dataclass
 class OptimizationConfig:
     batch_size: int = 16
-    num_epochs: int = 10
+    num_epochs: int = 50
     num_warmup_epochs: int = 5
     lr: float = 1e-3
     ema_rate: float = 0.999

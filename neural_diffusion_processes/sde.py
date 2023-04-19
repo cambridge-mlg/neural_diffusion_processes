@@ -277,11 +277,38 @@ class SDE:
             # consider all points
             mask = jnp.zeros_like(x[:,0])
 
+        ekey, nkey = jax.random.split(key)
+        μ0t, k0t, params0t = self.p0t(t, y)
+        dist = prior_gp(μ0t, k0t, params0t)(x)
+
+        sqrt = dist.scale.to_root()
+        Z = jax.random.normal(ekey, (len(x), 1))
+        yt = dist.loc[:, None] + sqrt @ Z
+
+        Sigma_t = k0t.gram(params0t['kernel'], x) + identity(np.prod(x.shape).item()) * get_config().jitter
+        Sigma_inv_b = Sigma_t.solve(yt - dist.loc[:, None])
+        out = - Sigma_inv_b
+
+        if self.weighted:
+            w = 1. - jnp.exp(-self.beta_schedule.B(t))
+        else:
+            w = 1.0
+
+        precond_score_net = self.score(nkey, t, yt, x, mask, network)
+        # precond_noise = sqrt.T.solve(Z)
+        return w * jnp.mean((out - precond_score_net)**2) 
+
+
+        if mask is None:
+            # consider all points
+            mask = jnp.zeros_like(x[:,0])
+
         # x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e6)
         x = move_far_away(x, mask)
 
         factor = (1.0 - jnp.exp(-self.beta_schedule.B(t)))
         std = jnp.sqrt(factor)
+        std = 1.
 
         # TODO: allow for 'likelihood' weight with weight=diffusion**2?
         # if self.weighted:

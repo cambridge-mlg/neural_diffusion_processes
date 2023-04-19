@@ -145,17 +145,17 @@ def test_score_appprox(sde: ndp.sde.SDE, network, dataset: str):
     mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
     true_score_network = sde.get_exact_score(mean0, kernel0, params0)
 
-    t = jnp.ones(()) * .01
-    mask = jnp.zeros_like(batch.mask[0])
-    std = jnp.sqrt(1.0 - jnp.exp(-sde.beta_schedule.B(t))) + 1e-3
-    out1 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, true_score_network))(batch.ys, batch.xs) * std
+    t = jnp.ones(()) * .001
+    mask = jnp.zeros_like(batch.xs[0, :, 0])
+    out1 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, true_score_network))(batch.ys, batch.xs)
     out2 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, network))(batch.ys, batch.xs)
     # out2 = sde.score(key, t, batch.ys[0], batch.xs[0], batch.mask[0], network)
     print(out1[0][::4])
     print(out2[0][::4])
-    print(std)
-    print(jnp.mean((out1 - out2) ** 2))
-    
+    v = jnp.mean((out1 - out2) ** 2)
+    print(v)
+    return v 
+
 
 class Task:
     def __init__(self, key, task: str, dataset: str, batch_size: int, num_data: int, conditional_sampler: Callable, logp: Callable):
@@ -518,12 +518,18 @@ def main(_):
     if config.mode == "eval_only": num_steps = 0
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
+    @jax.jit
+    def foo(p):
+        return test_score_appprox(sde, functools.partial(net, p), config.data.dataset)
+
     for step, batch, key in zip(progress_bar, train_ds, key_iter):
         if USE_TRUE_SCORE:
             metrics = {'loss': 0.0, 'step': step}
         else:
             state, metrics = update_step(state, batch)
         metrics["lr"] = learning_rate_schedule(step)
+
+        metrics["loss2"] = foo(state.params_ema)
 
         for action in actions:
             action(step, t=None, metrics=metrics, state=state, key=key)
@@ -534,9 +540,9 @@ def main(_):
 
     test_score_appprox(sde, functools.partial(net, state.params), config.data.dataset)
 
-    # for task, callback in zip(tasks, task_callbacks):
-    #     # task._num_data = config.data.num_samples_in_epoch
-    #     callback(num_steps + 1, None, state=state, key=next(key_iter))
+    for task, callback in zip(tasks, task_callbacks):
+        # task._num_data = config.data.num_samples_in_epoch
+        callback(num_steps + 1, None, state=state, key=next(key_iter))
     
 
 
