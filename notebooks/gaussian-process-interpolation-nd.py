@@ -50,7 +50,7 @@ k0 = ndp.kernels.RBFVec(output_dim)
 # k0 = ndp.kernels.RBFDivFree()
 # k0_params = k0.init_params(None)
 # k0_variance = 10
-k0_variance = 1./5
+k0_variance = 1.
 lengthscale = 2.23606797749979
 k0_params = {"variance": k0_variance, "lengthscale": lengthscale}
 k0 = SumKernel([k0, ndp.kernels.WhiteVec(output_dim)])
@@ -324,10 +324,10 @@ fig.subplots_adjust(wspace=0, hspace=0.)
 
 for ax, ys in zip(axes.T, [samples, y_test]):
     samples_mean = jnp.mean(ys, 0)
-    plot_vf(x, samples_mean, ax[0])
+    plot_vf(x_test, samples_mean, ax[0])
     plot_vf(x_known, y_known, ax[0], color='r')
 
-    plot_vf(x, samples_mean, ax[1])
+    plot_vf(x_test, samples_mean, ax[1])
     plot_vf(x_known, y_known, ax[1], color='r')
     covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(ys)
     plot_cov(x, covariances, ax=ax[1])
