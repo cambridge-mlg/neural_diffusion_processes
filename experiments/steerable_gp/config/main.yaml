@@ -38,8 +38,9 @@ beta_schedule:
 
 optim:
   batch_size: 40
-  num_steps: 100_000
-  lr: 1e-3
+  num_steps: 80_000
+  lr: 5e-4
+  learning_rate: ${eval:${optim.lr}*${eval:40/${optim.batch_size}}}
   ema_rate: 0.999
 
 eval:
@@ -127,7 +128,7 @@ sde:
 
 net:
   n_layers: 5
-  hidden_dim: 64
+  hidden_dim: 128
   num_heads: 4
 
 # eval_batch_size: ${batch_size}
