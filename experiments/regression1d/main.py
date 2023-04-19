@@ -134,6 +134,28 @@ def m2i(mask):
     """mask to indices"""
     return ~mask.astype(jnp.bool_)
 
+    
+def test_score_appprox(sde: ndp.sde.SDE, network, dataset: str):
+    key = jax.random.PRNGKey(0)
+    ds = regression1d.get_dataset(dataset, "training", key=key, batch_size=64, samples_per_epoch=128, num_epochs=1)
+    batch = next(ds)
+
+    factory = regression1d._DATASET_FACTORIES[dataset] 
+    assert isinstance(factory, regression1d.GPFunctionalDistribution)
+    mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
+    true_score_network = sde.get_exact_score(mean0, kernel0, params0)
+
+    t = jnp.ones(()) * .01
+    mask = jnp.zeros_like(batch.mask[0])
+    std = jnp.sqrt(1.0 - jnp.exp(-sde.beta_schedule.B(t))) + 1e-3
+    out1 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, true_score_network))(batch.ys, batch.xs) * std
+    out2 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, network))(batch.ys, batch.xs)
+    # out2 = sde.score(key, t, batch.ys[0], batch.xs[0], batch.mask[0], network)
+    print(out1[0][::4])
+    print(out2[0][::4])
+    print(std)
+    print(jnp.mean((out1 - out2) ** 2))
+    
 
 class Task:
     def __init__(self, key, task: str, dataset: str, batch_size: int, num_data: int, conditional_sampler: Callable, logp: Callable):
@@ -339,6 +361,7 @@ def main(_):
         net_params = functools.partial(net, params)
         return ndp.sde.loss(sde, net_params, batch, key)
 
+
     num_steps_per_epoch = config.data.num_samples_in_epoch // config.optimization.batch_size
     num_steps = num_steps_per_epoch * config.optimization.num_epochs
     learning_rate_schedule = optax.warmup_cosine_decay_schedule(
@@ -398,7 +421,8 @@ def main(_):
         return new_state, metrics
 
     state = init(batch0, jax.random.PRNGKey(config.seed))
-
+    
+    test_score_appprox(sde, functools.partial(net, state.params), config.data.dataset)
     # state = restore_if_exists(state, path)
 
     exp_root_dir = get_experiment_dir(config)
@@ -508,10 +532,14 @@ def main(_):
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")
 
 
-    for task, callback in zip(tasks, task_callbacks):
-        # task._num_data = config.data.num_samples_in_epoch
-        callback(num_steps + 1, None, state=state, key=next(key_iter))
+    test_score_appprox(sde, functools.partial(net, state.params), config.data.dataset)
+
+    # for task, callback in zip(tasks, task_callbacks):
+    #     # task._num_data = config.data.num_samples_in_epoch
+    #     callback(num_steps + 1, None, state=state, key=next(key_iter))
     
+
+
 
 if __name__ == "__main__":
     app.run(main)
