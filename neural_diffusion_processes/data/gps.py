@@ -1,6 +1,9 @@
 from __future__ import annotations
 from typing import Tuple, Iterator, Optional, Mapping
+import sys
+import os
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 import jaxkern
@@ -8,6 +11,7 @@ from einops import rearrange
 
 from neural_diffusion_processes.utils import sample_mvn
 from neural_diffusion_processes.kernels import sample_prior_gp, prior_gp, posterior_gp
+from neural_diffusion_processes.kernels import RBFVec, RBFDivFree, RBFCurlFree
 
 
 def grid_2d(min_x, max_x, n_xaxis, min_y=None, max_y=None, n_yaxis=None, flatten=True):
@@ -155,4 +159,64 @@ def get_gp_data(
         return x, y
 
     x, y = jax.vmap(sample_single)(jax.random.split(key, num_samples))
+    return x, y
+
+
+def load_gp_data_set(
+    key,
+    kernel: jaxkern.base.AbstractKernel,
+    dataset='train',
+    file_path='',
+    **kwargs,
+):
+    assert kwargs["params"]["kernel"]["variance"] == 1
+    assert kwargs["params"]["kernel"]["lengthscale"] == np.sqrt(5.)
+
+    if isinstance(kernel, RBFDivFree):
+        data_type = 'div_free'
+    elif isinstance(kernel, RBFCurlFree):
+        data_type = 'curl_free'
+    elif isinstance(kernel, RBFVec):
+        data_type = 'rbf'
+    else:
+        sys.exit("Unknown data type. Must be either rbf, div_free or curl_free.")
+
+    if dataset == 'test':
+        pass
+    elif dataset == 'train':
+        pass
+    elif dataset == 'valid':
+        pass
+    else:
+        sys.exit('Unkown data set. Must be either train, valid or test')
+ 
+    path = os.path.join(file_path, f"gp_{data_type}", "data")
+    print("path", path)
+    x = np.load(os.path.join(path, f"gp_{data_type}_{dataset.capitalize()}_X.npy"))
+    y = np.load(os.path.join(path, f"gp_{data_type}_{dataset.capitalize()}_Y.npy"))
+    
+    x = jnp.array(x, dtype=float)
+    y = jnp.array(y, dtype=float)
+
+    # perm = jax.random.permutation(key, jnp.arange(len(x)))
+    perm = jnp.arange(len(x))
+    if dataset == 'train':
+        if kwargs["num_samples_train"] > len(x):
+            raise Exception("Not enough samples available")
+        elif kwargs["num_samples_train"] < len(x):
+            x = jnp.take(x, axis=0, indices=perm[:kwargs["num_samples_train"]])
+            y = jnp.take(y, axis=0, indices=perm[:kwargs["num_samples_train"]])
+        else:
+            pass
+
+    if dataset in ['valid', 'test']:
+        if kwargs["num_samples_test"] > len(x):
+            raise Exception("Not enough samples available")
+        elif kwargs["num_samples_test"] < len(x):
+            x = jnp.take(x, axis=0, indices=perm[:kwargs["num_samples_test"]])
+            y = jnp.take(y, axis=0, indices=perm[:kwargs["num_samples_test"]])
+        else:
+            pass
+
+    print("x", x.shape)
     return x, y

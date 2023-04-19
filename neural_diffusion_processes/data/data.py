@@ -8,7 +8,6 @@ from simple_pytree import Pytree
 from check_shapes import check_shapes, check_shape
 from jaxtyping import Array
 
-
 @dataclasses.dataclass
 class DataBatch(Pytree):
     xs: Array
@@ -23,10 +22,10 @@ class DataBatch(Pytree):
     def num_points(self) -> int:
         return self.xs.shape[1]
 
-    @check_shapes()
-    def __post_init__(self) -> None:
-        check_shape(self.xs, "[batch, num_points, input_dim]")
-        check_shape(self.ys, "[batch, num_points, output_dim]")
+    # @check_shapes()
+    # def __post_init__(self) -> None:
+    #     check_shape(self.xs, "[batch, num_points, input_dim]")
+    #     check_shape(self.ys, "[batch, num_points, output_dim]")
 
 
 @check_shapes(
@@ -38,6 +37,7 @@ def dataloader(
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
+    n_points = n_points if n_points > 0 else x.shape[1]
     # x = x.astype(jnp.float32)
     # y = y.astype(jnp.float32)
     dataset_size = len(x)
@@ -73,9 +73,18 @@ def split_dataset_in_context_and_target(data: DataBatch, key, min_context, max_c
     num_context = jax.random.randint(key1, (), minval=min_context, maxval=max_context)
     num_target = data.num_points - num_context
     perm = jax.random.permutation(key2, indices)
+    # print("split_dataset_in_context_and_target")
+    # print("x.shape", x.shape)
+    # print("num_target", num_target, "num_target", num_target)
+    # print(jnp.take(x, axis=1, indices=perm[:num_target]).shape, jnp.take(x, axis=1, indices=perm[-num_context:]).shape)
+    # print(jnp.take(x, axis=1, indices=perm[num_context:]).shape, jnp.take(x, axis=1, indices=perm[:num_context]).shape)
     return DataBatch(
-        xs=jnp.take(x, axis=1, indices=perm[:num_target]),
-        ys=jnp.take(y, axis=1, indices=perm[:num_target]),
-        xc=jnp.take(x, axis=1, indices=perm[-num_context:]),
-        yc=jnp.take(y, axis=1, indices=perm[-num_context:]),
+        # xs=jnp.take(x, axis=1, indices=perm[:num_target]),
+        # ys=jnp.take(y, axis=1, indices=perm[:num_target]),
+        # xc=jnp.take(x, axis=1, indices=perm[-num_context:]),
+        # yc=jnp.take(y, axis=1, indices=perm[-num_context:]),
+        xs=jnp.take(x, axis=1, indices=perm[num_context:]),
+        ys=jnp.take(y, axis=1, indices=perm[num_context:]),
+        xc=jnp.take(x, axis=1, indices=perm[:num_context]),
+        yc=jnp.take(y, axis=1, indices=perm[:num_context]),
     )

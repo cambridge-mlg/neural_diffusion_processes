@@ -79,6 +79,7 @@ def run(cfg):
         cfg.data,
         key=jax.random.PRNGKey(cfg.data.seed),
         num_samples=cfg.data.num_samples_train,
+        dataset="train"
     )
     dataloader = ndp.data.dataloader(
         data, batch_size=cfg.optim.batch_size, key=next(key_iter), n_points=cfg.data.n_points
@@ -92,6 +93,7 @@ def run(cfg):
         cfg.data,
         key=jax.random.PRNGKey(cfg.data.seed_test),
         num_samples=cfg.data.num_samples_test,
+        dataset="test"
     )
     plot_batch = DataBatch(xs=data_test[0][:32], ys=data_test[1][:32])
     plot_batch = ndp.data.split_dataset_in_context_and_target(plot_batch, next(key_iter), cfg.data.min_context, cfg.data.max_context)
@@ -101,7 +103,7 @@ def run(cfg):
         batch_size=cfg.eval.batch_size,
         key=next(key_iter),
         run_forever=False,  # only run once
-        n_points=cfg.data.n_points
+        n_points=cfg.data.n_points,
     )
     data_test: List[ndp.data.DataBatch] = [
         ndp.data.split_dataset_in_context_and_target(batch, next(key_iter), cfg.data.min_context, cfg.data.max_context)
@@ -237,6 +239,7 @@ def run(cfg):
 
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         print("plots", t)
+        dict_plots = {}
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
         n_samples = 20
         keys = jax.random.split(key, 6)
@@ -303,7 +306,7 @@ def run(cfg):
         plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][4])
         plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[1][4])
 
-        dict_plots = {"backward": fig_backward}
+        dict_plots["backward"] = fig_backward
         
         if t == 0: # NOTE: Only plot fwd at the beggining
             # ts = [0.2, 0.5, 0.8, sde.beta_schedule.t1]
@@ -373,7 +376,7 @@ def run(cfg):
                 metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
                 print("cond_logp2", cond_logp2.shape)
                 print("true_cond_logp", true_cond_logp.shape)
-                print("cond logp", metrics["true_cond_logp"][-1], metrics["cond_logp2"][-1])
+                print("cond logp", metrics["true_cond_logp"][-1], metrics["cond_logp2"][-1], metrics["cond_nfe"][-1])
 
                 logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
                 x = jnp.concatenate([batch.xs, batch.xc], axis=1)
@@ -382,7 +385,7 @@ def run(cfg):
                 cond_logp = logp_joint - logp_context
                 metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
                 print("cond logp", metrics["true_cond_logp"][-1], metrics["cond_logp"][-1])
-                raise
+                # raise
 
                 # prior likelihood
                 true_logp = jax.vmap(lambda x, y: true_prior(x).log_prob(flatten(y)))(x, y)
@@ -428,20 +431,21 @@ def run(cfg):
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=cfg.optim.num_steps // 10,
+            every_steps=cfg.optim.num_steps // 1,
             callback_fn=lambda step, t, **kwargs: save_checkpoint(
                 kwargs["state"], ckpt_path, step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            # every_steps=cfg.optim.num_steps // 10,
-            every_steps=cfg.optim.num_steps // 20,
+            every_steps=cfg.optim.num_steps // 10,
+            # every_steps=cfg.optim.num_steps // 20,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 eval(kwargs["state"], kwargs["key"], step), step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
             every_steps=cfg.optim.num_steps // 10,
+            # every_steps=cfg.optim.num_steps // 100,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"], step), step
             ),

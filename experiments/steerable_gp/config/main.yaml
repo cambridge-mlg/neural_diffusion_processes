@@ -12,6 +12,7 @@ defaults:
   # - lr_schedule: constant
   - beta_schedule: linear
   - kernel: whitevec
+  - data: gp
   - data_kernel: divfree
   # - data_kernel: curlfree
   
@@ -24,7 +25,7 @@ defaults:
 #   n_layers: 5
 #   hidden_dim: 64
 
-name: steerable_gp2
+name: steerable_gp
 mode: train
 seed: 0
 
@@ -67,18 +68,18 @@ eval:
     rtol: 1e-4
     atol: 1e-4
     # atol: 1e-6
-    hutchinson_samples: 8
+    hutchinson_samples: 1
 
 
 data:
-  _target_: neural_diffusion_processes.data.get_vec_gp_data
+  # _target_: neural_diffusion_processes.data.get_vec_gp_data
   num_samples_train: 80_000
   num_points: 30
   x_radius: 10
   # x_radius: 20
   kernel: ${data_kernel.cls}
   # variance: 10
-  variance: 0.2
+  variance: 1.
   # hyperparameters: ${data_kernel.params}
   params:
     kernel:
@@ -92,7 +93,7 @@ data:
   obs_noise: 0.02
   seed_test: 1
   num_samples_test:  1_000
-  # num_samples_test: 20_000
+  # num_samples_test: 10_000
   seed: 0
   # min_context: 5
   # max_context: 50
