@@ -251,12 +251,13 @@ def run(cfg):
         # idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
         idx = 0
 
-        x_grid = jnp.linspace(0, plot_batch.xs.max(), 100)[..., None]
+        x_grid = data[0][0]  # jnp.linspace(0, plot_batch.xs.max(), 100)[..., None]
 
         TWOPI = 2 * jnp.pi
         RADDEG = TWOPI / 360
 
-        ts = [0.1, 0.2, 0.5, 0.8, float(sde.beta_schedule.t1)]
+        ts_fwd = [0.1, 0.2, 0.5, 0.8, float(sde.beta_schedule.t1)]
+        ts_bwd = [0.8, 0.5, 0.2, 0.1, float(sde.beta_schedule.t0)]
 
         def plot_tracks(xs, ys, axes, title=""):
             ys = jnp.stack(
@@ -279,7 +280,7 @@ def run(cfg):
             # axes.set_xlim([-180, 180])
             # axes.set_ylim([-90, 90])
 
-        nb_cols = len(ts) + 2
+        nb_cols = len(ts_fwd) + 2
         fig_backward, axes = plt.subplots(
             1, nb_cols, figsize=(2 * nb_cols * 2, 2), sharex=True, sharey=True
         )
@@ -305,7 +306,7 @@ def run(cfg):
             x_grid,
             state.params_ema,
             y_ref,
-            ts[::-1],
+            ts_bwd,
         ).squeeze()
 
         # ax.plot(x_grid, y_model[:, -1, :, 0].T, "C0", alpha=0.3)
@@ -315,7 +316,7 @@ def run(cfg):
                 x_grid,
                 y_model[:, i],
                 axes[nb_cols - 2 - i],
-                rf"$p_{{model}} t={ts[len(ts) - i - 1]}$",
+                rf"$p_{{model}} t={ts_bwd[i]}$",
             )
 
         # plot conditional data
@@ -352,7 +353,7 @@ def run(cfg):
 
         if t == 0:  # NOTE: Only plot fwd at the beggining
             # ts = [0.8, sde.beta_schedule.t1]
-            nb_cols = len(ts) + 2
+            nb_cols = len(ts_fwd) + 2
             nb_rows = 4
             fig_forward, axes = plt.subplots(
                 nb_rows,
@@ -370,7 +371,7 @@ def run(cfg):
                 plot_tracks(batch.xs, batch.ys, axes[i, 0], rf"$p_{{data}}$")
 
                 # TODO: only solve once and return different timesaves
-                for k, t in enumerate(ts):
+                for k, t in enumerate(ts_fwd):
                     yt = vmap(
                         lambda key: sde.sample_marginal(
                             key, t * jnp.ones(()), batch.xs[idx + i], batch.ys[idx + i]
