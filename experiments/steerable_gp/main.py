@@ -442,10 +442,30 @@ def run(cfg):
         metrics = defaultdict(list)
         eval_log_prob = jit(vmap(partial(log_prob, params=state.params_ema)))
 
+        if step == 0:
+            log.info("Evaluate ground truth")
+            # TODO: evaluate diagonal cov GP
+            for i, batch in enumerate(data_test):
+                log.info(f"${step=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}")
+                n_test = batch.ys.shape[-2]
+                true_cond_logp = jax.vmap(
+                    lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(flatten(y))
+                )(batch.xc, batch.yc, batch.xs, batch.ys)
+                metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
+
+                x = jnp.concatenate([batch.xs, batch.xc], axis=1)
+                y = jnp.concatenate([batch.ys, batch.yc], axis=1)
+                true_logp = jax.vmap(lambda x, y: true_prior(x).log_prob(flatten(y)))(
+                    x, y
+                )
+                n = y.shape[-2]
+                metrics["true_logp"].append(jnp.mean(true_logp / n))
+
+        log.info("Evaluate model")
         for i, batch in enumerate(data_test):
             key, *keys = jax.random.split(key, num_samples + 1)
 
-            # # NOTE: only eval on 1 batch appart at the end
+            # NOTE: only eval on 2 batches appart from the last iteration
             if step >= cfg.optim.num_steps or i < 2:
                 # if True:
                 log.info(f"${step=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}")
@@ -454,12 +474,6 @@ def run(cfg):
                 if cfg.eval.like.n_steps > 0:
                     # predictive log-likelihood
                     n_test = batch.ys.shape[-2]
-                    true_cond_logp = jax.vmap(
-                        lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(
-                            flatten(y)
-                        )
-                    )(batch.xc, batch.yc, batch.xs, batch.ys)
-                    metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
 
                     cond_logp2, nfe = eval_log_prob(
                         subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc
@@ -468,12 +482,7 @@ def run(cfg):
                     metrics["cond_nfe"].append(jnp.mean(nfe))
                     # print("cond_logp2", cond_logp2.shape)
                     # print("true_cond_logp", true_cond_logp.shape)
-                    print(
-                        "cond logp",
-                        metrics["true_cond_logp"][-1],
-                        metrics["cond_logp2"][-1],
-                        metrics["cond_nfe"][-1],
-                    )
+                    print("cond logp", metrics["cond_logp2"][-1])
 
                     logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
                     x = jnp.concatenate([batch.xs, batch.xc], axis=1)
@@ -481,27 +490,14 @@ def run(cfg):
                     logp_joint, nfe = eval_log_prob(subkeys, x, y)
                     cond_logp = logp_joint - logp_context
                     metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
-                    print(
-                        "cond logp",
-                        metrics["true_cond_logp"][-1],
-                        metrics["cond_logp"][-1],
-                    )
+                    print("cond logp", metrics["cond_logp"][-1])
                     # raise
 
                     # prior likelihood
-                    true_logp = jax.vmap(
-                        lambda x, y: true_prior(x).log_prob(flatten(y))
-                    )(x, y)
                     n = y.shape[-2]
-                    metrics["true_logp"].append(jnp.mean(true_logp / n))
                     metrics["prior_logp"].append(jnp.mean(logp_joint / n))
                     metrics["prior_nfe"].append(jnp.mean(nfe))
-                    print(
-                        "prior logp",
-                        metrics["true_logp"][-1],
-                        metrics["prior_logp"][-1],
-                        metrics["prior_nfe"][-1],
-                    )
+                    print("prior logp", metrics["prior_logp"][-1])
 
                 # # predictive mean and covariance mse
                 # # TODO: depends on dataset if dist is avail or not
@@ -563,11 +559,10 @@ def run(cfg):
     # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
 
-    # logger.log_plot("process", plots(state, key, 0), 0)
-    # logger.log_plot("process", plots(state, key, 1), 1)
-    # raise
-    # logger.log_metrics(eval(state, key, 0), 0)
+    logger.log_plot("process", plots(state, key, 0), 0)
+    logger.log_metrics(eval(state, key, 0), 0)
     # logger.log_metrics(eval(state, key, 1), 1)
+    # logger.log_plot("process", plots(state, key, 1), 1)
     # logger.save()
 
     if cfg.mode == "train":
