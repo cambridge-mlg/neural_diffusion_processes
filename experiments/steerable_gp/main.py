@@ -451,75 +451,81 @@ def run(cfg):
                 log.info(f"${step=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}")
                 subkeys = jax.random.split(key, num=batch.ys.shape[0])
 
-                # predictive log-likelihood
-                n_test = batch.ys.shape[-2]
-                true_cond_logp = jax.vmap(
-                    lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(flatten(y))
-                )(batch.xc, batch.yc, batch.xs, batch.ys)
-                metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
+                if cfg.eval.like.n_steps > 0:
+                    # predictive log-likelihood
+                    n_test = batch.ys.shape[-2]
+                    true_cond_logp = jax.vmap(
+                        lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(
+                            flatten(y)
+                        )
+                    )(batch.xc, batch.yc, batch.xs, batch.ys)
+                    metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
 
-                cond_logp2, nfe = eval_log_prob(
-                    subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc
-                )
-                metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
-                metrics["cond_nfe"].append(jnp.mean(nfe))
-                # print("cond_logp2", cond_logp2.shape)
-                # print("true_cond_logp", true_cond_logp.shape)
-                print(
-                    "cond logp",
-                    metrics["true_cond_logp"][-1],
-                    metrics["cond_logp2"][-1],
-                    metrics["cond_nfe"][-1],
-                )
+                    cond_logp2, nfe = eval_log_prob(
+                        subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc
+                    )
+                    metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
+                    metrics["cond_nfe"].append(jnp.mean(nfe))
+                    # print("cond_logp2", cond_logp2.shape)
+                    # print("true_cond_logp", true_cond_logp.shape)
+                    print(
+                        "cond logp",
+                        metrics["true_cond_logp"][-1],
+                        metrics["cond_logp2"][-1],
+                        metrics["cond_nfe"][-1],
+                    )
 
-                logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
-                x = jnp.concatenate([batch.xs, batch.xc], axis=1)
-                y = jnp.concatenate([batch.ys, batch.yc], axis=1)
-                logp_joint, nfe = eval_log_prob(subkeys, x, y)
-                cond_logp = logp_joint - logp_context
-                metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
-                print(
-                    "cond logp", metrics["true_cond_logp"][-1], metrics["cond_logp"][-1]
-                )
-                # raise
+                    logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
+                    x = jnp.concatenate([batch.xs, batch.xc], axis=1)
+                    y = jnp.concatenate([batch.ys, batch.yc], axis=1)
+                    logp_joint, nfe = eval_log_prob(subkeys, x, y)
+                    cond_logp = logp_joint - logp_context
+                    metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
+                    print(
+                        "cond logp",
+                        metrics["true_cond_logp"][-1],
+                        metrics["cond_logp"][-1],
+                    )
+                    # raise
 
-                # prior likelihood
-                true_logp = jax.vmap(lambda x, y: true_prior(x).log_prob(flatten(y)))(
-                    x, y
-                )
-                n = y.shape[-2]
-                metrics["true_logp"].append(jnp.mean(true_logp / n))
-                metrics["prior_logp"].append(jnp.mean(logp_joint / n))
-                metrics["prior_nfe"].append(jnp.mean(nfe))
-                print(
-                    "prior logp",
-                    metrics["true_logp"][-1],
-                    metrics["prior_logp"][-1],
-                    metrics["prior_nfe"][-1],
-                )
+                    # prior likelihood
+                    true_logp = jax.vmap(
+                        lambda x, y: true_prior(x).log_prob(flatten(y))
+                    )(x, y)
+                    n = y.shape[-2]
+                    metrics["true_logp"].append(jnp.mean(true_logp / n))
+                    metrics["prior_logp"].append(jnp.mean(logp_joint / n))
+                    metrics["prior_nfe"].append(jnp.mean(nfe))
+                    print(
+                        "prior logp",
+                        metrics["true_logp"][-1],
+                        metrics["prior_logp"][-1],
+                        metrics["prior_nfe"][-1],
+                    )
 
                 # # predictive mean and covariance mse
                 # # TODO: depends on dataset if dist is avail or not
-                # # true_mean = batch.ys
-                # true_mean = vmap(lambda x: unflatten(true_prior(x).mean(), y_dim))(batch.xs)
-                # def f(x):
-                #     ktt = true_prior(x).covariance()
-                #     ktt = rearrange(ktt, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=y_dim, p2=y_dim)
-                #     return ktt[jnp.diag_indices(ktt.shape[0])]
-                # true_cov = vmap(f)(batch.xs)
+                # if cfg.eval.cond.n_steps > 0:
+                #     # true_mean = batch.ys
+                #     true_mean = vmap(lambda x: unflatten(true_prior(x).mean(), y_dim))(batch.xs)
+                #     def f(x):
+                #         ktt = true_prior(x).covariance()
+                #         ktt = rearrange(ktt, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=y_dim, p2=y_dim)
+                #         return ktt[jnp.diag_indices(ktt.shape[0])]
+                #     true_cov = vmap(f)(batch.xs)
 
-                # ys = jit(vmap(lambda key: vmap(lambda xs, xc, yc: cond_sample(key, xs, xc, yc, state.params_ema))(batch.xs, batch.xc, batch.yc)))(jnp.stack(keys)).squeeze()
-                # f_pred = jnp.mean(ys, axis=0)
-                # mse_mean_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
-                # metrics["cond_mse"].append(mse_mean_pred)
-                # f_pred = jnp.median(ys, axis=0)
-                # mse_med_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
-                # metrics["cond_mse_median"].append(mse_med_pred)
+                #     ys = jit(vmap(lambda key: vmap(lambda xs, xc, yc: cond_sample(key, xs, xc, yc, state.params_ema))(batch.xs, batch.xc, batch.yc)))(jnp.stack(keys)).squeeze()
+                #     f_pred = jnp.mean(ys, axis=0)
+                #     mse_mean_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
+                #     metrics["cond_mse"].append(mse_mean_pred)
+                #     f_pred = jnp.median(ys, axis=0)
+                #     mse_med_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
+                #     metrics["cond_mse_median"].append(mse_med_pred)
 
-                # f_pred = vmap(vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1]), in_axes=[2])(ys).transpose(1,0,2,3)
-                # mse_cov_pred = jnp.sum((true_cov - f_pred).reshape(*true_cov.shape[:-2], -1) ** 2, -1)
-                # mse_cov_pred = mse_cov_pred.mean(1).mean(0)
-                # metrics["mse_cov_pred"].append(mse_cov_pred)
+                #     f_pred = vmap(vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1]), in_axes=[2])(ys).transpose(1,0,2,3)
+                #     mse_cov_pred = jnp.sum((true_cov - f_pred).reshape(*true_cov.shape[:-2], -1) ** 2, -1)
+                #     mse_cov_pred = mse_cov_pred.mean(1).mean(0)
+                #     metrics["mse_cov_pred"].append(mse_cov_pred)
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
         v = {k: jnp.mean(jnp.stack(v)) for k, v in metrics.items()}
@@ -585,10 +591,10 @@ def run(cfg):
                     f"loss {metrics['loss']:.2f}", refresh=False
                 )
     else:
-        # for action in actions[3:]:
-        action = actions[2]
-        action._cb_fn(cfg.optim.num_steps + 1, t=None, state=state, key=key)
-        logger.save()
+        for action in actions[2:]:
+            # action = actions[2]
+            action._cb_fn(cfg.optim.num_steps + 1, t=None, state=state, key=key)
+            logger.save()
 
 
 @hydra.main(config_path="config", config_name="main", version_base="1.3.2")
