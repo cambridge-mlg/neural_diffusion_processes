@@ -41,7 +41,7 @@ hydra:
     max_num_timeout: 0
     array_parallelism: ${n_jobs}
     setup: [". /etc/profile.d/modules.sh", "module purge", "module load rhel8/default-amp dot rhel8/slurm singularity/current rhel8/global cuda/11.4 cudnn/8.2.4.15-11.4/"]
-    executable: /home/${oc.env:USER}/rds/${PROJECT_NAME}/venv/bin/python
+    executable: /home/${oc.env:USER}/rds/hpc-work/${PROJECT_NAME}/venv/bin/python
     # executable: /home/${oc.env:USER}/rds/miniconda3/envs/venv/bin/python
     additional_parameters: {
       "account": "T2-CS162-GPU",
