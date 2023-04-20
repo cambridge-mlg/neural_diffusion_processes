@@ -252,7 +252,7 @@ def run(cfg):
         # idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
         idx = 0
 
-        x_grid = batch0.xs[0]  # jnp.linspace(0, plot_batch.xs.max(), 100)[..., None]
+        x_grid = batch.xs[0]  # jnp.linspace(0, plot_batch.xs.max(), 100)[..., None]
 
         TWOPI = 2 * jnp.pi
         RADDEG = TWOPI / 360
