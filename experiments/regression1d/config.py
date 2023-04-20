@@ -34,9 +34,9 @@ class OptimizationConfig:
 
 @dataclasses.dataclass
 class NetworkConfig:
-    num_bidim_attention_layers: int = 2
-    hidden_dim: int = 16
-    num_heads: int = 4
+    num_bidim_attention_layers: int = 5
+    hidden_dim: int = 64
+    num_heads: int = 8
 
 
 @dataclasses.dataclass

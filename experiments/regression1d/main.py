@@ -23,6 +23,8 @@ import optax
 import datetime
 import matplotlib.pyplot as plt
 
+from aim.ext.tensorboard_tracker import Run
+
 from ml_collections import config_dict, config_flags
 from jax.config import config as jax_config
 
@@ -150,10 +152,7 @@ def test_score_appprox(sde: ndp.sde.SDE, network, dataset: str):
     out1 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, true_score_network))(batch.ys, batch.xs)
     out2 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, network))(batch.ys, batch.xs)
     # out2 = sde.score(key, t, batch.ys[0], batch.xs[0], batch.mask[0], network)
-    print(out1[0][::4])
-    print(out2[0][::4])
     v = jnp.mean((out1 - out2) ** 2)
-    print(v)
     return v 
 
 
@@ -289,11 +288,21 @@ def main(_):
     jax_config.update("jax_enable_x64", True)
     policy = jmp.get_policy('params=float32,compute=float32,output=float32')
 
+    from dataclasses import asdict
     config = config_utils.to_dataclass(Config, _CONFIG.value)
+    flattened_config_dict = config_utils._to_flattened_dict(asdict(config))
+
 
     path = get_experiment_dir(config, 'root') / 'config.yaml'
     with open(str(path), 'w') as f:
         f.write(config_utils.to_yaml(config))
+    
+    run = Run(
+        experiment="regression1d",
+        sync_tensorboard_log_dir=str(get_experiment_dir(config, 'tensorboard')),
+        log_system_params=True,
+    )
+    run["hparams"] = flattened_config_dict
 
     key = jax.random.PRNGKey(config.seed)
     key_iter = _get_key_iter(key)
@@ -459,7 +468,7 @@ def main(_):
             conditional_sampler=conditional,
             logp=logp
         )
-        for task in ["interpolation"] #, "extrapolation", "generalization"]
+        for task in ["interpolation", "extrapolation", "generalization"]
     ]
 
     task_callbacks = [
@@ -488,13 +497,13 @@ def main(_):
             every_steps=10,
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
-        # ml_tools.actions.PeriodicCallback(
-        #     every_steps=num_steps // 4,
-        #     # every_steps=1,
-        #     callback_fn=lambda step, t, **kwargs: [
-        #         cb(step, t, **kwargs) for cb in task_callbacks
-        #     ]
-        # ),
+        ml_tools.actions.PeriodicCallback(
+            every_steps=num_steps // 4,
+            # every_steps=1,
+            callback_fn=lambda step, t, **kwargs: [
+                cb(step, t, **kwargs) for cb in task_callbacks
+            ]
+        ),
         # ml_tools.actions.PeriodicCallback(
         #     every_steps=num_steps_per_epoch,
         #     callback_fn=lambda step, t, **kwargs: writer.write_figures(
@@ -541,7 +550,7 @@ def main(_):
     test_score_appprox(sde, functools.partial(net, state.params), config.data.dataset)
 
     for task, callback in zip(tasks, task_callbacks):
-        # task._num_data = config.data.num_samples_in_epoch
+        task._num_data = int(2**10)
         callback(num_steps + 1, None, state=state, key=next(key_iter))
     
 

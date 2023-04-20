@@ -279,52 +279,9 @@ class SDE:
 
         x = move_far_away(x, mask)
 
-        if self.weighted:
-            w = 1. - jnp.exp(-self.beta_schedule.B(t))
-        else:
-            w = 1.0
-
-        ekey, nkey = jax.random.split(key)
-        μ0t, k0t, params0t = self.p0t(t, y)
-        dist = prior_gp(μ0t, k0t, params0t)(x)
-
-        sqrt = dist.scale.to_root()
-        Z = jax.random.normal(ekey, (len(x), 1))
-        yt = dist.loc[:, None] + sqrt @ Z
-
-        Sigma_t = k0t.gram(params0t['kernel'], x) + identity(np.prod(x.shape).item()) * get_config().jitter
-        Sigma_inv_b = Sigma_t.solve(yt - dist.loc[:, None])
-        out = - Sigma_inv_b
-
-        precond_score_net = self.score(nkey, t, yt, x, mask, network)
-        loss = (out - precond_score_net) ** 2
-
-        loss = loss * (1. - mask[:, None])
-        num_points = len(x) - jnp.count_nonzero(mask)
-        loss = jnp.sum(jnp.sum(loss, -1)) / num_points
-        return w * loss
-
-
-        if mask is None:
-            # consider all points
-            mask = jnp.zeros_like(x[:,0])
-
-        # x = jnp.where(mask[:, None] == 0, x, jnp.ones_like(x) * 1e6)
-        x = move_far_away(x, mask)
-
-        factor = (1.0 - jnp.exp(-self.beta_schedule.B(t)))
-        std = jnp.sqrt(factor)
-        std = 1.
-
-        # TODO: allow for 'likelihood' weight with weight=diffusion**2?
-        # if self.weighted:
-        #     weight = factor
-        # else:
-        #     weight = 1.0
-        if self.weighted:
-            w = 1. - jnp.exp(-self.beta_schedule.B(t))
-        else:
-            w = 1.0
+        y_dim = y.shape[-1]
+        var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+        # std = jnp.sqrt(var)
 
         ekey, nkey = jax.random.split(key)
         μ0t, k0t, params = self.p0t(t, y)
@@ -333,23 +290,38 @@ class SDE:
         sqrt = dist.scale.to_root()
         Z = jax.random.normal(ekey, flatten(y).shape)
         affine_transformation = lambda x: dist.loc + sqrt @ x
-        yt = unflatten(affine_transformation(Z), y.shape[-1])
-        precond_noise = sqrt @ Z
+        yt = unflatten(affine_transformation(Z), y_dim)
 
-        # yt = jnp.where(mask[:, None] == 1, yt, jnp.ones_like(yt) * -666.)
         precond_score_net = self.score(nkey, t, yt, x, mask, network)
 
-        if not self.is_score_preconditioned:
-            precond_noise = self.limiting_gram(x).solve(precond_noise)
+        # print("self.is_score_preconditioned", self.is_score_preconditioned)
 
-        loss = jnp.square(std * precond_score_net + unflatten(precond_noise, y.shape[-1]))  # [N, y_dim]
+        # loss = jnp.square(precond_score_net - unflatten(-precond_noise, y_dim))
 
-        # Set values of loss to zero where mask is nonzero
-        # loss = jnp.where(mask[:, None] == 0.0, loss, jnp.zeros_like(loss))
+        if self.is_score_preconditioned:
+            precond_noise = sqrt @ Z
+            if self.weighted:
+                loss = jnp.square(
+                    var * precond_score_net + unflatten(precond_noise, y_dim)
+                )
+            else:
+                loss = jnp.square(
+                    precond_score_net - unflatten(-precond_noise / var, y_dim)
+                )
+        else:
+            if self.weighted:
+                loss = jnp.square(
+                    unflatten(sqrt @ flatten(precond_score_net), y_dim)
+                    + unflatten(Z, y_dim)
+                )
+            else:
+                precond_noise = sqrt.T.solve(Z)
+                loss = jnp.square(precond_score_net + unflatten(precond_noise, y_dim))
+
         loss = loss * (1. - mask[:, None])
         num_points = len(x) - jnp.count_nonzero(mask)
         loss = jnp.sum(jnp.sum(loss, -1)) / num_points
-        return w * loss
+        return loss
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
