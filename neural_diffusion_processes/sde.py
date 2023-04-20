@@ -15,16 +15,30 @@ from diffrax import AbstractSolver, Dopri5, Tsit5
 import jaxkern
 import gpjax
 from gpjax.mean_functions import Zero, Constant
-from jaxlinop import LinearOperator, DenseLinearOperator, DiagonalLinearOperator, identity, ZeroLinearOperator
+from jaxlinop import (
+    LinearOperator,
+    DenseLinearOperator,
+    DiagonalLinearOperator,
+    identity,
+    ZeroLinearOperator,
+)
+
 # import equinox as eqx
 import numpy as np
 
 from jaxtyping import Array, Float, PyTree
 from check_shapes import check_shapes
+from einops import rearrange
 
 from .utils.types import Tuple, Callable, Mapping, Sequence, Optional
 from .data import DataBatch
-from .kernels import prior_gp, sample_prior_gp, log_prob_prior_gp, promote_compute_engines, SumKernel
+from .kernels import (
+    prior_gp,
+    sample_prior_gp,
+    log_prob_prior_gp,
+    promote_compute_engines,
+    SumKernel,
+)
 from .utils.misc import flatten, unflatten
 from .config import get_config
 
@@ -33,6 +47,7 @@ class AbstractMeanFunction(gpjax.mean_functions.AbstractMeanFunction):
     def init_params(self, key):
         return {}
 
+
 def scale_kernel_variance(params, coeff):
     if isinstance(params, list):
         for k in params:
@@ -40,6 +55,7 @@ def scale_kernel_variance(params, coeff):
     else:
         params["variance"] = params["variance"] * coeff
     return params
+
 
 class ScoreNetwork(Callable):
     @abstractmethod
@@ -84,6 +100,7 @@ class SDE:
     residual_trick: bool = True
     is_score_preconditioned: bool = True
     exact_score: bool = False
+    weighted: bool = True
 
     # def __post_init__(self):
     #     if self.exact_score:
@@ -113,15 +130,21 @@ class SDE:
     def p0t(
         self,
         t,
-        y0: Callable[[Float[Array, "N x_dim"]], Float[Array, "N y_dim"]] | Float[Array, "N x_dim"],
+        y0: Callable[[Float[Array, "N x_dim"]], Float[Array, "N y_dim"]]
+        | Float[Array, "N x_dim"],
     ) -> Tuple[AbstractMeanFunction, jaxkern.base.AbstractKernel, dict]:
-        
         # E[Y_t|Y_0]
         mean_coef = jnp.exp(-0.5 * self.beta_schedule.B(t))
+
         class _Mean(AbstractMeanFunction):
-            def __call__(self_, params: Mapping, x: Float[Array, "N D"]) -> Float[Array, "N Q"]:
-                μT_value = self.limiting_mean_fn(self.limiting_params["mean_function"], x)
+            def __call__(
+                self_, params: Mapping, x: Float[Array, "N D"]
+            ) -> Float[Array, "N Q"]:
+                μT_value = self.limiting_mean_fn(
+                    self.limiting_params["mean_function"], x
+                )
                 return mean_coef * y0 + (1.0 - mean_coef) * μT_value
+
         μ0t = _Mean()
 
         # Cov[Y_t|Y_0]
@@ -137,22 +160,28 @@ class SDE:
             k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
             params = {"mean_function": {}, "kernel": k0t_params}
         return μ0t, k0t, params
-    
+
     def pt(
         self,
-        t,  
-        y0: Callable[[Float[Array, "N x_dim"]], Float[Array, "N y_dim"]] | Float[Array, "N x_dim"],
+        t,
+        y0: Callable[[Float[Array, "N x_dim"]], Float[Array, "N y_dim"]]
+        | Float[Array, "N x_dim"],
         k0: jaxkern.base.AbstractKernel,
-        k0_params: Mapping
+        k0_params: Mapping,
     ) -> Tuple[AbstractMeanFunction, jaxkern.base.AbstractKernel, dict]:
-
         # E[Y_t|Y_0]
         mean_coef = jnp.exp(-0.5 * self.beta_schedule.B(t))
+
         class _Mean(AbstractMeanFunction):
-            def __call__(self_, params: Mapping, x: Float[Array, "N D"]) -> Float[Array, "N Q"]:
-                μT_value = self.limiting_mean_fn(self.limiting_params["mean_function"], x)
+            def __call__(
+                self_, params: Mapping, x: Float[Array, "N D"]
+            ) -> Float[Array, "N Q"]:
+                μT_value = self.limiting_mean_fn(
+                    self.limiting_params["mean_function"], x
+                )
                 # return mean_coef * y0(x) + (1.0 - mean_coef) * μT_value
                 return mean_coef * y0 + (1.0 - mean_coef) * μT_value
+
         μ0t = _Mean()
 
         # Cov[Y_t|Y_0]
@@ -163,13 +192,12 @@ class SDE:
         kt_param = scale_kernel_variance(kt_param, 1.0 - cov_coef)
         k0t = SumKernel([k0, self.limiting_kernel])
         # params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
-        
+
         k0_params = k0_params if isinstance(k0_params, list) else [k0_params]
         kt_param = kt_param if isinstance(kt_param, list) else [kt_param]
         params = {"mean_function": {}, "kernel": [*k0_params, *kt_param]}
 
         return μ0t, k0t, params
-
 
     @check_shapes("t: []", "x: [N, x_dim]", "y: [N, y_dim]", "return: [N, y_dim]")
     def sample_marginal(self, key, t: Array, x: Array, y: Array) -> Array:
@@ -194,7 +222,7 @@ class SDE:
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
-        """ This parametrises the (preconditioned) score K(x,x) grad log p(y_t|x) """
+        """This parametrises the (preconditioned) score K(x,x) grad log p(y_t|x)"""
         score = network(t, yt, x, key=key)
         if self.std_trick:
             std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
@@ -204,56 +232,66 @@ class SDE:
             # NOTE: wrong sign?
             # fwd_drift = self.drift(t, yt, x)
             # residual = 2 * fwd_drift / self.beta_schedule(t)
-            residual = - yt
+            residual = -yt
             score += residual
         return score
-    
-    def get_exact_score(self, mean0: AbstractMeanFunction, k0: jaxkern.base.AbstractKernel, params0: Mapping) -> ScoreNetwork:
+
+    def get_exact_score(
+        self,
+        mean0: AbstractMeanFunction,
+        k0: jaxkern.base.AbstractKernel,
+        params0: Mapping,
+    ) -> ScoreNetwork:
         """Returns a ScoreNetwork which computes the returns the true score. Can only be computed for a Gaussian data dist."""
 
         class _ExactScoreNetwork(ScoreNetwork):
             "Exact marginal score in Gaussian setting"
+
             def __call__(self2, t: Array, yt: Array, x: Array, *, key) -> Array:
                 y0 = mean0(params0["mean_function"], x)
                 mu_t, k_t, params = self.pt(t, y0, k0, params0["kernel"])
-                b = flatten(yt - mu_t(params['mean_function'], x))
-                Sigma_t = k_t.gram(params['kernel'], x) + identity(np.prod(x.shape).item()) * get_config().jitter
+                b = flatten(yt - mu_t(params["mean_function"], x))
+                Sigma_t = (
+                    k_t.gram(params["kernel"], x)
+                    + identity(np.prod(x.shape).item()) * get_config().jitter
+                )
                 # Σ⁻¹ (yt - m_0(x))
                 Sigma_inv_b = Sigma_t.solve(b)
-                out = - Sigma_inv_b
+                out = -Sigma_inv_b
                 if self.is_score_preconditioned:
-                   out = self.limiting_gram(x) @ out
+                    out = self.limiting_gram(x) @ out
                 return unflatten(out, yt.shape[-1])
 
         return _ExactScoreNetwork()
-        
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_ode(self, key, t: Array, yt: Array, x: Array, network) -> Array:
         second_term = 0.5 * self.beta_schedule(t) * self.score(key, t, yt, x, network)
         if not self.is_score_preconditioned:
-            second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
+            second_term = unflatten(
+                self.limiting_gram(x) @ flatten(second_term), yt.shape[-1]
+            )
         return self.drift(t, yt, x) - second_term
-
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_sde(self, key, t: Array, yt: Array, x: Array, network) -> Array:
         second_term = self.beta_schedule(t) * self.score(key, t, yt, x, network)
         if not self.is_score_preconditioned:
-            second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
+            second_term = unflatten(
+                self.limiting_gram(x) @ flatten(second_term), yt.shape[-1]
+            )
         return self.drift(t, yt, x) - second_term
-
 
     @check_shapes("t: []", "y: [N, y_dim]", "x: [N, x_dim]", "return: []")
     def loss(self, key, t: Array, y: Array, x: Array, network: ScoreNetwork) -> Array:
         # TODO: this is DSM loss, refactor to enable ISM loss etc
-        """ grad log p(y_t|y_0) = - \Sigma^-1 (y_t - mean) """
-
-        factor = (1.0 - jnp.exp(-self.beta_schedule.B(t)))
-        std = jnp.sqrt(factor)
+        """grad log p(y_t|y_0) = - \Sigma^-1 (y_t - mean)"""
+        y_dim = y.shape[-1]
+        var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+        std = jnp.sqrt(var)
         # TODO: allow for 'likelihood' weight with weight=diffusion**2?
         # if self.weighted:
-        #     weight = factor
+        #     weight = var
         # else:
         #     weight = 1.0
 
@@ -264,13 +302,46 @@ class SDE:
         sqrt = dist.scale.to_root()
         Z = jax.random.normal(ekey, flatten(y).shape)
         affine_transformation = lambda x: dist.loc + sqrt @ x
-        yt = unflatten(affine_transformation(Z), y.shape[-1])
+        yt = unflatten(affine_transformation(Z), y_dim)
 
         precond_score_net = self.score(nkey, t, yt, x, network)
-        precond_noise = sqrt @ Z
-        if not self.is_score_preconditioned:
-            precond_noise = self.limiting_gram(x).solve(precond_noise)
-        loss = jnp.square(std * precond_score_net + unflatten(precond_noise, y.shape[-1]))
+
+        # print("self.is_score_preconditioned", self.is_score_preconditioned)
+
+        # loss = jnp.square(precond_score_net - unflatten(-precond_noise, y_dim))
+
+        if self.is_score_preconditioned:
+            precond_noise = sqrt @ Z
+            if self.weighted:
+                loss = jnp.square(
+                    var * precond_score_net + unflatten(precond_noise, y_dim)
+                )
+            else:
+                loss = jnp.square(
+                    precond_score_net - unflatten(-precond_noise / var, y_dim)
+                )
+        else:
+            if self.weighted:
+                loss = jnp.square(
+                    unflatten(sqrt @ flatten(precond_score_net), y_dim)
+                    + unflatten(Z, y_dim)
+                )
+            else:
+                precond_noise = sqrt.T.solve(Z)
+                loss = jnp.square(precond_score_net + unflatten(precond_noise, y_dim))
+
+        # if not self.is_score_preconditioned:
+        #     precond_noise = self.limiting_gram(x).solve(precond_noise)
+
+        # Sigma_t = (
+        #     k0t.gram(params["kernel"], x)
+        #     + identity(np.prod(x.shape).item()) * get_config().jitter
+        # )
+        # Sigma_inv_b = Sigma_t.solve(flatten(yt) - dist.loc)
+        # out = -Sigma_inv_b
+        # precond_score_net = self.score(nkey, t, yt, x, network)
+        # loss = (unflatten(out, y.shape[-1]) - precond_score_net) ** 2
+
         loss = jnp.mean(jnp.sum(loss, -1))
         return loss
 
@@ -296,6 +367,7 @@ def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
 ##        Sampling        ##
 ############################
 
+
 class LinOpControlTerm(dfx.ControlTerm):
     @staticmethod
     def prod(vf: LinearOperator, control: PyTree) -> PyTree:
@@ -317,29 +389,27 @@ def sde_solve(
     key,
     prob_flow: bool = False,
     num_steps: int = 100,
-    y = None,
+    y=None,
     solver: AbstractSolver = dfx.Heun(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
     forward: bool = False,
-    ts = None
+    ts=None,
 ):
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
     else:
-        stepsize_controller =  dfx.PIDController(rtol=rtol, atol=atol)
+        stepsize_controller = dfx.PIDController(rtol=rtol, atol=atol)
 
     key, ykey = jax.random.split(key)
     y = sde.sample_prior(ykey, x) if y is None else y
     y_dim = y.shape[-1]
     y = flatten(y)
 
-    #NOTE: default is time-reversal
+    # NOTE: default is time-reversal
     if forward:
         t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
-        drift_sde = lambda t, yt, arg: flatten(
-            sde.drift(t, unflatten(yt, y_dim), arg)
-        )
+        drift_sde = lambda t, yt, arg: flatten(sde.drift(t, unflatten(yt, y_dim), arg))
     else:
         t1, t0 = sde.beta_schedule.t0, sde.beta_schedule.t1
         drift_sde = lambda t, yt, arg: flatten(
@@ -348,20 +418,20 @@ def sde_solve(
     dt = (t1 - t0) / num_steps  # TODO: dealing properly with endpoint?
 
     if prob_flow:
-        reverse_drift_ode = lambda t, yt, arg: flatten(sde.reverse_drift_ode(
-            key, t, unflatten(yt, y_dim), arg, network
-        ))
+        reverse_drift_ode = lambda t, yt, arg: flatten(
+            sde.reverse_drift_ode(key, t, unflatten(yt, y_dim), arg, network)
+        )
         terms = dfx.ODETerm(reverse_drift_ode)
     else:
         shape = jax.ShapeDtypeStruct(y.shape, y.dtype)
         key, subkey = jax.random.split(key)
-        bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=jnp.abs(dt), shape=shape, key=subkey)
+        bm = dfx.VirtualBrownianTree(
+            t0=t0, t1=t1, tol=jnp.abs(dt), shape=shape, key=subkey
+        )
         diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
 
-        terms = dfx.MultiTerm(
-            dfx.ODETerm(drift_sde), LinOpControlTerm(diffusion, bm)
-        )
-    
+        terms = dfx.MultiTerm(dfx.ODETerm(drift_sde), LinOpControlTerm(diffusion, bm))
+
     saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
     out = dfx.diffeqsolve(
         terms,
@@ -373,10 +443,11 @@ def sde_solve(
         args=x,
         # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
-        saveat=saveat
+        saveat=saveat,
     )
     ys = out.ys
     return unflatten(ys, y_dim)
+
 
 # @check_shapes(
 #     "x_context: [num_context, x_dim]",
@@ -470,6 +541,7 @@ def sde_solve(
 #     y0, _ = jax.lax.scan(lambda yt, x: outer_loop(x[1], yt, x[0]), yT, xs)
 #     return unflatten(y0, y_dim)
 
+
 # @eqx.filter_jit
 @check_shapes(
     "x_context: [num_context, x_dim]",
@@ -488,9 +560,9 @@ def conditional_sample2(
     num_steps: int = 100,
     num_inner_steps: int = 5,
     prob_flow: bool = True,
-    langevin_kernel = True,
-    psi: float = 1.,
-    lambda0: float = 1.,
+    langevin_kernel=True,
+    psi: float = 1.0,
+    lambda0: float = 1.0,
     tau: float = None,
 ):
     # TODO: Langevin dynamics option
@@ -512,7 +584,9 @@ def conditional_sample2(
     diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
     if not prob_flow:
         # reverse SDE:
-        reverse_drift_sde = lambda t, yt, arg: flatten(sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network))
+        reverse_drift_sde = lambda t, yt, arg: flatten(
+            sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network)
+        )
 
         shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
         key, subkey = jax.random.split(key)
@@ -542,7 +616,7 @@ def conditional_sample2(
             else:
                 score = score
         return 0.5 * sde.beta_schedule(t) * score
-    
+
     def diffusion_langevin(t, yt, x) -> LinearOperator:
         if langevin_kernel:
             return diffusion(t, yt, x)
@@ -554,10 +628,8 @@ def conditional_sample2(
     bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
     # bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
     langevin_terms = dfx.MultiTerm(
-        dfx.ODETerm(reverse_drift_langevin),
-        LinOpControlTerm(diffusion_langevin, bm)
+        dfx.ODETerm(reverse_drift_langevin), LinOpControlTerm(diffusion_langevin, bm)
     )
-
 
     def sample_marginal(key, t, x_context, y_context):
         if len(y_context) == 0:
@@ -565,11 +637,12 @@ def conditional_sample2(
         else:
             return flatten(sde.sample_marginal(key, t, x_context, y_context))
 
-
     def inner_loop(key, ys, t):
         # reverse step
         yt, yt_context = ys
-        yt_context = sample_marginal(key, t, x_context, y_context) # NOTE: should resample?
+        yt_context = sample_marginal(
+            key, t, x_context, y_context
+        )  # NOTE: should resample?
         yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
 
         # yt_m_dt, *_ = solver.step(
@@ -584,12 +657,21 @@ def conditional_sample2(
         # )
 
         yt_m_dt = yt_augmented
-        yt_m_dt += lambda0 * psi * dt * reverse_drift_langevin(t - dt, yt_augmented, x_augmented)
-        noise = jnp.sqrt(psi) * jnp.sqrt(dt) * jax.random.normal(key, shape=yt_augmented.shape)
+        yt_m_dt += (
+            lambda0
+            * psi
+            * dt
+            * reverse_drift_langevin(t - dt, yt_augmented, x_augmented)
+        )
+        noise = (
+            jnp.sqrt(psi)
+            * jnp.sqrt(dt)
+            * jax.random.normal(key, shape=yt_augmented.shape)
+        )
         yt_m_dt += diffusion_langevin(t - dt, yt_augmented, x_augmented) @ noise
         # yt_m_dt += langevin_terms.contr(t, t)[0] * langevin_terms.vf(t, yt_augmented, x_augmented)[0]
         # yt_m_dt += langevin_terms.vf(t, yt_augmented, x_augmented)[1] @ noise
-        
+
         yt = yt_m_dt[num_context * y_dim :]
         # strip context from augmented state
         return (yt, yt_context), yt_m_dt
@@ -611,7 +693,7 @@ def conditional_sample2(
             None,
             made_jump=False,
         )
-        # yt_m_dt = yt_augmented 
+        # yt_m_dt = yt_augmented
         # yt_m_dt += -dt * reverse_drift_diffeq(t, yt_augmented, x_augmented)
         # # yt_m_dt += terms_reverse.contr(t, t-dt) * terms_reverse.vf(t, yt_augmented, x_augmented)
         # noise = jax.random.normal(key, shape=yt_augmented.shape)
@@ -625,12 +707,15 @@ def conditional_sample2(
             )
             yt = yt_m_dt[-1][num_context * y_dim :]
             return yt
-    
+
         yt = jax.lax.cond(
             tau > t,
             corrector,
             lambda key, yt, yt_context, t: yt,
-            key, yt, yt_context, t
+            key,
+            yt,
+            yt_context,
+            t,
         )
         return yt, yt
 
@@ -646,16 +731,23 @@ def conditional_sample2(
 ## Likelihood evaluation  ##
 ############################
 
+
 def get_estimate_div_fn(fn):
     """Create the divergence function of `fn` using the Hutchinson-Skilling trace estimator."""
 
     @check_shapes("t: []", "y: [N, y_dim]", "eps: [K, M, y_dim]", "return: []")
-    def div_fn(t, y: jnp.ndarray, arg, eps: jnp.ndarray, num_context = None) -> jnp.ndarray:
+    def div_fn(
+        t, y: jnp.ndarray, arg, eps: jnp.ndarray, num_context=None
+    ) -> jnp.ndarray:
         y_dim = y.shape[-1]
         if num_context:
             yc = y[:num_context]
             y = y[num_context:]
-            flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg)[num_context:])
+            flattened_fn = lambda y: flatten(
+                fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg)[
+                    num_context:
+                ]
+            )
         else:
             flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
         _, vjp_fn = jax.vjp(flattened_fn, flatten(y))
@@ -665,7 +757,7 @@ def get_estimate_div_fn(fn):
         #     (eps_dfdy,) = vjp_fn(flatten(eps))
         #     trace_estimate = jnp.sum(eps_dfdy * flatten(eps), axis=-1)
         #     return carry + trace_estimate, None
-        
+
         # sums, _ = jax.lax.scan(f, 0., eps)
         # return sums / eps.shape[0]
 
@@ -674,7 +766,7 @@ def get_estimate_div_fn(fn):
             (eps_dfdy,) = vjp_fn(flatten(eps))
             trace_estimate = jnp.sum(eps_dfdy * flatten(eps), axis=-1)
             return trace_estimate
-        
+
         return jax.vmap(f)(eps).mean(axis=0)
 
     return div_fn
@@ -684,21 +776,26 @@ def get_exact_div_fn(fn):
     "flatten all but the last axis and compute the true divergence"
 
     @check_shapes("t: []", "y: [N, y_dim]", "return: []")
-    def div_fn(t, y, arg, num_context = None) -> jnp.ndarray:
+    def div_fn(t, y, arg, num_context=None) -> jnp.ndarray:
         # print("y", y.shape)
         # print("num_context", num_context)
         y_dim = y.shape[-1]
         if num_context:
             yc = y[:num_context]
             y = y[num_context:]
-            flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg)[num_context:])
-            # flattened_fn = lambda y: fn(t, jnp.concatenate([yc, y], axis=0), arg)[num_context:]
+            # flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg)[num_context:])
+            flattened_fn = lambda y: fn(t, jnp.concatenate([yc, y], axis=0), arg)[
+                num_context:
+            ]
         else:
-            flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
-        jac = jax.jacrev(flattened_fn)(flatten(y))
-        # jac = jax.jacrev(flattened_fn)(y)
+            # flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
+            flattened_fn = lambda y: fn(t, y, arg)
+        # jac = jax.jacrev(flattened_fn)(flatten(y))
+        jac = jax.jacrev(flattened_fn)(y)
         # print("jac", jac.shape)
         # jac = jac.reshape(np.prod(jac.shape[:2]), np.prod(jac.shape[:2]))
+        # jac = rearrange(jac, "n1 p1 n2 p2 -> (n1 p1) (n2 p2)")
+        jac = rearrange(jac, "n1 p1 n2 p2 -> (p1 n1) (p2 n2)")
         # print("jac", jac.shape)
         return jnp.trace(jac, axis1=-1, axis2=-2)
 
@@ -708,11 +805,14 @@ def get_exact_div_fn(fn):
 def get_div_fn(drift_fn, hutchinson_type):
     """Divergence of the drift function."""
     if hutchinson_type == "None":
-        return lambda y, t, context, eps, **kwargs: get_exact_div_fn(drift_fn)(y, t, context, **kwargs)
+        return lambda y, t, context, eps, **kwargs: get_exact_div_fn(drift_fn)(
+            y, t, context, **kwargs
+        )
     else:
         return lambda y, t, context, eps, **kwargs: get_estimate_div_fn(drift_fn)(
             y, t, context, eps, **kwargs
         )
+
 
 def div_noise(
     rng: jax.random.KeyArray, shape: Sequence[int], hutchinson_type: str
@@ -731,7 +831,7 @@ def div_noise(
     return epsilon
 
 
-@check_shapes("x: [N, x_dim]", "y: [N, y_dim]")#, "return: []")
+@check_shapes("x: [N, x_dim]", "y: [N, y_dim]")  # , "return: []")
 def log_prob(
     sde: SDE,
     network: ScoreNetwork,
@@ -744,19 +844,18 @@ def log_prob(
     solver: AbstractSolver = Tsit5(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
-    hutchinson_type: str = 'None',
+    hutchinson_type: str = "None",
     hutchinson_samples: int = 1,
     forward: bool = True,
-    ts = None,
+    ts=None,
     return_all: bool = False,
     x_known: Optional[Array] = None,
     y_known: Optional[Array] = None,
 ):
-
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
     else:
-        stepsize_controller =  dfx.PIDController(rtol=rtol, atol=atol)
+        stepsize_controller = dfx.PIDController(rtol=rtol, atol=atol)
 
     if forward:
         t0, t1 = sde.beta_schedule.t0, sde.beta_schedule.t1
@@ -793,24 +892,24 @@ def log_prob(
         return drift, logp
 
     terms = dfx.ODETerm(logp_wrapper)
-    #NOTE: should we resample?
+    # NOTE: should we resample?
     saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
 
     sol = dfx.diffeqsolve(
         terms,
         solver,
         t0=t0,
-        t1=t1,#-1e-3,
+        t1=t1,  # -1e-3,
         dt0=dt,
         y0=(y, 0.0),
         args=(eps, x),
         # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
-        saveat=saveat
+        saveat=saveat,
     )
     yT, delta_logp = sol.ys
     yT = unflatten(yT, y_dim)
-    nfe = sol.stats['num_steps']
+    nfe = sol.stats["num_steps"]
     logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
 
     if return_all:
