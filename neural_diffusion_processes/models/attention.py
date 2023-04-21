@@ -395,6 +395,7 @@ class BiDimensionalAttentionModel(hk.Module):
     """Number of bi-dimensional attention blocks."""
     hidden_dim: int
     num_heads: int
+    translation_invariant: bool = False
     init_zero: bool = True
 
     @check_shapes(
@@ -410,6 +411,19 @@ class BiDimensionalAttentionModel(hk.Module):
         x = jnp.expand_dims(x, axis=-1)
         y = jnp.repeat(jnp.expand_dims(y, axis=-1), num_x_dims, axis=2)
         return jnp.concatenate([x, y], axis=-1)
+    
+    @check_shapes(
+        "x: [seq_len, input_dim]",
+        "mask: [seq_len] if mask is not None",
+        "return: [seq_len, input_dim]",
+    )
+    def center(self, x: jnp.ndarray, mask: jnp.ndarray):
+        if mask is None: 
+            mask = jnp.zeros_like(x[..., 0])
+
+        num_points = len(x) - jnp.count_nonzero(mask)
+        mean = jnp.sum(x * (1. - mask[..., None]), axis=0, keepdims=True)  / num_points # [1, input_dim]
+        return x - mean
 
     @check_shapes(
         "x: [batch_size, num_points, input_dim]",
@@ -423,6 +437,9 @@ class BiDimensionalAttentionModel(hk.Module):
         Computes the additive noise that was added to `y_0` to obtain `y_t`
         based on `x_t` and `y_t` and `t`
         """
+        if self.translation_invariant:
+            x = jax.vmap(self.center)(x, mask)
+
         x = cs(self.process_inputs(x, y), "[batch_size, num_points, input_dim, 2]")
 
         x = cs(

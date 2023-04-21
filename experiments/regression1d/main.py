@@ -42,6 +42,7 @@ except:
 
 
 USE_TRUE_SCORE = False
+EXPERIMENT = "regression1d"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -50,6 +51,10 @@ _LOG_DIR = 'logs'
 
 
 _CONFIG = config_flags.DEFINE_config_dict("config", config_utils.to_configdict(Config()))
+
+
+def is_smoketest(config: Config) -> bool:
+    return "smoketest" in config.mode
 
 
 def get_experiment_name(config: Config):
@@ -135,25 +140,6 @@ def get_log_prob(sde, network):
 def m2i(mask):
     """mask to indices"""
     return ~mask.astype(jnp.bool_)
-
-    
-def test_score_appprox(sde: ndp.sde.SDE, network, dataset: str):
-    key = jax.random.PRNGKey(0)
-    ds = regression1d.get_dataset(dataset, "training", key=key, batch_size=64, samples_per_epoch=128, num_epochs=1)
-    batch = next(ds)
-
-    factory = regression1d._DATASET_FACTORIES[dataset] 
-    assert isinstance(factory, regression1d.GPFunctionalDistribution)
-    mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
-    true_score_network = sde.get_exact_score(mean0, kernel0, params0)
-
-    t = jnp.ones(()) * .001
-    mask = jnp.zeros_like(batch.xs[0, :, 0])
-    out1 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, true_score_network))(batch.ys, batch.xs)
-    out2 = jax.vmap(lambda y, x: sde.score(key, t, y, x, mask, network))(batch.ys, batch.xs)
-    # out2 = sde.score(key, t, batch.ys[0], batch.xs[0], batch.mask[0], network)
-    v = jnp.mean((out1 - out2) ** 2)
-    return v 
 
 
 class Task:
@@ -281,7 +267,14 @@ class Task:
             metrics = self.eval(params, key)
             writer.write_scalars(step, {f"{self._task}_{k}": v for k, v in metrics.items()})
             
-        return callback
+        def save_callback(step, t, **kwargs):
+            try:
+                callback(step, t, **kwargs)
+            except Exception as e:
+                print(">>>>>> Error during callback <<<<<")
+                print(e)
+
+        return save_callback
 
 
 def main(_):
@@ -292,15 +285,14 @@ def main(_):
     config = config_utils.to_dataclass(Config, _CONFIG.value)
     flattened_config_dict = config_utils._to_flattened_dict(asdict(config))
 
-
     path = get_experiment_dir(config, 'root') / 'config.yaml'
     with open(str(path), 'w') as f:
         f.write(config_utils.to_yaml(config))
     
     run = Run(
-        experiment="regression1d",
+        experiment=EXPERIMENT + ("-smoketest" if is_smoketest(config) else ""),
         sync_tensorboard_log_dir=str(get_experiment_dir(config, 'tensorboard')),
-        log_system_params=True,
+        log_system_params=False,
     )
     run["hparams"] = flattened_config_dict
 
@@ -356,6 +348,7 @@ def main(_):
             n_layers=config.network.num_bidim_attention_layers,
             hidden_dim=config.network.hidden_dim,
             num_heads=config.network.num_heads,
+            translation_invariant=config.network.translation_invariant,
         )
         return model(x, y, t, mask)
 
@@ -363,7 +356,6 @@ def main(_):
     def net(params, t, yt, x, mask, *, key):
         del key  # the network is deterministic
         #NOTE: Network awkwardly requires a batch dimension for the inputs
-        print("compiling network", yt.shape, x.shape, mask.shape)
         return network.apply(params, t[None], yt[None], x[None], mask[None])[0]
 
     def loss_fn(params, batch: ndp.data.DataBatch, key):
@@ -431,7 +423,6 @@ def main(_):
 
     state = init(batch0, jax.random.PRNGKey(config.seed))
     
-    test_score_appprox(sde, functools.partial(net, state.params), config.data.dataset)
     # state = restore_if_exists(state, path)
 
     exp_root_dir = get_experiment_dir(config)
@@ -442,7 +433,6 @@ def main(_):
     @functools.partial(jax.vmap, in_axes=[None, None, 0, 0, 0, 0, 0])
     @jax.jit
     def conditional(params, key, xc, yc, maskc, xs, mask):
-        print("Compiling conditional", xc.shape, xs.shape)
         net_params = (
             true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
         )
@@ -458,17 +448,22 @@ def main(_):
     tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))
     writer = ml_tools.writers.MultiWriter([tb_writer, local_writer])
 
+    if is_smoketest(config):
+        tasks = ["interpolation"]
+    else:
+        tasks = ["interpolation", "extrapolation", "generalization"]
+
     tasks = [
         Task(
             next(key_iter),
             task,
             config.data.dataset,
-            config.eval.batch_size,
-            config.eval.num_samples_in_epoch,
+            batch_size=config.eval.batch_size,
+            num_data=config.eval.batch_size,  # run for single batch (quick)
             conditional_sampler=conditional,
             logp=logp
         )
-        for task in ["interpolation", "extrapolation", "generalization"]
+        for task in tasks
     ]
 
     task_callbacks = [
@@ -492,29 +487,6 @@ def main(_):
         return {"prior": fig}
 
 
-    actions = [
-        ml_tools.actions.PeriodicCallback(
-            every_steps=10,
-            callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
-        ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=num_steps // 4,
-            # every_steps=1,
-            callback_fn=lambda step, t, **kwargs: [
-                cb(step, t, **kwargs) for cb in task_callbacks
-            ]
-        ),
-        # ml_tools.actions.PeriodicCallback(
-        #     every_steps=num_steps_per_epoch,
-        #     callback_fn=lambda step, t, **kwargs: writer.write_figures(
-        #         step, callback_plot_prior(kwargs["state"], kwargs["key"])
-        #     )
-        # ),
-        # ml_tools.actions.PeriodicCallback(
-        #     every_steps=num_steps_per_epoch,
-        #     callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
-        # )
-    ]
     train_ds = regression1d.get_dataset(
         config.data.dataset,
         "training",
@@ -525,11 +497,26 @@ def main(_):
     )
 
     if config.mode == "eval_only": num_steps = 0
-    progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
+    # elif is_smoketest(config): num_steps = 250
 
-    @jax.jit
-    def foo(p):
-        return test_score_appprox(sde, functools.partial(net, p), config.data.dataset)
+    actions = [
+        ml_tools.actions.PeriodicCallback(
+            every_steps=10,
+            callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
+        ),
+        ml_tools.actions.PeriodicCallback(
+            every_steps=num_steps // 2,
+            callback_fn=lambda step, t, **kwargs: [
+                cb(step, t, **kwargs) for cb in task_callbacks
+            ]
+        ),
+        ml_tools.actions.PeriodicCallback(
+            every_steps=num_steps//10,
+            callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
+        )
+    ]
+
+    progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
     for step, batch, key in zip(progress_bar, train_ds, key_iter):
         if USE_TRUE_SCORE:
@@ -538,8 +525,6 @@ def main(_):
             state, metrics = update_step(state, batch)
         metrics["lr"] = learning_rate_schedule(step)
 
-        metrics["loss2"] = foo(state.params_ema)
-
         for action in actions:
             action(step, t=None, metrics=metrics, state=state, key=key)
 
@@ -547,14 +532,11 @@ def main(_):
             progress_bar.set_description(f"loss {metrics['loss']:.2f}")
 
 
-    test_score_appprox(sde, functools.partial(net, state.params), config.data.dataset)
-
     for task, callback in zip(tasks, task_callbacks):
-        task._num_data = int(2**10)
+        if not is_smoketest(config):
+            task._num_data = config.eval.num_samples_in_epoch
         callback(num_steps + 1, None, state=state, key=next(key_iter))
     
-
-
 
 if __name__ == "__main__":
     app.run(main)

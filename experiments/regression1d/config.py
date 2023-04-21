@@ -1,7 +1,5 @@
 import dataclasses
 
-# from ml_collections import config_dict
-
 
 @dataclasses.dataclass
 class DataConfig:
@@ -14,9 +12,9 @@ class DataConfig:
 class SdeConfig:
     limiting_kernel: str = "white"
     t0: float = 5e-4
-    is_score_precond: bool = False
-    std_trick: bool = False
-    residual_trick: bool = False
+    is_score_precond: bool = True
+    std_trick: bool = True
+    residual_trick: bool = True
     weighted: bool = True
 
 
@@ -37,12 +35,13 @@ class NetworkConfig:
     num_bidim_attention_layers: int = 5
     hidden_dim: int = 64
     num_heads: int = 8
+    translation_invariant: bool = False
 
 
 @dataclasses.dataclass
 class EvalConfig:
     batch_size: int = 32
-    num_samples_in_epoch: int = 128
+    num_samples_in_epoch: int = int(2**10)
 
 
 @dataclasses.dataclass
