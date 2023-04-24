@@ -10,7 +10,8 @@ class DataConfig:
 
 @dataclasses.dataclass
 class SdeConfig:
-    limiting_kernel: str = "white"
+    limiting_kernel: str = "noisy-se"
+    limiting_kernel_noise_variance: float = 0.05
     t0: float = 5e-4
     is_score_precond: bool = True
     std_trick: bool = True
@@ -20,9 +21,9 @@ class SdeConfig:
 
 @dataclasses.dataclass
 class OptimizationConfig:
-    batch_size: int = 16
-    num_epochs: int = 50
-    num_warmup_epochs: int = 5
+    batch_size: int = 32
+    num_epochs: int = 100
+    num_warmup_epochs: int = 20
     lr: float = 1e-3
     ema_rate: float = 0.999
 
@@ -35,7 +36,7 @@ class NetworkConfig:
     num_bidim_attention_layers: int = 5
     hidden_dim: int = 64
     num_heads: int = 8
-    translation_invariant: bool = False
+    translation_invariant: bool = True
 
 
 @dataclasses.dataclass
@@ -47,12 +48,13 @@ class EvalConfig:
 @dataclasses.dataclass
 class Config:
     seed: int = 42
-    mode: str = "train"
+    mode: str = "smoketest"
     eval: EvalConfig = EvalConfig()
     data: DataConfig = DataConfig()
     sde: SdeConfig = SdeConfig()
     optimization: OptimizationConfig = OptimizationConfig()
     network: NetworkConfig = NetworkConfig()
+    experiment_dir: str = ""
 
 
 

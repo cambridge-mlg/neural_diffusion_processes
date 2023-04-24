@@ -42,12 +42,12 @@ except:
 
 
 USE_TRUE_SCORE = False
-EXPERIMENT = "regression1d"
+EXPERIMENT = "regression1d-limiting-kernel"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
 _HERE = pathlib.Path(__file__).parent
-_LOG_DIR = 'logs'
+_LOG_DIR = 'logs-tmp'
 
 
 _CONFIG = config_flags.DEFINE_config_dict("config", config_utils.to_configdict(Config()))
@@ -94,7 +94,7 @@ def get_log_prob(sde, network):
     @jax.jit
     def delta_logp(params, x, y, mask, key):
         net = functools.partial(network, params)
-        return ndp.sde.log_prob(sde, net, x, y, mask, key=key)
+        return ndp.sde.log_prob(sde, net, x, y, mask, key=key, rtol=None)
 
     def log_prob(params, x, y, mask, key):
         dlp, yT = delta_logp(params, x, y, mask, key)
@@ -216,22 +216,25 @@ class Task:
         # uses same key to keep test data fixed across evaluations
         # generator = data_generator(self._key, self._dataset, self._task, self._num_data, self._batch_size, num_epochs=1)
         ds = regression1d.get_dataset(self._dataset, self._task, key=self._key, batch_size=self._batch_size, samples_per_epoch=self._num_data, num_epochs=1)
-        metrics = {"mse": [], "loglik": []}
+        metrics = {
+            # "mse": [],
+            "loglik": []
+        }
         pb = tqdm.tqdm(list(range(1, self._num_data // self._batch_size + 1)), miniters=1)
         for i, batch in zip(pb, ds):
-            key, *keys = jax.random.split(key, num_samples + 1)
-            samples = self._sampler(
-                params,
-                jnp.stack(keys),
-                batch.xc,
-                batch.yc,
-                batch.mask_context,
-                batch.xs,
-                batch.mask,
-            )
-            y_pred = jnp.mean(samples, axis=0)  # [batch_size, num_points, y_dim]
-            mse = jnp.mean((batch.ys - y_pred) ** 2, axis=[1, 2])  # [batch_size]
-            metrics["mse"].append(mse)
+            # key, *keys = jax.random.split(key, num_samples + 1)
+            # samples = self._sampler(
+            #     params,
+            #     jnp.stack(keys),
+            #     batch.xc,
+            #     batch.yc,
+            #     batch.mask_context,
+            #     batch.xs,
+            #     batch.mask,
+            # )
+            # y_pred = jnp.mean(samples, axis=0)  # [batch_size, num_points, y_dim]
+            # mse = jnp.mean((batch.ys - y_pred) ** 2, axis=[1, 2])  # [batch_size]
+            # metrics["mse"].append(mse)
 
             key, skey = jax.random.split(key)
             context = (batch.xc, batch.yc, batch.mask_context)
@@ -301,11 +304,18 @@ def main(_):
 
     ####### init relevant diffusion classes
     beta = ndp.sde.LinearBetaSchedule(t0=config.sde.t0)
-    limiting_kernel = ndp.kernels.get_kernel(config.sde.limiting_kernel, active_dims=[0])
+    limiting_kernel = config.sde.limiting_kernel[config.sde.limiting_kernel.find("-")+1:]
+    limiting_kernel = ndp.kernels.get_kernel(limiting_kernel, active_dims=[0])
     hyps = {
         "mean_function": {},
         "kernel": limiting_kernel.init_params(None),
     }
+    if "noisy" in config.sde.limiting_kernel:
+        limiting_kernel = jaxkern.SumKernel(
+            [limiting_kernel, jaxkern.stationary.White(active_dims=[0])]
+        )
+        hyps["kernel"] = [hyps["kernel"], {"variance": config.sde.limiting_kernel_noise_variance}]
+
     sde = ndp.sde.SDE(
         limiting_kernel,
         gpjax.mean_functions.Zero(),
@@ -496,7 +506,7 @@ def main(_):
         num_epochs=config.optimization.num_epochs,
     )
 
-    if config.mode == "eval_only": num_steps = 0
+    if config.mode == "eval": num_steps = 0
     # elif is_smoketest(config): num_steps = 250
 
     actions = [
@@ -505,7 +515,7 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=num_steps // 2,
+            every_steps=None if is_smoketest(config) else num_steps // 2,
             callback_fn=lambda step, t, **kwargs: [
                 cb(step, t, **kwargs) for cb in task_callbacks
             ]

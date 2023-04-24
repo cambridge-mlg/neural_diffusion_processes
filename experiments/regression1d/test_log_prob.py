@@ -12,7 +12,7 @@ from neural_diffusion_processes.data import regression1d
 
 from neural_diffusion_processes import config
 
-DATASET = "matern"  # squared exponential
+DATASET = "weaklyperiodic"  # squared exponential
 
 
 def get_dataset(key):
@@ -43,16 +43,21 @@ class GP:
 
 
 key = jax.random.PRNGKey(0)
+import jaxkern
 
 ############ Limiting process
 beta = ndp.sde.LinearBetaSchedule(t0=5e-4)
 meanT = gpjax.mean_functions.Zero()
-kernelT = ndp.kernels.get_kernel("white", active_dims=[0])
+kernelT = ndp.kernels.get_kernel("matern52", active_dims=[0], noisy=False)
 paramsT = {
     "mean_function": {},
     "kernel": kernelT.init_params(None),
     "noise_variance": 0.0
 }
+kernelT = jaxkern.SumKernel(
+    [kernelT, jaxkern.stationary.White(active_dims=[0])]
+)
+paramsT["kernel"] = [paramsT["kernel"], {"variance": 0.05}]
 p_ref = GP(meanT, kernelT, paramsT)
 
 sde = ndp.sde.SDE(
@@ -106,7 +111,9 @@ logliks = []
 ji = 1e-6
 config.set_config(config.Config(jitter=ji))
 
-for i, batch in enumerate(ds):
+from tqdm.contrib import tenumerate
+
+for i, batch in tenumerate(ds):
     # if i >= 124: break
     x = jnp.concatenate([batch.xc, batch.xs], axis=1)
     y = jnp.concatenate([batch.yc, batch.ys], axis=1)
@@ -131,7 +138,7 @@ for i, batch in enumerate(ds):
     #     # batch.ys[0],
     #     data=D
     # )
-    print(logp_joint.shape)
+    # print(logp_joint.shape)
     logliks.append(logp_ndp_cond / 50.)
 
     values.append({
@@ -143,7 +150,7 @@ for i, batch in enumerate(ds):
         "num_target": m2i(batch.mask[0]).sum(),
         "num_context": m2i(batch.mask_context[0]).sum()
     })
-    print(values[-1])
+    # print(values[-1])
 
 import pandas as pd
 

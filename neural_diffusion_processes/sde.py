@@ -139,14 +139,14 @@ class SDE:
         cov_coef = jnp.exp(-self.beta_schedule.B(t))
         k0t = self.limiting_kernel
         k0t_params = copy.deepcopy(self.limiting_params["kernel"])
-        # k0t_params = scale_kernel_variance(k0t_params, 1.0 - cov_coef)
-        if isinstance(k0t_params, list):
-            for k in k0t_params:
-                k["variance"] = k["variance"] * (1.0 - cov_coef)
-                params = {"mean_function": {}, "kernel": [*k0t_params]}
-        else:
-            k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
-            params = {"mean_function": {}, "kernel": k0t_params}
+        k0t_params = scale_kernel_variance(k0t_params, 1.0 - cov_coef)
+        # if isinstance(k0t_params, list):
+        #     for k in k0t_params:
+        #         k["variance"] = k["variance"] * (1.0 - cov_coef)
+        #         params = {"mean_function": {}, "kernel": [*k0t_params]}
+        # else:
+        #     k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
+        params = {"mean_function": {}, "kernel": k0t_params}
         return μ0t, k0t, params
     
     def pt(
@@ -174,10 +174,16 @@ class SDE:
         kt_param = scale_kernel_variance(kt_param, 1.0 - cov_coef)
 
         if isinstance(k0, jaxkern.base.CombinationKernel):
-            k0t = SumKernel(
-                [*k0.kernel_set, self.limiting_kernel],
-                compute_engine=jaxkern.computations.DenseKernelComputation
-            )
+            if isinstance(self.limiting_kernel, jaxkern.base.CombinationKernel):
+                k0t = SumKernel(
+                    [*k0.kernel_set, *self.limiting_kernel.kernel_set],
+                    compute_engine=jaxkern.computations.DenseKernelComputation
+                )
+            else:
+                k0t = SumKernel(
+                    [*k0.kernel_set, self.limiting_kernel],
+                    compute_engine=jaxkern.computations.DenseKernelComputation
+                )
         else:
             k0t = SumKernel([k0, self.limiting_kernel])
         # params = {"mean_function": {}, "kernel": [k0_params, kt_param]}
@@ -321,7 +327,13 @@ class SDE:
         loss = loss * (1. - mask[:, None])
         num_points = len(x) - jnp.count_nonzero(mask)
         loss = jnp.sum(jnp.sum(loss, -1)) / num_points
-        return loss
+
+        # if self.weighted:
+        #     w = 1. - jnp.exp(-self.beta_schedule.B(t))
+        # else:
+        #     w = 1.0
+
+        return w * loss
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
@@ -803,7 +815,8 @@ def log_prob(
     key,
     # dt=1e-3/2,
     num_steps: int = 100,
-    solver: AbstractSolver = Tsit5(),
+    # solver: AbstractSolver = dfx.Euler(),
+    solver: AbstractSolver = dfx.Tsit5(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
     hutchinson_type: str = 'None',
