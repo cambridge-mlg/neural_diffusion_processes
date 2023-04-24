@@ -51,8 +51,8 @@ DATASETS = [
     "se",
     "matern",
     "weaklyperiodic",
-    "sawtooth",
     "mixture",
+    "sawtooth",
 ]
 
 
@@ -65,9 +65,8 @@ if __name__ == "__main__":
 
     commands = (
         CommandsBuilder()
-        .add("config.sde.is_score_precond", [True, False])
         .add("config.data.dataset", DATASETS)
-        .add("config.sde.limiting_kernel", ["white", "se", "matern52"])
+        .add("config.sde.limiting_kernel", ["white", "noisy-se", "noisy-matern52"])
         .add("config.network.translation_invariant", [True, False])
         .build()
     )

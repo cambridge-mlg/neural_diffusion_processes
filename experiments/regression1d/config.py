@@ -21,9 +21,9 @@ class SdeConfig:
 
 @dataclasses.dataclass
 class OptimizationConfig:
-    batch_size: int = 32
-    num_epochs: int = 100
-    num_warmup_epochs: int = 20
+    batch_size: int = 256
+    num_epochs: int = 200
+    num_warmup_epochs: int = 10
     lr: float = 1e-3
     ema_rate: float = 0.999
 
@@ -42,13 +42,13 @@ class NetworkConfig:
 @dataclasses.dataclass
 class EvalConfig:
     batch_size: int = 32
-    num_samples_in_epoch: int = int(2**10)
+    num_samples_in_epoch: int = int(2**11)
 
 
 @dataclasses.dataclass
 class Config:
     seed: int = 42
-    mode: str = "smoketest"
+    mode: str = "train"
     eval: EvalConfig = EvalConfig()
     data: DataConfig = DataConfig()
     sde: SdeConfig = SdeConfig()

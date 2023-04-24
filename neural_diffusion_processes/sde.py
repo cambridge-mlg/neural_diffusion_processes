@@ -306,32 +306,23 @@ class SDE:
 
         if self.is_score_preconditioned:
             precond_noise = sqrt @ Z
-            if self.weighted:
-                loss = jnp.square(
-                    var * precond_score_net + unflatten(precond_noise, y_dim)
-                )
-            else:
-                loss = jnp.square(
-                    precond_score_net - unflatten(-precond_noise / var, y_dim)
-                )
+            loss = jnp.square(
+                var * precond_score_net + unflatten(precond_noise, y_dim)
+            )
         else:
-            if self.weighted:
-                loss = jnp.square(
-                    unflatten(sqrt @ flatten(precond_score_net), y_dim)
-                    + unflatten(Z, y_dim)
-                )
-            else:
-                precond_noise = sqrt.T.solve(Z)
-                loss = jnp.square(precond_score_net + unflatten(precond_noise, y_dim))
+            loss = jnp.square(
+                unflatten(sqrt @ flatten(precond_score_net), y_dim)
+                + unflatten(Z, y_dim)
+            )
 
         loss = loss * (1. - mask[:, None])
         num_points = len(x) - jnp.count_nonzero(mask)
         loss = jnp.sum(jnp.sum(loss, -1)) / num_points
 
-        # if self.weighted:
-        #     w = 1. - jnp.exp(-self.beta_schedule.B(t))
-        # else:
-        #     w = 1.0
+        if self.weighted:
+            w = 1. - jnp.exp(-self.beta_schedule.B(t))
+        else:
+            w = 1.0
 
         return w * loss
 
@@ -815,8 +806,8 @@ def log_prob(
     key,
     # dt=1e-3/2,
     num_steps: int = 100,
-    # solver: AbstractSolver = dfx.Euler(),
-    solver: AbstractSolver = dfx.Tsit5(),
+    solver: AbstractSolver = dfx.Euler(),
+    # solver: AbstractSolver = dfx.Tsit5(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
     hutchinson_type: str = 'None',

@@ -42,12 +42,12 @@ except:
 
 
 USE_TRUE_SCORE = False
-EXPERIMENT = "regression1d-limiting-kernel"
+EXPERIMENT = "regression1d-2"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
 _HERE = pathlib.Path(__file__).parent
-_LOG_DIR = 'logs-tmp'
+_LOG_DIR = 'logs'
 
 
 _CONFIG = config_flags.DEFINE_config_dict("config", config_utils.to_configdict(Config()))
@@ -314,6 +314,8 @@ def main(_):
         limiting_kernel = jaxkern.SumKernel(
             [limiting_kernel, jaxkern.stationary.White(active_dims=[0])]
         )
+        v = config.sde.limiting_kernel_noise_variance
+        hyps["kernel"]["variance"] = 1. - v
         hyps["kernel"] = [hyps["kernel"], {"variance": config.sde.limiting_kernel_noise_variance}]
 
     sde = ndp.sde.SDE(
@@ -376,11 +378,11 @@ def main(_):
     num_steps_per_epoch = config.data.num_samples_in_epoch // config.optimization.batch_size
     num_steps = num_steps_per_epoch * config.optimization.num_epochs
     learning_rate_schedule = optax.warmup_cosine_decay_schedule(
-        init_value=1e-8,
+        init_value=1e-4,
         peak_value=config.optimization.lr,
         warmup_steps=num_steps_per_epoch * config.optimization.num_warmup_epochs,
         decay_steps=num_steps,
-        end_value=1e-4,
+        end_value=1e-5,
     )
 
     optimizer = optax.chain(
