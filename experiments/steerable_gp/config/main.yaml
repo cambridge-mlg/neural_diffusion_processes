@@ -112,7 +112,7 @@ kernel:
 sde:
   _target_: neural_diffusion_processes.sde.SDE
   _convert_: object
-  std_trick: true
+  std_trick: false
   residual_trick: true
   # limiting_kernel_hyperparameters: 
   #   variance: 1.0
