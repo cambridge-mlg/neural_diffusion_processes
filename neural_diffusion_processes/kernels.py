@@ -18,10 +18,28 @@ from jaxkern.computations import (
     DenseKernelComputation,
     ConstantDiagonalKernelComputation,
 )
-from jaxlinop import LinearOperator, DenseLinearOperator, ConstantDiagonalLinearOperator, DiagonalLinearOperator, identity
+from jaxlinop import (
+    LinearOperator,
+    DenseLinearOperator,
+    ConstantDiagonalLinearOperator,
+    DiagonalLinearOperator,
+    identity,
+)
 from jaxlinop.dense_linear_operator import _check_matrix
 
-from .utils.types import Array, Optional, Union, Tuple, Int, Dict, List, Mapping, Callable, Float, Type
+from .utils.types import (
+    Array,
+    Optional,
+    Union,
+    Tuple,
+    Int,
+    Dict,
+    List,
+    Mapping,
+    Callable,
+    Float,
+    Type,
+)
 from .utils.misc import flatten, unflatten, check_shape, jax_unstack
 from .config import get_config
 
@@ -36,7 +54,12 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
             matrix (Float[Array, "N N"]): Dense matrix.
         """
         [_check_matrix(matrix) for matrix in matrices]
-        self.linops = [matrix if isinstance(matrix, LinearOperator) else DenseLinearOperator(matrix) for matrix in matrices]
+        self.linops = [
+            matrix
+            if isinstance(matrix, LinearOperator)
+            else DenseLinearOperator(matrix)
+            for matrix in matrices
+        ]
 
     @property
     def matrix(self):
@@ -67,7 +90,7 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
 
     def inverse(self) -> LinearOperator:
         return BlockDiagonalLinearOperator([linop.inverse() for linop in self.linops])
-    
+
     def solve(self, rhs: Float[Array, "N"]) -> Float[Array, "N"]:
         """Solve linear system. Default implementation uses dense Cholesky decomposition.
 
@@ -79,11 +102,19 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
         """
         # NOTE: use jax.scipy.sparse.linalg.cg?
         shapes_0, _ = zip(*[linop.shape for linop in self.linops])
+
         def f(m, rhs):
             root = m.to_root()
             rootT = root.T
             return rootT.solve(root.solve(rhs))
-        return jnp.concatenate([f(m, rhs[shapes_0[0]*i:shapes_0[0]*(i+1)]) for i, m in enumerate(self.linops)], axis=0)
+
+        return jnp.concatenate(
+            [
+                f(m, rhs[shapes_0[0] * i : shapes_0[0] * (i + 1)])
+                for i, m in enumerate(self.linops)
+            ],
+            axis=0,
+        )
 
     def _add_diagonal(self, other: DiagonalLinearOperator) -> LinearOperator:
         """Add diagonal to the covariance operator,  useful for computing, Kxx + Iσ².
@@ -96,8 +127,13 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
         """
         shapes_0, _ = zip(*[linop.shape for linop in self.linops])
         diag = other.diagonal()
-        diag_linops = [DiagonalLinearOperator(diag[shapes_0[0]*i:shapes_0[0]*(i+1)]) for i in range(len(self.linops))]
-        linops = [linop._add_diagonal(diag_linops[i]) for i, linop in enumerate(self.linops)]
+        diag_linops = [
+            DiagonalLinearOperator(diag[shapes_0[0] * i : shapes_0[0] * (i + 1)])
+            for i in range(len(self.linops))
+        ]
+        linops = [
+            linop._add_diagonal(diag_linops[i]) for i, linop in enumerate(self.linops)
+        ]
 
         return BlockDiagonalLinearOperator(linops)
 
@@ -111,7 +147,6 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
         shapes_0, shapes_1 = zip(*[linop.shape for linop in self.linops])
         return (sum(shapes_0), sum(shapes_1))
 
-
     def __mul__(self, other: float) -> LinearOperator:
         """Multiply covariance operator by scalar.
 
@@ -124,7 +159,6 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
 
         return BlockDiagonalLinearOperator([linop * other for linop in self.linops])
 
-
     def to_dense(self) -> Float[Array, "N N"]:
         """Construct dense Covaraince matrix from the covariance operator.
 
@@ -132,6 +166,85 @@ class BlockDiagonalLinearOperator(DenseLinearOperator):
             Float[Array, "N N"]: Dense covariance matrix.
         """
         return jax.scipy.linalg.block_diag(*[linop.to_dense() for linop in self.linops])
+
+
+class SquaredLinearOperator(DenseLinearOperator):
+    """M = A A^t"""
+
+    def __init__(self, matrix: Float[Array, "N N"]):
+        """Initialize the covariance operator.
+
+        Args:
+            matrix (Float[Array, "N N"]): Dense matrix.
+        """
+        _check_matrix(matrix)
+        self.root = matrix
+
+    @property
+    def matrix(self):
+        return self.to_dense()
+
+    @property
+    def T(self) -> LinearOperator:
+        return self
+
+    def to_root(self) -> LinearOperator:
+        return DenseLinearOperator(self.root)
+
+    def inverse(self) -> LinearOperator:
+        return SquaredLinearOperator(jnp.linalg.inv(self.root).T)
+
+    def solve(self, rhs: Float[Array, "N"]) -> Float[Array, "N"]:
+        """Solve linear system. Default implementation uses dense Cholesky decomposition.
+
+        Args:
+            rhs (Float[Array, "N"]): Right hand side of the linear system.
+
+        Returns:
+            Float[Array, "N]: Solution of the linear system.
+        """
+        # (AA^t)^-1 v = A^-t (A^-1 v)
+        return self.root.T.solve(self.root.solve(rhs))
+
+    def _add_diagonal(self, other: DiagonalLinearOperator) -> LinearOperator:
+        """Add diagonal to the covariance operator,  useful for computing, Kxx + Iσ².
+
+        Args:
+            other (DiagonalLinearOperator): Diagonal covariance operator to add to the covariance operator.
+
+        Returns:
+            LinearOperator: Sum of the two covariance operators.
+        """
+        raise NotImplementedError("Would loose A A^t structure.")
+
+    @property
+    def shape(self) -> Tuple[int, int]:
+        """Covaraince matrix shape.
+
+        Returns:
+            Tuple[int, int]: shape of the covariance operator.
+        """
+        return (self.root.shape[0], self.root.shape[0])
+
+    def __mul__(self, other: float) -> LinearOperator:
+        """Multiply covariance operator by scalar.
+
+        Args:
+            other (LinearOperator): Scalar.
+
+        Returns:
+            LinearOperator: Covariance operator multiplied by a scalar.
+        """
+
+        return SquaredLinearOperator(np.sqrt(other) * self.root)
+
+    def to_dense(self) -> Float[Array, "N N"]:
+        """Construct dense Covaraince matrix from the covariance operator.
+
+        Returns:
+            Float[Array, "N N"]: Dense covariance matrix.
+        """
+        return self.root @ self.root.T
 
 
 class MultiOutputDenseKernelComputation(DenseKernelComputation):
@@ -167,8 +280,7 @@ class MultiOutputDenseKernelComputation(DenseKernelComputation):
 
 
 class MultiOutputConstantDiagonalKernelComputation(MultiOutputDenseKernelComputation):
-    """
-    """
+    """ """
 
     def __init__(
         self,
@@ -204,9 +316,9 @@ class MultiOutputConstantDiagonalKernelComputation(MultiOutputDenseKernelComputa
             value=jnp.atleast_1d(value), size=input_dim * output_dim
         )
 
+
 class MultiOutputDiagonalKernelComputation(MultiOutputDenseKernelComputation):
-    """
-    """
+    """ """
 
     def __init__(
         self,
@@ -233,7 +345,9 @@ class MultiOutputDiagonalKernelComputation(MultiOutputDenseKernelComputation):
         Returns:
             CovarianceOperator: The computed square Gram matrix.
         """
-        gram = jax.vmap(lambda x: jax.vmap(lambda y: self.kernel_fn(params, x, y))(inputs))(inputs)
+        gram = jax.vmap(
+            lambda x: jax.vmap(lambda y: self.kernel_fn(params, x, y))(inputs)
+        )(inputs)
         # matrices = jax.numpy.diagonal(gram, axis1=-2, axis2=-1)
         matrices = jax.vmap(jax.vmap(jax.numpy.diagonal))(gram)
         matrices = jax_unstack(matrices, axis=-1)
@@ -241,32 +355,56 @@ class MultiOutputDiagonalKernelComputation(MultiOutputDenseKernelComputation):
         return BlockDiagonalLinearOperator(matrices)
 
 
-def promote_compute_engines(engine1: Type[jaxkern.computations.AbstractKernelComputation], engine2: Type[jaxkern.computations.AbstractKernelComputation]) -> Type[jaxkern.computations.AbstractKernelComputation]:
-    if engine1 ==MultiOutputDiagonalKernelComputation and engine2 == jaxkern.computations.ConstantDiagonalKernelComputation:
+def promote_compute_engines(
+    engine1: Type[jaxkern.computations.AbstractKernelComputation],
+    engine2: Type[jaxkern.computations.AbstractKernelComputation],
+) -> Type[jaxkern.computations.AbstractKernelComputation]:
+    if (
+        engine1 == MultiOutputDiagonalKernelComputation
+        and engine2 == jaxkern.computations.ConstantDiagonalKernelComputation
+    ):
         return jaxkern.computations.ConstantDiagonalKernelComputation
 
-    if engine1 == jaxkern.computations.ConstantDiagonalKernelComputation and engine2 == jaxkern.computations.DiagonalKernelComputation:
+    if (
+        engine1 == jaxkern.computations.ConstantDiagonalKernelComputation
+        and engine2 == jaxkern.computations.DiagonalKernelComputation
+    ):
         return jaxkern.computations.DiagonalKernelComputation
 
-    if engine2 == jaxkern.computations.ConstantDiagonalKernelComputation and engine1 == jaxkern.computations.DiagonalKernelComputation:
+    if (
+        engine2 == jaxkern.computations.ConstantDiagonalKernelComputation
+        and engine1 == jaxkern.computations.DiagonalKernelComputation
+    ):
         return jaxkern.computations.DiagonalKernelComputation
 
-    if engine2 ==MultiOutputDiagonalKernelComputation and engine1 == MultiOutputDiagonalKernelComputation:
+    if (
+        engine2 == MultiOutputDiagonalKernelComputation
+        and engine1 == MultiOutputDiagonalKernelComputation
+    ):
         return MultiOutputDiagonalKernelComputation
 
-    if engine1 == jaxkern.computations.DenseKernelComputation or engine2 == jaxkern.computations.DenseKernelComputation:
+    if (
+        engine1 == jaxkern.computations.DenseKernelComputation
+        or engine2 == jaxkern.computations.DenseKernelComputation
+    ):
         return jaxkern.computations.DenseKernelComputation
 
-    if engine1 == MultiOutputDenseKernelComputation or engine2 == MultiOutputDenseKernelComputation:
+    if (
+        engine1 == MultiOutputDenseKernelComputation
+        or engine2 == MultiOutputDenseKernelComputation
+    ):
         return MultiOutputDenseKernelComputation
 
-    if engine1 == MultiOutputConstantDiagonalKernelComputation and engine2 == MultiOutputConstantDiagonalKernelComputation:
+    if (
+        engine1 == MultiOutputConstantDiagonalKernelComputation
+        and engine2 == MultiOutputConstantDiagonalKernelComputation
+    ):
         return MultiOutputConstantDiagonalKernelComputation
 
     raise NotImplementedError(
-        "Add rule for optimal compute engine sum kernel for types %s and %s." % (
-            engine1, engine2
-        ))
+        "Add rule for optimal compute engine sum kernel for types %s and %s."
+        % (engine1, engine2)
+    )
 
 
 class SumKernel(jaxkern.base.CombinationKernel):
@@ -283,7 +421,9 @@ class SumKernel(jaxkern.base.CombinationKernel):
         name: Optional[str] = "Sum kernel",
     ) -> None:
         if compute_engine is None:
-            compute_engine = promote_compute_engines(*[k.compute_engine for k in kernel_set])
+            compute_engine = promote_compute_engines(
+                *[k.compute_engine for k in kernel_set]
+            )
         super().__init__(
             kernel_set, compute_engine, active_dims, stationary, spectral, name
         )
@@ -499,7 +639,7 @@ def log_prob_prior_gp(
     params: Mapping,
     x,
     y,
-    obs_noise: float = 0.0
+    obs_noise: float = 0.0,
 ):
     dist = prior_gp(mean_function, kernel, params, obs_noise)(x)
     return dist.log_prob(flatten(y)).squeeze()
@@ -523,7 +663,6 @@ def posterior_gp(
 
     @check_shapes("x_test: [N, x_dim]")
     def predict(x_test):
-        
         μt = mean_function(params["mean_function"], x_test)
         n_test = μt.shape[0] * μt.shape[1]
         Ktt = kernel.gram(params["kernel"], x_test)
@@ -537,7 +676,9 @@ def posterior_gp(
 
         # Ktt  -  Ktx (Kxx + Iσ²)⁻¹ Kxt, TODO: Take advantage of covariance structure to compute Schur complement more efficiently.
         covariance = Ktt - jnp.matmul(Kxt.T, Sigma_inv_Kxt)
-        covariance = covariance._add_diagonal(identity(n_test) * (get_config().jitter + obs_noise))
+        covariance = covariance._add_diagonal(
+            identity(n_test) * (get_config().jitter + obs_noise)
+        )
 
         dist = GaussianDistribution(mean, covariance)
         return dist
@@ -547,7 +688,10 @@ def posterior_gp(
 
 _SQUARED_EXPONENTIAL_NAMES = ["rbf", "se", "squared_exponential"]
 
-def get_kernel(kernel_type: str, active_dims = Optional[List[int]]) -> jaxkern.base.AbstractKernel:
+
+def get_kernel(
+    kernel_type: str, active_dims=Optional[List[int]]
+) -> jaxkern.base.AbstractKernel:
     if kernel_type.lower() == "matern12":
         return jaxkern.stationary.Matern12(active_dims=active_dims)
     elif kernel_type.lower() == "matern32":
@@ -556,16 +700,20 @@ def get_kernel(kernel_type: str, active_dims = Optional[List[int]]) -> jaxkern.b
         return jaxkern.stationary.Matern52(active_dims=active_dims)
     elif kernel_type.lower() == "white":
         return jaxkern.stationary.White(active_dims=active_dims)
-    elif "white" in kernel_type.lower() \
-        and any([se in kernel_type.lower() for se in _SQUARED_EXPONENTIAL_NAMES]):
-        return SumKernel([
-            jaxkern.stationary.White(active_dims=active_dims),
-            jaxkern.stationary.RBF(active_dims=active_dims),
-        ])
+    elif "white" in kernel_type.lower() and any(
+        [se in kernel_type.lower() for se in _SQUARED_EXPONENTIAL_NAMES]
+    ):
+        return SumKernel(
+            [
+                jaxkern.stationary.White(active_dims=active_dims),
+                jaxkern.stationary.RBF(active_dims=active_dims),
+            ]
+        )
     elif kernel_type.lower() in _SQUARED_EXPONENTIAL_NAMES:
         return jaxkern.stationary.RBF(active_dims=active_dims)
     else:
         raise NotImplementedError("Unknown kernel: %s" % kernel_type)
+
 
 def get_mean_fn(mean_fn_type: str) -> gpjax.mean_functions.AbstractMeanFunction:
     if mean_fn_type.lower() == "zero":

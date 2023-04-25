@@ -14,8 +14,10 @@ from ..config import get_config
 from jaxtyping import Float, jaxtyped
 from typeguard import typechecked as typechecker
 
+
 def check_shape(func):
     return typechecker(jaxtyped(func))
+
 
 @check_shapes(
     "mean: [num_points, 1]",
@@ -23,7 +25,9 @@ def check_shape(func):
     "return: [num_samples, num_points, 1] if num_samples",
     "return: [num_points, 1] if not num_samples",
 )
-def sample_mvn(key, mean: Array, cov: Array, num_samples: Optional[int] = None, noise_var=None):
+def sample_mvn(
+    key, mean: Array, cov: Array, num_samples: Optional[int] = None, noise_var=None
+):
     """Returns samples from a GP(mean, kernel) at x."""
     num_samples_was_none = num_samples is None
     num_samples = num_samples or 1
@@ -50,10 +54,10 @@ def get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
     while True:
         init_key, next_key = jax.random.split(init_key)
         yield next_key
-    
+
 
 def generate_logarithmic_sequence(end, L):
-    base = math.exp(math.log(end) / (L-1))
+    base = math.exp(math.log(end) / (L - 1))
     sequence = [0]
     current = base
     while len(sequence) < L:
@@ -63,5 +67,28 @@ def generate_logarithmic_sequence(end, L):
     sequence.append(end - 1)
     return sequence
 
+
 def jax_unstack(x, axis=0):
-  return [lax.index_in_dim(x, i, axis, keepdims=False) for i in range(x.shape[axis])]
+    return [lax.index_in_dim(x, i, axis, keepdims=False) for i in range(x.shape[axis])]
+
+
+def gegenbauer_polynomials(alpha: float, l_max: int, x):
+    """https://en.wikipedia.org/wiki/Gegenbauer_polynomials"""
+    shape = x.shape if len(x.shape) > 0 else (1,)
+    p = jnp.zeros((max(l_max + 1, 2), shape[0]))
+    C_0 = jnp.ones_like(x)
+    C_1 = 2 * alpha * x
+    p = p.at[0].set(C_0)
+    p = p.at[1].set(C_1)
+
+    def body_fun(n, p_val):
+        C_nm1 = p_val[n - 1]
+        C_nm2 = p_val[n - 2]
+        C_n = 1 / n * (2 * x * (n + alpha - 1) * C_nm1 - (n + 2 * alpha - 2) * C_nm2)
+        p_val = p_val.at[n].set(C_n)
+        return p_val
+
+    if l_max >= 2:
+        p = jax.lax.fori_loop(lower=2, upper=l_max + 1, body_fun=body_fun, init_val=p)
+
+    return p[: l_max + 1]
