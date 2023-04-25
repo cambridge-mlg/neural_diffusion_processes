@@ -532,7 +532,7 @@ def main(_):
     if is_smoketest(config):
         tasks = ["interpolation"]
     else:
-        tasks = ["interpolation", "extrapolation"] #, "generalization"]
+        tasks = ["interpolation", "extrapolation", "generalization"]
 
     tasks = [
         Task(
