@@ -10,7 +10,7 @@ class DataConfig:
 
 @dataclasses.dataclass
 class SdeConfig:
-    limiting_kernel: str = "noisy-se"
+    limiting_kernel: str = "white"
     limiting_kernel_noise_variance: float = 0.05
     t0: float = 5e-4
     is_score_precond: bool = True
@@ -21,8 +21,8 @@ class SdeConfig:
 
 @dataclasses.dataclass
 class OptimizationConfig:
-    batch_size: int = 32
-    num_epochs: int = 200
+    batch_size: int = 256
+    num_epochs: int = 400
     num_warmup_epochs: int = 10
     lr: float = 1e-3
     ema_rate: float = 0.999

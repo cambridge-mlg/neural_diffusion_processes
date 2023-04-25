@@ -50,4 +50,3 @@ print(df)
 
 # filter columns out that have only one value
 df = df.loc[:, df.nunique() != 1]
-

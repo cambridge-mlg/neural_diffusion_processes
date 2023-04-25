@@ -319,12 +319,12 @@ class SDE:
         num_points = len(x) - jnp.count_nonzero(mask)
         loss = jnp.sum(jnp.sum(loss, -1)) / num_points
 
-        if self.weighted:
-            w = 1. - jnp.exp(-self.beta_schedule.B(t))
-        else:
-            w = 1.0
+        # if self.weighted:
+        #     w = 1. - jnp.exp(-self.beta_schedule.B(t))
+        # else:
+        #     w = 1.0
 
-        return w * loss
+        return loss
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
@@ -807,7 +807,7 @@ def log_prob(
     # dt=1e-3/2,
     num_steps: int = 100,
     # solver: AbstractSolver = dfx.Euler(),
-    solver: AbstractSolver = dfx.Tsit5(),
+    solver: AbstractSolver = dfx.Euler(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
     hutchinson_type: str = 'None',

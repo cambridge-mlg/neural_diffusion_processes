@@ -101,7 +101,8 @@ def get_experiment_name(config: Config):
 def get_experiment_dir(config: Config, output: str = "root", exist_ok: bool = True) -> pathlib.Path:
     experiment_name = get_experiment_name(config)
     if is_smoketest(config):
-        log_dir = f"{_LOG_DIR}-smoketest"
+        log_dir = f"{_LOG_DIR}"
+        # log_dir = f"{_LOG_DIR}-smoketest"
     elif config.mode == "eval":
         log_dir = f"{_LOG_DIR}-eval"
     else:
@@ -137,7 +138,7 @@ def get_log_prob(sde, network):
     @jax.jit
     def delta_logp(params, x, y, mask, key):
         net = functools.partial(network, params)
-        return ndp.sde.log_prob(sde, net, x, y, mask, key=key)
+        return ndp.sde.log_prob(sde, net, x, y, mask, key=key, rtol=None)
 
     def log_prob(params, x, y, mask, key):
         dlp, yT = delta_logp(params, x, y, mask, key)
@@ -445,8 +446,9 @@ def main(_):
         init_value=1e-4,
         peak_value=config.optimization.lr,
         warmup_steps=num_steps_per_epoch * config.optimization.num_warmup_epochs,
-        decay_steps=num_steps // 4,
-        end_value=5e-5,
+        # decay_steps=num_steps,
+        decay_steps=num_steps // 2,
+        end_value=1e-5,
     )
 
     optimizer = optax.chain(
@@ -584,7 +586,7 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=None if is_smoketest(config) else num_steps // 2,
+            every_steps=None, # if is_smoketest(config) else num_steps // 2,
             callback_fn=lambda step, t, **kwargs: [
                 cb(step, t, **kwargs) for cb in task_callbacks
             ]
