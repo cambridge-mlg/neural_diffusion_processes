@@ -350,7 +350,7 @@ class SDE:
 
 @dataclasses.dataclass
 class SphericalBrownian(SDE):
-    dim: int  # NOTE: actual dim not the dim of the ambient space
+    dim: int = 2  # NOTE: actual dim not the dim of the ambient space
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
