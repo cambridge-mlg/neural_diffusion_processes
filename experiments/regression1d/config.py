@@ -21,7 +21,7 @@ class SdeConfig:
 
 @dataclasses.dataclass
 class OptimizationConfig:
-    batch_size: int = 256
+    batch_size: int = 32
     num_epochs: int = 200
     num_warmup_epochs: int = 10
     lr: float = 1e-3

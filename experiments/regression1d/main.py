@@ -1,13 +1,48 @@
+"""
+Script for training and evaluating a NDP on 1d regression data.
+
+Modes
+-----
+
+1/ config.mode == train
+
+Trains a new model from scratch and evaluates it on all the tasks
+(interpolation, extrapolation and generalization).
+
+2/ config.mode == smoketest
+
+Trains a model without performing any "actions" during training,
+at the end of the training loop the model is evaluated on a single batch of data
+for all tasks.
+
+3/ config.mode == eval and config.experiment_dir == ""
+
+Build a model and evaluates it without training. This setting is typically
+used in combination with `USE_TRUE_SCORE==True` (see Flags).
+
+4/ config.mode == eval and config.experiment_dir == path_to_experiment
+
+Restores a model using the configuration stored at experiment dir,
+loads the latest weights for the model, and evaluates to model.
+
+Flags
+-----
+
+1/ USE_TRUE_SCORE == False
+
+Default setting. Approximate the score by a neural network.
+
+2/ USE_TRUE_SCORE == True
+
+For the GP datasets (squared exponential, matern and weakly periodic) we
+use use the true score. In this case no training is required.
+"""
 from typing import Tuple, Mapping, Iterator, List, Optional, Callable
 from jaxtyping import Float, Array
 
 import os
-import dataclasses
-from absl import app
-
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-
-
+import yaml
 import numpy as np
 import functools
 import tqdm
@@ -22,6 +57,8 @@ import pandas as pd
 import optax
 import datetime
 import matplotlib.pyplot as plt
+from absl import app
+from pathlib import Path
 
 from aim.ext.tensorboard_tracker import Run
 
@@ -29,7 +66,7 @@ from ml_collections import config_dict, config_flags
 from jax.config import config as jax_config
 
 import neural_diffusion_processes as ndp
-from neural_diffusion_processes.ml_tools.state import TrainingState
+from neural_diffusion_processes.ml_tools.state import TrainingState, load_checkpoint, find_latest_checkpoint_step_index
 from neural_diffusion_processes.ml_tools import config_utils
 from neural_diffusion_processes import ml_tools
 from neural_diffusion_processes.data import regression1d
@@ -63,13 +100,19 @@ def get_experiment_name(config: Config):
 
 def get_experiment_dir(config: Config, output: str = "root", exist_ok: bool = True) -> pathlib.Path:
     experiment_name = get_experiment_name(config)
+    if is_smoketest(config):
+        log_dir = f"{_LOG_DIR}-smoketest"
+    elif config.mode == "eval":
+        log_dir = f"{_LOG_DIR}-eval"
+    else:
+        log_dir = f"{_LOG_DIR}"
 
     if output == "root":
-        dir_ = _HERE / _LOG_DIR / experiment_name
+        dir_ = _HERE / log_dir / experiment_name
     elif output == "plots":
-        dir_ = _HERE / _LOG_DIR / experiment_name / "plots"
+        dir_ = _HERE / log_dir / experiment_name / "plots"
     elif output == "tensorboard":
-        dir_ = _HERE / _LOG_DIR / "tensorboard" / experiment_name
+        dir_ = _HERE / log_dir / "tensorboard" / experiment_name
     else:
         raise ValueError("Unknown output: %s" % output)
 
@@ -94,7 +137,7 @@ def get_log_prob(sde, network):
     @jax.jit
     def delta_logp(params, x, y, mask, key):
         net = functools.partial(network, params)
-        return ndp.sde.log_prob(sde, net, x, y, mask, key=key, rtol=None)
+        return ndp.sde.log_prob(sde, net, x, y, mask, key=key)
 
     def log_prob(params, x, y, mask, key):
         dlp, yT = delta_logp(params, x, y, mask, key)
@@ -244,6 +287,9 @@ class Task:
             logp_cond = logp_cond / batch.num_targets
             metrics["loglik"].append(jnp.reshape(logp_cond, (-1)))
 
+            v = jnp.mean(jnp.stack(metrics["loglik"]))
+            pb.set_description(f"loglik {v:.4f}")
+
         
         err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
         summary_stats = [
@@ -288,16 +334,34 @@ def main(_):
     config = config_utils.to_dataclass(Config, _CONFIG.value)
     flattened_config_dict = config_utils._to_flattened_dict(asdict(config))
 
+    experiment_dir_if_exists = Path(config.experiment_dir)
+    if config.mode == "eval" and experiment_dir_if_exists.exists():
+        print("****** eval mode:")
+        print("Restoring old configuration")
+        config_path = experiment_dir_if_exists / "config.yaml"
+        restored_config = yaml.safe_load(config_path.read_text())
+        restored_config = config_utils.to_dataclass(Config, restored_config)
+        # overwrite values by restored config such that the model can be loaded,
+        # weights restored.
+        config.data = restored_config.data
+        config.sde = restored_config.sde
+        config.network = restored_config.network
+    elif config.mode == "eval":
+        print("****** eval mode:")
+        print("Building and evaluating new model as experiment directory did not exist.")
+
     path = get_experiment_dir(config, 'root') / 'config.yaml'
     with open(str(path), 'w') as f:
         f.write(config_utils.to_yaml(config))
     
-    run = Run(
-        experiment=EXPERIMENT + ("-smoketest" if is_smoketest(config) else ""),
-        sync_tensorboard_log_dir=str(get_experiment_dir(config, 'tensorboard')),
-        log_system_params=False,
-    )
-    run["hparams"] = flattened_config_dict
+    if not config.mode == "eval":
+        # only write to Aim if not in eval mode
+        run = Run(
+            experiment=EXPERIMENT + ("-smoketest" if is_smoketest(config) else ""),
+            sync_tensorboard_log_dir=str(get_experiment_dir(config, 'tensorboard')),
+            log_system_params=False,
+        )
+        run["hparams"] = flattened_config_dict
 
     key = jax.random.PRNGKey(config.seed)
     key_iter = _get_key_iter(key)
@@ -381,8 +445,8 @@ def main(_):
         init_value=1e-4,
         peak_value=config.optimization.lr,
         warmup_steps=num_steps_per_epoch * config.optimization.num_warmup_epochs,
-        decay_steps=num_steps,
-        end_value=1e-5,
+        decay_steps=num_steps // 4,
+        end_value=5e-5,
     )
 
     optimizer = optax.chain(
@@ -435,7 +499,10 @@ def main(_):
 
     state = init(batch0, jax.random.PRNGKey(config.seed))
     
-    # state = restore_if_exists(state, path)
+    if config.mode == "eval" and experiment_dir_if_exists.exists():
+        index = find_latest_checkpoint_step_index(str(experiment_dir_if_exists))
+        state = load_checkpoint(state, str(experiment_dir_if_exists), step_index=index)
+        print("Successfully loaded checkpoint @ step {}".format(state.step))
 
     exp_root_dir = get_experiment_dir(config)
     
@@ -463,7 +530,7 @@ def main(_):
     if is_smoketest(config):
         tasks = ["interpolation"]
     else:
-        tasks = ["interpolation", "extrapolation", "generalization"]
+        tasks = ["interpolation", "extrapolation"] #, "generalization"]
 
     tasks = [
         Task(

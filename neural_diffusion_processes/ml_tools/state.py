@@ -32,6 +32,7 @@ def save_checkpoint(training_state, directory_path: str, step_index: int):
 
 def load_checkpoint(pytree_like, directory_path: str, step_index: int) -> TrainingState:
     directory_path = _DIRECTORY_PATH_CHECKPOINTS.format(path=directory_path)
+    print("Loading checkpoint from", directory_path)
     return _load_pytree(pytree_like, directory_path, step_index=step_index)
 
 
