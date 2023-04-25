@@ -79,7 +79,7 @@ except:
 
 
 USE_TRUE_SCORE = False
-EXPERIMENT = "regression1d-2"
+EXPERIMENT = "regression1d-Apr25"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
