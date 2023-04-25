@@ -442,7 +442,7 @@ def run(cfg):
         metrics = defaultdict(list)
         eval_log_prob = jit(vmap(partial(log_prob, params=state.params_ema)))
 
-        if step == 0:
+        if step == cfg.optim.num_steps:
             log.info("Evaluate ground truth")
             # TODO: evaluate diagonal cov GP
             for i, batch in enumerate(data_test):
@@ -475,14 +475,14 @@ def run(cfg):
                     # predictive log-likelihood
                     n_test = batch.ys.shape[-2]
 
-                    cond_logp2, nfe = eval_log_prob(
-                        subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc
-                    )
-                    metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
-                    metrics["cond_nfe"].append(jnp.mean(nfe))
+                    # cond_logp2, nfe = eval_log_prob(
+                    #     subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc
+                    # )
+                    # metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
+                    # metrics["cond_nfe"].append(jnp.mean(nfe))
                     # print("cond_logp2", cond_logp2.shape)
                     # print("true_cond_logp", true_cond_logp.shape)
-                    print("cond logp", metrics["cond_logp2"][-1])
+                    # print("cond logp", metrics["cond_logp2"][-1])
 
                     logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
                     x = jnp.concatenate([batch.xs, batch.xc], axis=1)
