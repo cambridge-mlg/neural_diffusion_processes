@@ -22,11 +22,14 @@ This library provides a MetricWriter for each logging format (SummyWriter,
 LoggingWriter, etc.) and composing MetricWriter to add support for asynchronous
 logging or writing to multiple formats.
 """
+from __future__ import annotations
 
 import abc
 import atexit
+import yaml
 from typing import Sequence, Any, Mapping, Optional, Union
 
+from pathlib import Path
 from jaxtyping import Array
 import jax.numpy as jnp
 import numpy as np
@@ -45,12 +48,18 @@ except ModuleNotFoundError:
 
 Scalar = Union[int, float, Array]
 
+from .config_utils import _to_flattened_dict
+
 
 class _MetricWriter(abc.ABC):
     """MetricWriter inferface."""
 
     def __init__(self):
         atexit.register(self.close)
+
+    @abc.abstractmethod
+    def log_hparams(self, hparams: Mapping[str, Any]):
+        ...
 
     @abc.abstractmethod
     def write_scalars(self, step: int, scalars: Mapping[str, Scalar]):
@@ -111,6 +120,10 @@ class MultiWriter(_MetricWriter):
     def __init__(self, writers: Sequence[_MetricWriter]):
         self._writers = tuple(writers)
 
+    def log_hparams(self, hparams: Mapping[str, Any]):
+        for w in self._writers:
+            w.log_hparams(hparams)
+
     def write_scalars(self, step: int, scalars: Mapping[str, Scalar]):
         for w in self._writers:
             w.write_scalars(step, scalars)
@@ -144,6 +157,9 @@ class TensorBoardWriter(_MetricWriter):
         self._export_scalars = export_scalars
         self._logdir = logdir
         self._summary_writer = SummaryWriter(logdir)
+
+    def log_hparams(self, hparams: Mapping[str, Any]):
+        pass
 
     def write_scalars(self, step: int, scalars: Mapping[str, Scalar]):
         for key, value in scalars.items():
@@ -183,6 +199,68 @@ class TensorBoardWriter(_MetricWriter):
             self._summary_writer.export_scalars_to_json(f"{self._logdir}/scalars.json")
         self._summary_writer.close()
 
+try:
+    import aim
+except ImportError:
+    print("aim not installed, skipping AimWriter")
+    aim = None
+
+import io
+from PIL import Image
+
+class AimWriter(_MetricWriter):
+    """MetricWriter that writes to Aim."""
+
+    def __init__(self, experiment: str):
+        """
+        """
+        super().__init__()
+        self._run = aim.Run(experiment=experiment)
+    
+
+    def log_hparams(self, hparams: Mapping[str, Any]):
+        self._run["hparams"] = _to_flattened_dict(hparams)
+
+    def write_scalars(self, step: int, scalars: Mapping[str, Scalar]):
+        for key, value in scalars.items():
+            self._run.track(value=value, name=key, step=step)
+
+    def write_images(self, step: int, images: Mapping[str, Array]):
+        """format: (N)CHW
+
+        img_tensor: An `uint8` or `float` Tensor of shape `
+            [channel, height, width]` where `channel` is 1, 3, or 4.
+            The elements in img_tensor can either have values
+            in [0, 1] (float32) or [0, 255] (uint8).
+            Users are responsible to scale the data in the correct range/type.
+        """
+        for key, value in images.items():
+            assert len(value.shape) == 3, "AimWriter only supports HWC images"
+            value = aim.Image(value)
+            self._run.track(value=value, name=key, step=step)
+
+    def write_figures(self, step: int, figures: Mapping[str, plt.Figure]):
+        """Writes matplotlib figures.
+
+        Note that this requires the ``matplotlib`` package.
+
+        Args:
+            figure (matplotlib.pyplot.figure)
+        """
+        for key, fig in figures.items():
+            img_buf = io.BytesIO()
+            fig.savefig(img_buf, format='png')
+            im = Image.open(img_buf)            
+            im = aim.Image(im)
+            plt.close(fig)
+            self._run.track(value=im, name=key, step=step)
+
+    def flush(self):
+        pass
+
+    def close(self):
+        self._run.close()
+
 
 def _cond_mkdir(path):
     if os.path.exists(path):
@@ -203,7 +281,13 @@ class LocalWriter(_MetricWriter):
         self._flush_every_n = flush_every_n
         self._logdir = logdir
         self._metrics_path = f"{self._logdir}/{filename}.csv"
+        self._config_path = f"{self._logdir}/config.yaml"
         self._metrics = []
+
+    def log_hparams(self, hparams: Mapping[str, Any]):
+        yaml_string = yaml.dump(hparams)
+        with open(self._config_path, 'w') as f:
+            f.write(yaml_string)
 
     def write_scalars(self, step: int, scalars: Mapping[str, Scalar]):
         metrics = {"step": step, **scalars}

@@ -24,7 +24,10 @@ class OptimizationConfig:
     batch_size: int = 256
     num_epochs: int = 400
     num_warmup_epochs: int = 10
-    lr: float = 1e-3
+    num_decay_epochs: int = 200
+    init_lr: float = 1e-4
+    peak_lr: float = 1e-3
+    end_lr: float = 1e-5
     ema_rate: float = 0.999
 
     def __post_init__(self):

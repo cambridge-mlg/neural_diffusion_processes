@@ -7,7 +7,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 
-EXPERIMENT_ID = "regression1d-2"
+EXPERIMENT_ID = "regression1d-Apr25"
 
 _HERE = Path(__file__).parent
 
@@ -49,12 +49,13 @@ def read_data() -> pd.DataFrame:
 
     df = pd.DataFrame(data)
     # filter columns out that have only one value
-    df = df.loc[:, df.nunique() != 1]
     return df
 
 if __name__ == "__main__":
     # df = read_data()
-    df = pd.read_csv("tmp.csv", index_col=0)
+    # df.to_csv(f"results_{EXPERIMENT_ID}.csv")
+    df = pd.read_csv(f"results_{EXPERIMENT_ID}.csv", index_col=0)
+    df = df.loc[:, df.nunique() != 1]
     datasets = [
         "se", "matern", "weaklyperiodic", "sawtooth", "mixture",
     ]
@@ -81,7 +82,10 @@ if __name__ == "__main__":
 
             for ti in translation_invariances:
                 df_subset = df[(df["data.dataset"] == dataset) & (df["network.translation_invariant"] == ti)]
-                kernels, y, err = df_subset["sde.limiting_kernel"].values, df_subset[f"{task}_loglik_mean"].values, df_subset[f"{task}_loglik_err"].values
+                try:
+                    kernels, y, err = df_subset["sde.limiting_kernel"].values, df_subset[f"{task}_loglik_mean"].values, df_subset[f"{task}_loglik_err"].values
+                except:
+                    continue
                 x = np.arange(len(kernels)) - width/2. + width * int(ti)
                 ax.bar(x, y, yerr=err, width=width)
             # x = range(len(limiting_kernels))

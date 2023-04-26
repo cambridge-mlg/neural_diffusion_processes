@@ -55,12 +55,12 @@ import jax.numpy as jnp
 import jmp
 import pandas as pd
 import optax
+import time
 import datetime
 import matplotlib.pyplot as plt
 from absl import app
 from pathlib import Path
-
-from aim.ext.tensorboard_tracker import Run
+from dataclasses import asdict
 
 from ml_collections import config_dict, config_flags
 from jax.config import config as jax_config
@@ -79,7 +79,7 @@ except:
 
 
 USE_TRUE_SCORE = False
-EXPERIMENT = "regression1d-Apr25"
+EXPERIMENT = "regression1d-Apr26"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -331,9 +331,7 @@ def main(_):
     jax_config.update("jax_enable_x64", True)
     policy = jmp.get_policy('params=float32,compute=float32,output=float32')
 
-    from dataclasses import asdict
     config = config_utils.to_dataclass(Config, _CONFIG.value)
-    flattened_config_dict = config_utils._to_flattened_dict(asdict(config))
 
     experiment_dir_if_exists = Path(config.experiment_dir)
     if config.mode == "eval" and experiment_dir_if_exists.exists():
@@ -351,18 +349,6 @@ def main(_):
         print("****** eval mode:")
         print("Building and evaluating new model as experiment directory did not exist.")
 
-    path = get_experiment_dir(config, 'root') / 'config.yaml'
-    with open(str(path), 'w') as f:
-        f.write(config_utils.to_yaml(config))
-    
-    if not config.mode == "eval":
-        # only write to Aim if not in eval mode
-        run = Run(
-            experiment=EXPERIMENT + ("-smoketest" if is_smoketest(config) else ""),
-            sync_tensorboard_log_dir=str(get_experiment_dir(config, 'tensorboard')),
-            log_system_params=False,
-        )
-        run["hparams"] = flattened_config_dict
 
     key = jax.random.PRNGKey(config.seed)
     key_iter = _get_key_iter(key)
@@ -439,16 +425,14 @@ def main(_):
         net_params = functools.partial(net, params)
         return ndp.sde.loss(sde, net_params, batch, key)
 
-
     num_steps_per_epoch = config.data.num_samples_in_epoch // config.optimization.batch_size
     num_steps = num_steps_per_epoch * config.optimization.num_epochs
     learning_rate_schedule = optax.warmup_cosine_decay_schedule(
-        init_value=1e-4,
-        peak_value=config.optimization.lr,
+        init_value=config.optimization.init_lr,
+        peak_value=config.optimization.peak_lr,
         warmup_steps=num_steps_per_epoch * config.optimization.num_warmup_epochs,
-        # decay_steps=num_steps,
-        decay_steps=num_steps // 2,
-        end_value=1e-5,
+        decay_steps=num_steps_per_epoch * config.optimization.num_decay_epochs,
+        end_value=config.optimization.end_lr,
     )
 
     optimizer = optax.chain(
@@ -506,7 +490,6 @@ def main(_):
         state = load_checkpoint(state, str(experiment_dir_if_exists), step_index=index)
         print("Successfully loaded checkpoint @ step {}".format(state.step))
 
-    exp_root_dir = get_experiment_dir(config)
     
     ########## Plotting
 
@@ -525,14 +508,20 @@ def main(_):
             net(params, *args, **kwargs)
     )
     
-    local_writer = ml_tools.writers.LocalWriter(exp_root_dir, flush_every_n=100)
+    experiment = EXPERIMENT + ("-smoketest" if is_smoketest(config) else "")
+    exp_root_dir = get_experiment_dir(config)
+    local_writer = ml_tools.writers.LocalWriter(str(exp_root_dir), flush_every_n=100)
     tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))
-    writer = ml_tools.writers.MultiWriter([tb_writer, local_writer])
+    aim_writer = ml_tools.writers.AimWriter(experiment)
+    writer = ml_tools.writers.MultiWriter([aim_writer, tb_writer, local_writer])
+
+    hparams = {"experiment": experiment, **asdict(config)}
+    writer.log_hparams(hparams)
 
     if is_smoketest(config):
         tasks = ["interpolation"]
     else:
-        tasks = ["interpolation", "extrapolation", "generalization"]
+        tasks = ["interpolation", "generalization"]  # extrapolation
 
     tasks = [
         Task(
@@ -617,6 +606,7 @@ def main(_):
         if not is_smoketest(config):
             task._num_data = config.eval.num_samples_in_epoch
         callback(num_steps + 1, None, state=state, key=next(key_iter))
+    
     
 
 if __name__ == "__main__":
