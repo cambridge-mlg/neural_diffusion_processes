@@ -11,6 +11,7 @@ import haiku as hk
 from check_shapes import check_shape as cs, check_shapes
 
 from .misc import timestep_embedding, get_activation
+import e3nn_jax as e3nn
 
 
 def scatter(input, dim, index, src, reduce=None):
@@ -54,27 +55,38 @@ class E_GCL(hk.Module):
     output_dim: int
     hidden_dim: int
     act_fn: Callable = get_activation("silu")
-    residual: bool = True
+    residual_x: bool = True
+    residual_h: bool = True
     attention: bool = False
     normalize: bool = False
     coords_agg: str = "mean"
     tanh: bool = False
     norm_constant: float = 1e-8
 
-    def edge_model(self, source, target, radial, edge_attr):
+    def phi_e(self, source, target, radial, edge_attr):
         if edge_attr is None:  # Unused.
-            out = jnp.concatenate([source, target, radial], axis=1)
+            out = jnp.concatenate([source, target, radial], axis=-1)
         else:
-            out = jnp.concatenate([source, target, radial, edge_attr], axis=1)
-        edge_mlp = hk.Sequential(
-            [
-                hk.Linear(self.hidden_dim),
-                self.act_fn,
-                hk.Linear(self.hidden_dim),
-                self.act_fn,
-            ]
+            out = jnp.concatenate([source, target, radial, edge_attr], axis=-1)
+        # edge_mlp = hk.Sequential(
+        #     [
+        #         hk.Linear(self.hidden_dim),
+        #         self.act_fn,
+        #         hk.Linear(self.hidden_dim),
+        #         self.act_fn,
+        #     ]
+        # )
+        # print("source", source.shape)
+        # print("target", target.shape)
+        # print("radial", radial.shape)
+        # print("out", out.shape)
+        edge_mlp = hk.nets.MLP(
+            [self.hidden_dim, self.hidden_dim],
+            activation=self.act_fn,
+            activate_final=True,
         )
-        out = edge_mlp(out)
+        out = jax.vmap(edge_mlp)(out)
+        print("out", out.shape)
 
         if self.attention:
             att_mlp = hk.Sequential([hk.Linear(1), jax.nn.sigmoid])
@@ -82,24 +94,27 @@ class E_GCL(hk.Module):
             out = out * att_val
         return out
 
-    def node_model(self, x, edge_index, edge_attr, node_attr):
-        row, col = edge_index
-        agg = unsorted_segment_sum(edge_attr, row, num_segments=x.shape[0])
+    def phi_h(self, h, edge_index, edge_attr, node_attr):
+        receivers, senders = edge_index
+        m_i = unsorted_segment_sum(edge_attr, receivers, num_segments=h.shape[0])
+        # m_i = e3nn.scatter_sum(data=edge_attr, dst=receivers, output_size=h.shape[0])
+        avg_num_neighbours = 648
+        m_i = m_i / jnp.sqrt(avg_num_neighbours)
         if node_attr is not None:
-            agg = jnp.concatenate([x, agg, node_attr], axis=1)
+            m_i = jnp.concatenate([h, m_i, node_attr], axis=1)
         else:
-            agg = jnp.concatenate([x, agg], axis=1)
+            m_i = jnp.concatenate([h, m_i], axis=1)
 
         node_mlp = hk.Sequential(
             [hk.Linear(self.hidden_dim), self.act_fn, hk.Linear(self.output_dim)]
         )
-        out = node_mlp(agg)
+        out = node_mlp(m_i)
 
-        if self.residual:
-            out = x + out
-        return out, agg
+        if self.residual_h:
+            out = h + out
+        return out, m_i
 
-    def coord_model(self, coord, edge_index, coord_diff, edge_feat):
+    def phi_x(self, coord, edge_index, coord_diff, m_ij):
         row, col = edge_index
 
         w_init = hk.initializers.VarianceScaling(0.001, "fan_avg", "uniform")
@@ -113,7 +128,9 @@ class E_GCL(hk.Module):
         if self.tanh:
             coord_mlp.append(jnp.tanh)
         coord_mlp = hk.Sequential(coord_mlp)
-        trans = coord_diff * coord_mlp(edge_feat)
+        # coord_mlp = hk.nets.MLP([self.hidden_dim, self.hidden_dim], activation=self.act_fn, activate_final=True)
+        # trans = layer(coord_mlp(m_ij))
+        trans = coord_diff * coord_mlp(m_ij)
 
         if self.coords_agg == "sum":
             agg = unsorted_segment_sum(trans, row, num_segments=coord.shape[0])
@@ -121,12 +138,13 @@ class E_GCL(hk.Module):
             agg = unsorted_segment_mean(trans, row, num_segments=coord.shape[0])
         else:
             raise Exception("Wrong coords_agg parameter" % self.coords_agg)
-        coord = coord + agg
+        if self.residual_x:
+            coord = coord + agg
         return coord
 
     def coord2radial(self, edge_index, coord):
-        row, col = edge_index
-        coord_diff = coord[row] - coord[col]
+        receivers, senders = edge_index
+        coord_diff = coord[receivers] - coord[senders]
         radial = jnp.expand_dims(jnp.sum(coord_diff**2, 1), 1)
 
         if self.normalize:
@@ -136,13 +154,13 @@ class E_GCL(hk.Module):
         return radial, coord_diff
 
     def __call__(self, h, edge_index, y, edge_attr=None, node_attr=None):
-        row, col = edge_index
+        receivers, senders = edge_index
 
         radial, diff = self.coord2radial(edge_index, y)
 
-        edge_feat = self.edge_model(h[row], h[col], radial, edge_attr)
-        y = self.coord_model(y, edge_index, diff, edge_feat)
-        h, agg = self.node_model(h, edge_index, edge_feat, node_attr)
+        m_ij = self.phi_e(h[senders], h[receivers], radial, edge_attr)
+        y = self.phi_x(y, edge_index, diff, m_ij)
+        h, agg = self.phi_h(h, edge_index, m_ij, node_attr)
 
         return h, y, edge_attr
 
@@ -171,7 +189,8 @@ class EGNN(hk.Module):
     # out_node_dim: int
     act_fn: str = "silu"
     n_layers: int = 4
-    residual: bool = True
+    residual_x: bool = True
+    residual_h: bool = True
     attention: bool = False
     normalize: bool = False
     tanh: bool = False
@@ -188,7 +207,8 @@ class EGNN(hk.Module):
                 output_dim=self.hidden_dim,
                 hidden_dim=self.hidden_dim,
                 act_fn=act_fn,
-                residual=self.residual,
+                residual_x=self.residual_x,
+                residual_h=self.residual_h,
                 attention=self.attention,
                 normalize=self.normalize,
                 tanh=self.tanh,
@@ -204,7 +224,7 @@ class EGNN(hk.Module):
 class E_FGCL(E_GCL):
     """Both x and y are vectors"""
 
-    def coord_model(self, y, edge_index, x_diff, y_diff, edge_feat):
+    def phi_x(self, y, edge_index, x_diff, y_diff, m_ij):
         row, col = edge_index
 
         for coord_diff in [x_diff, y_diff]:
@@ -215,7 +235,7 @@ class E_FGCL(E_GCL):
                 coord_mlp.append(jnp.tanh)
             coord_mlp = hk.Sequential(coord_mlp)
 
-            trans = coord_diff * coord_mlp(edge_feat)
+            trans = coord_diff * coord_mlp(m_ij)
 
             if self.coords_agg == "sum":
                 agg = unsorted_segment_sum(trans, row, num_segments=y.shape[0])
@@ -234,11 +254,58 @@ class E_FGCL(E_GCL):
         y_radial, y_diff = self.coord2radial(edge_index, y)
 
         radial = jnp.concatenate([x_radial, y_radial], axis=1)
-        edge_feat = self.edge_model(h[row], h[col], radial, edge_attr)
-        y = self.coord_model(y, edge_index, x_diff, y_diff, edge_feat)
-        h, agg = self.node_model(h, edge_index, edge_feat, node_attr)
+        m_ij = self.phi_e(h[row], h[col], radial, edge_attr)
+        y = self.phi_x(y, edge_index, x_diff, y_diff, m_ij)
+        h, agg = self.phi_h(h, edge_index, m_ij, node_attr)
 
         return h, y, edge_attr
+
+
+@dataclasses.dataclass
+class E_FGCL2(E_GCL):
+    """Both x and y are vectors"""
+
+    def phi_y(self, coord, edge_index, coord_diff, m_ij):
+        row, col = edge_index
+
+        w_init = hk.initializers.VarianceScaling(0.001, "fan_avg", "uniform")
+        # torch.nn.init.xavier_uniform_(layer.weight, gain=0.001)
+        layer = hk.Linear(1, with_bias=False, w_init=w_init)
+
+        coord_mlp = []
+        coord_mlp.append(hk.Linear(self.hidden_dim))
+        coord_mlp.append(self.act_fn)
+        coord_mlp.append(layer)
+        if self.tanh:
+            coord_mlp.append(jnp.tanh)
+        coord_mlp = hk.Sequential(coord_mlp)
+        # coord_mlp = hk.nets.MLP([self.hidden_dim, self.hidden_dim], activation=self.act_fn, activate_final=True)
+        # trans = layer(coord_mlp(m_ij))
+        trans = coord_diff * coord_mlp(m_ij)
+
+        if self.coords_agg == "sum":
+            agg = unsorted_segment_sum(trans, row, num_segments=coord.shape[0])
+        elif self.coords_agg == "mean":
+            agg = unsorted_segment_mean(trans, row, num_segments=coord.shape[0])
+        else:
+            raise Exception("Wrong coords_agg parameter" % self.coords_agg)
+        if self.residual_x:
+            coord = coord + agg
+        return coord
+
+    def __call__(self, h, edge_index, x, y, edge_attr=None, node_attr=None):
+        row, col = edge_index
+
+        x_radial, x_diff = self.coord2radial(edge_index, x)
+        y_radial, y_diff = self.coord2radial(edge_index, y)
+
+        radial = jnp.concatenate([x_radial, y_radial], axis=1)
+        m_ij = self.phi_e(h[row], h[col], radial, edge_attr)
+        y = self.phi_y(y, edge_index, y_diff, m_ij)
+        x = self.phi_x(x, edge_index, x_diff, m_ij)
+        h, agg = self.phi_h(h, edge_index, m_ij, node_attr)
+
+        return h, y, x, edge_attr
 
 
 @dataclasses.dataclass
@@ -253,7 +320,8 @@ class EFGNN(EGNN):
                 output_dim=self.hidden_dim,
                 hidden_dim=self.hidden_dim,
                 act_fn=act_fn,
-                residual=self.residual,
+                residual_x=self.residual_x,
+                residual_h=self.residual_h,
                 attention=self.attention,
                 normalize=self.normalize,
                 tanh=self.tanh,
@@ -326,14 +394,14 @@ from .transformer import get_edges_knn, get_edge_attr
 
 @dataclasses.dataclass
 class EGNNScore(EGNN):
-    k: int = 5
+    k: int = 0
     output_shape: Optional[int] = None
     node_attr: bool = False
     edge_attr: bool = False
     maximum_radius: int = 3
     num_basis: int = 50
     radial_basis: str = "gaussian"
-    num_heads: int = 0 #TODO: replace with **kwargs
+    num_heads: int = 0  # TODO: replace with **kwargs
 
     @check_shapes(
         "x: [batch_size, num_points, input_dim]",
@@ -342,43 +410,85 @@ class EGNNScore(EGNN):
         "return: [batch_size, num_points, output_dim]",
     )
     def __call__(self, x, y, t):
+        print("EGNNScore.__call__")
         return jax.vmap(self.score)(x, y, t)
 
     def score(self, x, y, t):
         # compute graph
-        edges = get_edges_knn(x, self.k)
-        # edges = get_edges_batch(x.shape[-2], batch_size=1)[0]
+        if self.k > 0:
+            edges = get_edges_knn(x, self.k)
+            print("edges", edges[0].shape)
+        elif self.k == 0:
+            # edges = get_edges_knn(x, 20)
+            # print("edges", edges[0].shape, edges[1].shape)
+            edges = get_edges_batch(x.shape[-2], batch_size=1)[0]
+            print("edges", edges[0].shape, edges[1].shape)
+        elif self.k < 0:
+            receivers_k, senders_k = get_edges_knn(x, abs(self.k))
+            edges = get_edges_batch(x.shape[-2], batch_size=1)[0]
+            receivers, senders = edges
+            key = jax.random.PRNGKey(0)
+            points_perm = jax.random.permutation(key, jnp.arange(len(edges[0])))[
+                :10_000
+            ]
+            receivers = jnp.concatenate((receivers[points_perm], receivers_k), axis=0)
+            senders = jnp.concatenate((senders[points_perm], senders_k), axis=0)
+            edges = receivers, senders
+            print("edges", edges[0].shape, edges[1].shape)
+            # raise
+        else:
+            raise NotImplementedError()
 
         h = jnp.linalg.norm(x, axis=-1, keepdims=True)
         # t = jnp.broadcast_to(t[None, :], (x.shape[0], t.shape[-1]))
         t = jnp.broadcast_to(t[None, ...], (x.shape[0]))
-        t = timestep_embedding(t, 16)  # TODO: to factor
-        t = t.squeeze()
-        node_attr = t if self.node_attr else None
+        t_embedding = timestep_embedding(t, self.hidden_dim).squeeze()
+        t = timestep_embedding(t, 16).squeeze()  # TODO: to factor
+        # node_attr = t if self.node_attr else None
+        node_attr = None
         h = jnp.concatenate([h, t], axis=-1)
-        embedding_in = hk.Linear(self.hidden_dim)
-        h = embedding_in(h)
+        h = hk.Linear(self.hidden_dim)(h)
         act_fn = get_activation(self.act_fn)
 
         if self.edge_attr:
             edge_vec = x[edges[0]] - x[edges[1]]
             edge_length = jnp.linalg.norm(edge_vec, axis=-1)
             edge_attr = get_edge_attr(
-                edge_length, maximum_radius=3, num_basis=50, radial_basis="gaussian"
+                edge_length,
+                maximum_radius=self.maximum_radius,
+                num_basis=self.num_basis,
+                radial_basis=self.radial_basis,
             )[0]
         else:
             edge_attr = None
 
         for _ in range(0, self.n_layers):
-            layer = E_FGCL(
+            # layer_class = E_GCL
+            # layer_class = E_FGCL
+            layer_class = E_FGCL2
+            layer = layer_class(
                 output_dim=self.hidden_dim,
                 hidden_dim=self.hidden_dim,
                 act_fn=act_fn,
-                residual=self.residual,
+                residual_x=self.residual_x,
+                residual_h=self.residual_h,
                 attention=self.attention,
                 normalize=self.normalize,
                 tanh=self.tanh,
                 coords_agg=self.coords_agg,
             )
-            h, y, _ = layer(h, edges, x, y, edge_attr=edge_attr, node_attr=node_attr)
+            print("t_embedding", t_embedding.shape)
+            if self.node_attr:
+                # t = hk.Linear(self.hidden_dim)(t_embedding)  # [:, None, None, :]
+                t = hk.Linear(16)(t_embedding)  # [:, None, None, :]
+                node_attr = t
+            print("t", t.shape)
+            print("h", h.shape)
+            # h = h + hk.Linear(self.hidden_dim)(t_embedding)
+            print("h", h.shape)
+            # h = jnp.concatenate([h, t], axis=-1)
+            # h, y, _ = layer(h, edges, y, edge_attr=edge_attr, node_attr=node_attr)
+            # h, y, _ = layer(h, edges, x, y, edge_attr=edge_attr, node_attr=node_attr)
+            h, y, x, _ = layer(h, edges, x, y, edge_attr=edge_attr, node_attr=node_attr)
+            print("h, y", h.shape, y.shape)
         return y

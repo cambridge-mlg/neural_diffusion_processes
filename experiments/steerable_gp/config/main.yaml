@@ -40,7 +40,7 @@ optim:
   batch_size: 40
   num_steps: 80_000
   lr: 5e-4
-  learning_rate: ${eval:${optim.lr}*${eval:40/${optim.batch_size}}}
+  learning_rate: ${eval:${optim.lr}*${eval:${optim.batch_size}/40}}
   ema_rate: 0.999
 
 eval:
@@ -68,7 +68,7 @@ eval:
     rtol: 1e-4
     atol: 1e-4
     # atol: 1e-6
-    hutchinson_samples: 1
+    hutchinson_samples: 8
 
 
 data:
@@ -92,8 +92,8 @@ data:
     output_dim: 2
   obs_noise: 0.02
   seed_test: 1
-  num_samples_test:  1_000
-  # num_samples_test: 10_000
+  # num_samples_test:  1_000
+  num_samples_test: 10_000
   seed: 0
   # min_context: 5
   # max_context: 50
@@ -112,7 +112,7 @@ kernel:
 sde:
   _target_: neural_diffusion_processes.sde.SDE
   _convert_: object
-  std_trick: true
+  std_trick: false
   residual_trick: true
   # limiting_kernel_hyperparameters: 
   #   variance: 1.0

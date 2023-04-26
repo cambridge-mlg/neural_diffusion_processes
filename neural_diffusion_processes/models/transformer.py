@@ -22,6 +22,7 @@ import e3nn_jax as e3nn
 # from e3nn_jax.experimental.transformer import _index_max
 
 from e3nn_jax.experimental.transformer import Transformer
+from .misc import timestep_embedding, get_activation
 
 
 def get_constant_init(constant):
@@ -233,8 +234,8 @@ class TransformerModule(hk.Module):
             list_neurons=[config["radial_num_neurons"] * config["radial_num_layers"]],
             act=jax.nn.gelu,
             num_heads=config["num_heads"],
-            residual=config["residual"],
-            batch_norm=config["batch_norm"],
+            # residual=config["residual"],
+            # batch_norm=config["batch_norm"],
         )
 
     def __call__(self, x, y, t):
@@ -243,9 +244,9 @@ class TransformerModule(hk.Module):
         # add empty 3rd coordinate for 2d data
         x_dim, y_dim = x.shape[-1], y.shape[-1]
         if x_dim == 2:
-            x = jnp.concatenate([x, jnp.zeros((*x.shape[:-1], 1))], -1)
+            x = jnp.concatenate([x, jnp.zeros((*x.shape[:-1], 1), dtype=x.dtype)], -1)
         if y_dim == 2:
-            y = jnp.concatenate([y, jnp.zeros((*y.shape[:-1], 1))], -1)
+            y = jnp.concatenate([y, jnp.zeros((*y.shape[:-1], 1), dtype=y.dtype)], -1)
         out = jax.vmap(self.score)(x, y, t)
         if y_dim == 2:
             out = out[..., :-1]
@@ -253,7 +254,7 @@ class TransformerModule(hk.Module):
 
     def score(self, x, y, t):
         config = self.config
-
+        t = timestep_embedding(t[None], 16).squeeze(0)
         t_emb = jnp.repeat(t.reshape(-1)[None, :], y.shape[-2], -2)
         t_emb = e3nn.IrrepsArray(f"{t.shape[-1]}x0e", t_emb)
         node_attr = y  # node_attr = e3nn.IrrepsArray("1x1e", y)
@@ -297,8 +298,11 @@ class TransformerModule(hk.Module):
         # print("t", type(t), t.shape)
         # print("node_attr", type(node_attr), x.shape)
         node_attr = e3nn.IrrepsArray("1x1e", node_attr)
-        node_attr = e3nn.IrrepsArray.cat([node_attr, t_emb])
-        node_attr = jax.vmap(e3nn.Linear(irreps))(node_attr)
+        # node_attr = e3nn.IrrepsArray.cat([node_attr, t_emb])
+        node_attr = e3nn.concatenate([node_attr, t_emb])
+        # node_attr = e3nn.IrrepsArray("16x0e", jnp.concatenate[node_attr, t_emb])
+        node_attr = jax.vmap(e3nn.haiku.Linear(irreps))(node_attr)
+        # node_attr = jax.vmap(e3nn.FunctionalLinear(node_attr.irreps, irreps))(node_attr)
 
         ns = node_attr.irreps.count("0e") + node_attr.irreps.count("0o")
         for _ in range(config["num_layers"]):
@@ -310,8 +314,10 @@ class TransformerModule(hk.Module):
                 ],
                 axis=-1,
             )
+            _edge_attr = e3nn.concatenate([_edge_attr, edge_sh])
+            # edge_src, edge_dst, _edge_attr, edge_weight_cutoff, edge_sh, node_attr
             node_attr = Transformer(self.irreps_features, **self.kw)(
-                edge_src, edge_dst, _edge_attr, edge_weight_cutoff, edge_sh, node_attr
+                edge_src, edge_dst, edge_weight_cutoff, _edge_attr, node_attr
             )
 
             node_attr = self.act(node_attr)
@@ -324,8 +330,10 @@ class TransformerModule(hk.Module):
             ],
             axis=-1,
         )
+        _edge_attr = e3nn.concatenate([_edge_attr, edge_sh])
+        # edge_src, edge_dst, _edge_attr, edge_weight_cutoff, edge_sh, node_attr
         node_attr = Transformer(config["irreps_out"], **self.kw)(
-            edge_src, edge_dst, _edge_attr, edge_weight_cutoff, edge_sh, node_attr
+            edge_src, edge_dst, edge_weight_cutoff, _edge_attr, node_attr
         )
         out = node_attr.array
         # return e3nn.index_add(a["batch"], out, a["y"].shape[0])

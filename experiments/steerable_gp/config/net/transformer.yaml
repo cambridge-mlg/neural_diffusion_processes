@@ -16,4 +16,4 @@ radial_num_layers: 2
 k: 10
 residual: false
 batch_norm: false
-sq_nl: true
+sq_nl: false
