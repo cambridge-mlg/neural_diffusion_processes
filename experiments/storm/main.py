@@ -43,6 +43,8 @@ from neural_diffusion_processes.utils.vis import (
 from neural_diffusion_processes.utils import flatten, unflatten
 from neural_diffusion_processes.data import radial_grid_2d, DataBatch
 
+from neural_diffusion_processes.data.storm import LONOFFSET, RADDEG, LONSTART, LONSTOP
+
 
 def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
     while True:
@@ -89,7 +91,7 @@ def run(cfg):
     log.info(f"beta_schedule: {sde.beta_schedule}")
 
     ####### prepare data
-    data = call(
+    data, transform = call(
         cfg.data,
     )
     dataloader = ndp.data.dataloader(
@@ -103,7 +105,16 @@ def run(cfg):
     y_dim = batch0.ys.shape[-1]
     log.info(f"num elements: {batch0.xs.shape[-2]} & x_dim: {x_dim} & y_dim: {y_dim}")
 
-    plot_batch = DataBatch(xs=data[0][:100], ys=data[1][:100])
+    # plot_batch = DataBatch(xs=data[0][:100], ys=data[1][:100])
+    plot_batch = next(
+        ndp.data.dataloader(
+            data,
+            batch_size=100,
+            key=next(key_iter),
+            n_points=cfg.data.n_points,
+            shuffle_xs=False,
+        )
+    )
     # data_test = call(
     #     cfg.data,
     #     key=jax.random.PRNGKey(cfg.data.seed_test),
@@ -242,65 +253,98 @@ def run(cfg):
         )
 
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
-        print("plots", t)
+        log.info(f"Plotting step {t}")
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
-        n_samples = 2  # 20
+        n_samples = 100
         keys = jax.random.split(key, 6)
 
         batch = plot_batch  # batch = next(iter(data_test))
         # idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
         idx = 0
 
-        x_grid = data[0][0]  # jnp.linspace(0, plot_batch.xs.max(), 100)[..., None]
-
-        TWOPI = 2 * jnp.pi
-        RADDEG = TWOPI / 360
+        x_grid = batch.xs[0]  # jnp.linspace(0, plot_batch.xs.max(), 100)[..., None]
 
         ts_fwd = [0.1, 0.2, 0.5, 0.8, float(sde.beta_schedule.t1)]
         ts_bwd = [0.8, 0.5, 0.2, 0.1, float(sde.beta_schedule.t0)]
 
         def plot_tracks(xs, ys, axes, title=""):
-            ys = jnp.stack(
-                (
-                    ((ys[..., 0] + jnp.pi) / 2 % jnp.pi) - jnp.pi / 2,
-                    ((ys[..., 1] + jnp.pi) % (2 * jnp.pi)) - jnp.pi,
-                ),
+            m = Basemap(
+                projection="mill",
+                llcrnrlat=-80,
+                urcrnrlat=80,
+                llcrnrlon=LONSTART,
+                urcrnrlon=LONSTOP,
+                lat_ts=20,
+                ax=axes,
+            )
+            # m = Basemap(projection='npstere', lon_0=0, boundinglat=-30)
+            # m = Basemap(projection='ortho',lat_0=45,lon_0=-100,resolution='l')
+
+            m.drawmapboundary(fill_color="#ffffff")
+            m.fillcontinents(color="#cccccc", lake_color="#ffffff")
+            m.drawcoastlines(color="#000000", linewidth=0.2)
+            m.drawparallels(
+                np.linspace(-60, 60, 7, endpoint=True, dtype=int),
+                linewidth=0.1,
+                # labels=[True, False, False, False],
+            )
+            m.drawmeridians(
+                np.linspace(-160, 160, 9, endpoint=True, dtype=int),
+                linewidth=0.1,
+                # labels=[False, False, False, True],
+            )
+
+            ys = ys * transform[1] + transform[0]
+            dists = jnp.linalg.norm((ys[:, :-1] - ys[:, 1:]), axis=-1)
+            nan_index = dists > ((50 * RADDEG) ** 2)
+            nan_index = jnp.repeat(
+                jnp.concatenate([nan_index, nan_index[:, -2:-1]], axis=-1)[..., None],
+                2,
                 axis=-1,
             )
-            for x, y in zip(xs, ys):
-                # m = Basemap(ax=axes, fix_aspect=True)
-                axes.plot(
-                    y[..., 1] / RADDEG,
-                    y[..., 0] / RADDEG,
-                    # latlon=True,
-                    linewidth=0.3,
-                )
+
+            lons = ((ys[..., 1] / RADDEG) + LONOFFSET) % 360  # remove lon offset
+            lons = ((lons + LONSTART) % 360) - LONSTART  # Put into plot frame
+            lats = ys[..., 0] / RADDEG
+
+            m_coords = jnp.stack(
+                m(
+                    lons,
+                    lats,
+                )[::-1],
+                axis=-1,
+            )
+            m_coords = m_coords.at[nan_index].set(jnp.nan)
+
+            for row in m_coords:
+                m.plot(row[..., 1], row[..., 0], linewidth=0.3, latlon=False)
             axes.set_title(title)
-            axes.set_aspect("equal")
-            # axes.set_xlim([-180, 180])
-            # axes.set_ylim([-90, 90])
 
         nb_cols = len(ts_fwd) + 2
         fig_backward, axes = plt.subplots(
-            1, nb_cols, figsize=(2 * nb_cols * 2, 2), sharex=True, sharey=True
+            1,
+            nb_cols,
+            figsize=(2 * 2 * nb_cols, 2 + 1),
+            sharex=True,
+            sharey=True,
         )
         fig_backward.subplots_adjust(wspace=0, hspace=0.0)
 
         # plot_vf_and_cov(batch.xs[idx], batch.ys, axes[:, 0], rf"$p_{{data}}$")
-        plot_tracks(batch.xs, batch.ys, axes[0], rf"$p_{{data}}$")
+        plot_tracks(batch.xs, batch.ys, axes[-1], rf"$p_{{data}}$")
 
         # plot limiting
         y_ref = vmap(sde.sample_prior, in_axes=[0, None])(
             jax.random.split(keys[3], n_samples), x_grid
         ).squeeze()
         # plot_vf_and_cov(x_grid, y_ref, axes[:, 1], rf"$p_{{ref}}$")
-        plot_tracks(x_grid, y_ref, axes[-1], rf"$p_{{ref}}$")
+        plot_tracks(x_grid, y_ref, axes[0], rf"$p_{{ref}}$")
 
         # plot generated samples
         # TODO: start from same limiting samples as above with yT argument
-        y_model = vmap(reverse_sample, in_axes=[0, None, None, 0])(
-            jax.random.split(keys[3], n_samples), x_grid, state.params_ema, y_ref
-        ).squeeze()
+        # y_model = vmap(reverse_sample, in_axes=[0, None, None, 0])(
+        #     jax.random.split(keys[3], n_samples), x_grid, state.params_ema, y_ref
+        # ).squeeze()
         y_model = vmap(reverse_sample_times, in_axes=[0, None, None, 0, None])(
             jax.random.split(keys[3], n_samples),
             x_grid,
@@ -311,11 +355,11 @@ def run(cfg):
 
         # ax.plot(x_grid, y_model[:, -1, :, 0].T, "C0", alpha=0.3)
         # plot_vf_and_cov(x_grid, y_model, axes[:, 2], rf"$p_{{model}}$")
-        for i in range(nb_cols):
+        for i in range(nb_cols - 2):
             plot_tracks(
                 x_grid,
                 y_model[:, i],
-                axes[nb_cols - 2 - i],
+                axes[i + 1],
                 rf"$p_{{model}} t={ts_bwd[i]}$",
             )
 
@@ -351,6 +395,60 @@ def run(cfg):
 
         dict_plots = {"backward": fig_backward}
 
+        # fig_comp, axes = plt.subplots(
+        #     4,
+        #     4,
+        #     figsize=(2 * 2 * 4, 2 * 4 + 2),
+        #     sharex=True,
+        #     sharey=True,
+        #     squeeze=False,
+        # )
+
+        # for i in range(4):
+        #     plot_tracks(x_grid, y_model[i : (i + 1), -1], axes[0][i], "Model")
+        # for i in range(4):
+        #     plot_tracks(x_grid, batch.ys[i : (i + 1)], axes[1][i], "Data")
+        # for i in range(4):
+        #     plot_tracks(x_grid, y_model[(i + 4) : (i + 5), -1], axes[2][i], "Model")
+        # for i in range(4):
+        #     plot_tracks(x_grid, batch.ys[(i + 4) : (i + 5)], axes[3][i], "Data")
+
+        # dict_plots["comparison"] = fig_comp
+
+        fig_comp, axes = plt.subplots(
+            2,
+            1,
+            figsize=(2 * 2 * 1, 2 * 2 + 1),
+            sharex=True,
+            sharey=True,
+            squeeze=True,
+        )
+
+        n_samples = 100
+        N = 10
+        k = jax.random.split(keys[3], N)
+        y_model = jnp.concatenate(
+            [
+                vmap(reverse_sample, in_axes=[0, None, None, 0])(
+                    jax.random.split(k[i], n_samples),
+                    x_grid,
+                    state.params_ema,
+                    vmap(sde.sample_prior, in_axes=[0, None])(
+                        jax.random.split(k[i], n_samples), x_grid
+                    ).squeeze(),
+                    # ts_bwd,
+                ).squeeze()
+                for i in range(N)
+            ],
+            axis=0,
+        )
+        # x_model = jnp.repeat(x_grid[None, :], y_model.shape[0], axis=0)
+
+        plot_tracks(data[0], data[1], axes[0], "Full data")
+        plot_tracks(x_grid, y_model, axes[1], "Model samples")
+
+        dict_plots["comparison"] = fig_comp
+
         if t == 0:  # NOTE: Only plot fwd at the beggining
             # ts = [0.8, sde.beta_schedule.t1]
             nb_cols = len(ts_fwd) + 2
@@ -358,7 +456,7 @@ def run(cfg):
             fig_forward, axes = plt.subplots(
                 nb_rows,
                 nb_cols,
-                figsize=(2 * nb_cols * 2, nb_rows * 2),
+                figsize=(2 * 2 * nb_cols, 2 * nb_rows + 1),
                 sharex=True,
                 sharey=True,
                 squeeze=False,
@@ -368,7 +466,9 @@ def run(cfg):
             for i in range(nb_rows):
                 # plot data process
                 # plot_vf_and_cov(batch.xs[0], batch.ys, axes[:, 0], rf"$p_{{data}}$")
-                plot_tracks(batch.xs, batch.ys, axes[i, 0], rf"$p_{{data}}$")
+                plot_tracks(
+                    batch.xs, batch.ys, axes[i, 0], rf"$p_{{data}}$" if i == 0 else None
+                )
 
                 # TODO: only solve once and return different timesaves
                 for k, t in enumerate(ts_fwd):
@@ -378,12 +478,37 @@ def run(cfg):
                         )
                     )(jax.random.split(keys[1], n_samples)).squeeze()
                     # plot_vf_and_cov(batch.xs[idx], yt, axes[:, k+1], rf"$p_{{t={t}}}$")
-                    plot_tracks(batch.xs, yt, axes[i, k + 1], rf"$p_{{t={t}}}$")
+                    plot_tracks(
+                        batch.xs,
+                        yt,
+                        axes[i, k + 1],
+                        rf"$p_{{t=}}$" if i == 0 else None,
+                    )
 
                 # plot_vf_and_cov(x_grid, y_ref, axes[:, -1], rf"$p_{{ref}}$")
-                plot_tracks(x_grid, y_ref, axes[i, -1], rf"$p_{{ref}}$")
+                plot_tracks(
+                    x_grid, y_ref, axes[i, -1], rf"$p_{{data}}$" if i == 0 else None
+                )
 
             dict_plots["forward"] = fig_forward
+
+            # fig_data, axes = plt.subplots(
+            #     4,
+            #     4,
+            #     figsize=(4 * 2, 4 * 1),
+            #     sharex=True,
+            #     sharey=True,
+            #     squeeze=False,
+            # )
+            # axes = [item for sublist in axes for item in sublist]
+            # for i in range(len(axes)):
+            #     plot_tracks(batch.xs[0:1], batch.ys[i : (i + 1)], axes[i])
+
+            # dict_plots["data"] = fig_data
+
+            fig_data, ax = plt.subplots(1, 1)
+            plot_tracks(data[0], data[1], ax, "Full data")
+            dict_plots["data"] = fig_data
 
         plt.close()
         return dict_plots
@@ -520,8 +645,8 @@ def run(cfg):
                 progress_bar.set_description(f"loss {metrics['loss']:.2f}")
     else:
         # for action in actions[3:]:
-        action = actions[2]
-        action._cb_fn(cfg.optim.num_steps + 1, t=None, state=state, key=key)
+        # action = actions[2]
+        # action._cb_fn(cfg.optim.num_steps + 1, t=None, state=state, key=key)
         logger.save()
 
 

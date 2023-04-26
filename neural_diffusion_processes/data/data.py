@@ -8,6 +8,7 @@ from simple_pytree import Pytree
 from check_shapes import check_shapes, check_shape
 from jaxtyping import Array
 
+
 @dataclasses.dataclass
 class DataBatch(Pytree):
     xs: Array
@@ -33,7 +34,13 @@ class DataBatch(Pytree):
     "data[1]: [len_data, num_points, output_dim]",
 )
 def dataloader(
-    data: Tuple[Array, Array], batch_size: int, *, key, run_forever=True, n_points=-1
+    data: Tuple[Array, Array],
+    batch_size: int,
+    *,
+    key,
+    run_forever=True,
+    n_points=-1,
+    shuffle_xs=True,
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
@@ -51,7 +58,10 @@ def dataloader(
         while end < dataset_size:
             batch_perm = perm[start:end]
             (key,) = jax.random.split(key, 1)
-            points_perm = jax.random.permutation(key, indices_points)
+            if shuffle_xs:
+                points_perm = jax.random.permutation(key, indices_points)
+            else:
+                points_perm = indices_points
             if n_points > 0:
                 points_perm = points_perm[:n_points]
             yield DataBatch(

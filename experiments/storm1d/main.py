@@ -104,7 +104,15 @@ def run(cfg):
     y_dim = batch0.ys.shape[-1]
     log.info(f"num elements: {batch0.xs.shape[-2]} & x_dim: {x_dim} & y_dim: {y_dim}")
 
-    plot_batch = DataBatch(xs=data[0][:100], ys=data[1][:100])
+    plot_batch = next(
+        ndp.data.dataloader(
+            data,
+            batch_size=100,
+            key=next(key_iter),
+            n_points=cfg.data.n_points,
+        )
+    )
+    # plot_batch = DataBatch(xs=data[0][:100], ys=data[1][:100])
     # data_test = call(
     #     cfg.data,
     #     key=jax.random.PRNGKey(cfg.data.seed_test),
@@ -245,7 +253,7 @@ def run(cfg):
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         print("plots", t)
         # TODO: refactor properly plot depending on dataset and move in utils/vis.py
-        n_samples = 2  # 20
+        n_samples = 20
         keys = jax.random.split(key, 6)
 
         batch = plot_batch  # batch = next(iter(data_test))
@@ -363,6 +371,26 @@ def run(cfg):
 
         dict_plots = {"backward": fig_backward}
 
+        fig_comp, axes = plt.subplots(
+            4,
+            4,
+            figsize=(4 * 2, 4 * 2),
+            sharex=True,
+            sharey=True,
+            squeeze=False,
+        )
+
+        for i in range(4):
+            plot_tracks(x_grid, y_model[i : (i + 1), -1], axes[0][i], "Model")
+        for i in range(4):
+            plot_tracks(x_grid, batch.ys[i : (i + 1)], axes[1][i], "Data")
+        for i in range(4):
+            plot_tracks(x_grid, y_model[(i + 4) : (i + 5), -1], axes[2][i], "Model")
+        for i in range(4):
+            plot_tracks(x_grid, batch.ys[(i + 4) : (i + 5)], axes[3][i], "Data")
+
+        dict_plots["comparison"] = fig_comp
+
         if t == 0:  # NOTE: Only plot fwd at the beggining
             # ts = [0.8, sde.beta_schedule.t1]
             nb_cols = len(ts_fwd) + 2
@@ -396,6 +424,20 @@ def run(cfg):
                 plot_tracks(x_grid, y_ref, axes[i, -1], rf"$p_{{ref}}$")
 
             dict_plots["forward"] = fig_forward
+
+            fig_data, axes = plt.subplots(
+                4,
+                4,
+                figsize=(4 * 2, 4 * 2),
+                sharex=True,
+                sharey=True,
+                squeeze=False,
+            )
+            axes = [item for sublist in axes for item in sublist]
+            for i in range(len(axes)):
+                plot_tracks(batch.xs[0:1], batch.ys[i : (i + 1)], axes[i])
+
+            dict_plots["data"] = fig_data
 
         plt.close()
         return dict_plots

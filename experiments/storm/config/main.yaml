@@ -31,11 +31,11 @@ beta_schedule:
   t0: 5e-4
   t1: 1.0
   beta0: 1e-4
-  beta1: 7.0
+  beta1: 15.0
 
 optim:
   # batch_size: 30
-  batch_size: 20
+  batch_size: 32
   eval_batch_size: ${eval:${optim.batch_size}//8}
   num_steps: 50_000
   lr: 1e-3
@@ -46,7 +46,8 @@ data:
   data_dir: /data/ziz/not-backed-up/mhutchin/score-sde-sp/data
   max_len: 50
   max_data_points: -1
-  limit_and_normalise: true
+  limit: false
+  normalise: false
   seed_test: 1
   num_samples_test:  64
   # num_samples_test: 20_000
@@ -78,10 +79,10 @@ sde:
     _target_: gpjax.Zero
     output_dim: 2
 
-# net:
-#   n_layers: 5
-#   hidden_dim: 64
-#   num_heads: 8
+net:
+  n_layers: 5
+  hidden_dim: 64
+  num_heads: 4
 
 # eval_batch_size: ${batch_size}
 now: ${now:%Y-%m-%d}/${now:%H-%M-%S}

@@ -7,21 +7,29 @@ from check_shapes import check_shapes
 
 TWOPI = 2 * jnp.pi
 RADDEG = TWOPI / 360
+LONOFFSET = 180
+LONSTART = 0
+LONSTOP = LONSTART + 360
 
 
-@check_shapes("return[0]: [B , N, 1]", "return[1]: [B, N, y_dim]")
+# @check_shapes("return[0]: [B , N, 1]", "return[1]: [B, N, y_dim]")
 def storm_data(
     data_dir: str,
     max_len=50,
     max_data_points=-1,
-    limit_and_normalise=False,
+    limit=False,
+    normalise=True,
     **kwargs,
 ):
     data = pd.read_csv(
         os.path.join(data_dir, "storm", "all_processes.csv"), header=[0, 1]
     )
     lats = jnp.array(data["LAT"].to_numpy(), dtype=jnp.float32)[:, :max_len]
-    lons = jnp.array(data["LON"].to_numpy(), dtype=jnp.float32)[:, :max_len]
+    lons = (
+        jnp.array(data["LON"].to_numpy(), dtype=jnp.float32)[:, :max_len] + LONOFFSET
+    ) % (
+        2 * 180
+    )  # center the data over pacific - better center + plotting
     nan_index = jnp.isnan(lats) & jnp.isnan(lons)
     full_data = jnp.sum(nan_index[:, :max_len], axis=-1) == 0
     latlons = jnp.stack((lats, lons), axis=-1)[full_data] * RADDEG
@@ -35,12 +43,19 @@ def storm_data(
     )
     times = jnp.repeat(times[None, :, None], repeats=latlons.shape[0], axis=0)
 
-    if limit_and_normalise:
+    if limit:
         keep = jnp.all((latlons[..., 1] < 0) & (latlons[..., 1] > -100), axis=-1)
         latlons = latlons[keep]
         times = times[keep]
 
-        latlons = latlons - jnp.mean(latlons, axis=(0, 1), keepdims=True)
+    if normalise:
+        mean = jnp.mean(latlons, axis=(0, 1))
+        std = jnp.std(latlons, axis=(0, 1))
+        latlons = latlons - mean
+        latlons = latlons / std
+    else:
+        mean = jnp.zeros_like(latlons[0, 0])
+        std = jnp.ones_like(latlons[0, 0])
 
     if max_data_points > 0 and max_data_points < latlons.shape[0]:
         offset = 35
@@ -50,7 +65,7 @@ def storm_data(
         latlons = jnp.repeat(latlons, 100, axis=0)
         times = jnp.repeat(times, 100, axis=0)
 
-    return times, latlons
+    return (times, latlons), (mean, std)
 
 
 def proj_3d(x, reverse=False):

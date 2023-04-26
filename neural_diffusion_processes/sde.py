@@ -304,10 +304,11 @@ class SDE:
 
         precond_score_net = self.score(nkey, t, yt, x, network)
         precond_noise = sqrt @ Z
+        # precond_noise = sqrt.T.solve(Z)
         if not self.is_score_preconditioned:
             precond_noise = self.limiting_gram(x).solve(precond_noise)
         loss = jnp.square(
-            std * precond_score_net + unflatten(precond_noise, y.shape[-1])
+            std**2 * precond_score_net + unflatten(precond_noise, y.shape[-1])
         )
         loss = jnp.mean(jnp.sum(loss, -1))
         return loss
