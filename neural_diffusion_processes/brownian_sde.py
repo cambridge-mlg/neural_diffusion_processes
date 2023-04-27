@@ -256,13 +256,34 @@ class SphericalMetric:
 metric = SphericalMetric(2)
 
 
+def gegenbauer_polynomials(alpha: float, l_max: int, x):
+    """https://en.wikipedia.org/wiki/Gegenbauer_polynomials"""
+    shape = x.shape if len(x.shape) > 0 else (1,)
+    p = jnp.zeros((max(l_max + 1, 2), shape[0]))
+    C_0 = jnp.ones_like(x)
+    C_1 = 2 * alpha * x
+    p = p.at[0].set(C_0)
+    p = p.at[1].set(C_1)
+
+    def body_fun(n, p_val):
+        C_nm1 = p_val[n - 1]
+        C_nm2 = p_val[n - 2]
+        C_n = 1 / n * (2 * x * (n + alpha - 1) * C_nm1 - (n + 2 * alpha - 2) * C_nm2)
+        p_val = p_val.at[n].set(C_n)
+        return p_val
+
+    if l_max >= 2:
+        p = jax.lax.fori_loop(lower=2, upper=l_max + 1, body_fun=body_fun, init_val=p)
+
+    return p[: l_max + 1]
+
+
 # @check_shapes("x0: [N, y_dim]", "x: [N, y_dim]", "t: []", "return: [N, y_dim]")
 def _log_heat_kernel(x0, x, t, n_max):
     """
     log p_t(x, y) = \sum^\infty_n e^{-t \lambda_n} \psi_n(x) \psi_n(y)
     = \sum^\infty_n e^{-n(n+1)t} \frac{2n+d-1}{d-1} \frac{1}{A_{\mathbb{S}^n}} \mathcal{C}_n^{(d-1)/2}(x \cdot y
     """
-    from neural_diffusion_processes.utils.misc import gegenbauer_polynomials
 
     # NOTE: Should we rely on the Russian roulette estimator even though the log would bias it?
     # if len(t.shape) == len(x.shape):
