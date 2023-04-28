@@ -31,6 +31,7 @@ data = raw_data[
     "LON",
     "TRACK_TYPE",
     "USA_SSHS", # For category
+    "USA_WIND"
     ]
 ]
 # data=data.dropna()
@@ -92,6 +93,7 @@ pivot_data = data.pivot(
         "LAT",
         "LON",
         "USA_SSHS", # For category
+        "USA_WIND",
         "NATURE",
     ]
 )

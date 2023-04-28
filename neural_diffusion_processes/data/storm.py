@@ -17,19 +17,22 @@ def storm_data(
     data_dir: str,
     max_len=50,
     max_data_points=-1,
+    basin="all",
     limit=False,
     normalise=True,
     **kwargs,
 ):
     data = pd.read_csv(
-        os.path.join(data_dir, "storm", "all_processes.csv"), header=[0, 1]
+        os.path.join(data_dir, "storm", f"{basin}_processed.csv"), header=[0, 1]
     )
     lats = jnp.array(data["LAT"].to_numpy(), dtype=jnp.float32)[:, :max_len]
     lons = (
-        jnp.array(data["LON"].to_numpy(), dtype=jnp.float32)[:, :max_len] + LONOFFSET
+        jnp.array(data["LON"].to_numpy(), dtype=jnp.float32)[:, :max_len]
+        + LONOFFSET
+        + 180
     ) % (
         2 * 180
-    )  # center the data over pacific - better center + plotting
+    ) - 180  # center the data over pacific - better center + plotting
     nan_index = jnp.isnan(lats) & jnp.isnan(lons)
     full_data = jnp.sum(nan_index[:, :max_len], axis=-1) == 0
     latlons = jnp.stack((lats, lons), axis=-1)[full_data] * RADDEG

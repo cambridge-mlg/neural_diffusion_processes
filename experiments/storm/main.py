@@ -642,7 +642,9 @@ def run(cfg):
                 action(step, t=None, metrics=metrics, state=state, key=key)
 
             if step % 100 == 0:
-                progress_bar.set_description(f"loss {metrics['loss']:.2f}")
+                progress_bar.set_description(
+                    f"log loss {float(jnp.log(metrics['loss'])):.2f}"
+                )
     else:
         # for action in actions[3:]:
         # action = actions[2]
