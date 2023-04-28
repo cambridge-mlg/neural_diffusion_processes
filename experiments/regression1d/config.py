@@ -10,7 +10,7 @@ class DataConfig:
 
 @dataclasses.dataclass
 class SdeConfig:
-    limiting_kernel: str = "white"
+    limiting_kernel: str = "noisy-se"
     limiting_kernel_noise_variance: float = 0.05
     t0: float = 5e-4
     is_score_precond: bool = True

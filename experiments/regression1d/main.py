@@ -78,8 +78,8 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = False
-EXPERIMENT = "regression1d-Apr26"
+USE_TRUE_SCORE = True
+EXPERIMENT = "regression1d-Apr28"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -334,7 +334,7 @@ def main(_):
     config = config_utils.to_dataclass(Config, _CONFIG.value)
 
     experiment_dir_if_exists = Path(config.experiment_dir)
-    if config.mode == "eval" and experiment_dir_if_exists.exists():
+    if config.mode == "eval" and (experiment_dir_if_exists / "config.yaml").exists():
         print("****** eval mode:")
         print("Restoring old configuration")
         config_path = experiment_dir_if_exists / "config.yaml"
@@ -347,7 +347,8 @@ def main(_):
         config.network = restored_config.network
     elif config.mode == "eval":
         print("****** eval mode:")
-        print("Building and evaluating new model as experiment directory did not exist.")
+        f = str(experiment_dir_if_exists / "config.yaml")
+        print(f"Building and evaluating new model as {f} did not exist.")
 
 
     key = jax.random.PRNGKey(config.seed)
@@ -374,13 +375,27 @@ def main(_):
         gpjax.mean_functions.Zero(),
         hyps,
         beta,
+        # is_score_preconditioned=config.sde.is_score_precond if not USE_TRUE_SCORE else False,
+        score_parameterization=ndp.sde.ScoreParameterization.PRECONDITIONED_S,
         # Below parameterisations are all set to False if we use the true score.
-        is_score_preconditioned=config.sde.is_score_precond if not USE_TRUE_SCORE else False,
         std_trick=config.sde.std_trick if not USE_TRUE_SCORE else False,
         residual_trick=config.sde.residual_trick if not USE_TRUE_SCORE else False,
         weighted=config.sde.weighted,
         exact_score=USE_TRUE_SCORE,
     )
+
+    print(">>>>>>>>>>>>")
+
+    t = 0.1
+    x = jnp.linspace(-2, 2, 6)[:, None]
+    yt = jnp.ones((6, 1)) * .01
+    μ0t, k0t, params = sde.p0t(t, yt)
+    dist = ndp.kernels.prior_gp(μ0t, k0t, params)(x)
+    scale = dist.scale
+    sqrt = scale.to_root()
+    scale2 = sqrt.to_dense() @ sqrt.T.to_dense()
+
+
 
     if USE_TRUE_SCORE:
         factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
@@ -389,6 +404,14 @@ def main(_):
         true_score_network = sde.get_exact_score(mean0, kernel0, params0)
     else:
         true_score_network = None
+    
+    mask = jnp.zeros_like(x[...,0])
+    sde.reverse_drift_ode(
+        None, t, yt, x, mask, true_score_network
+    )
+    print("<<<<<<<<<<<<<<<<<")
+
+    # exit(0)
 
     ##### Plot a training databatch
     batch0 = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "training")
@@ -485,7 +508,7 @@ def main(_):
 
     state = init(batch0, jax.random.PRNGKey(config.seed))
     
-    if config.mode == "eval" and experiment_dir_if_exists.exists():
+    if config.mode == "eval" and (experiment_dir_if_exists / "checkpoints").exists():
         index = find_latest_checkpoint_step_index(str(experiment_dir_if_exists))
         state = load_checkpoint(state, str(experiment_dir_if_exists), step_index=index)
         print("Successfully loaded checkpoint @ step {}".format(state.step))

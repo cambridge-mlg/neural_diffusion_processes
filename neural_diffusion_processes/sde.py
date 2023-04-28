@@ -84,6 +84,25 @@ class LinearBetaSchedule:
         )
 
 
+from enum import Enum
+
+
+class ScoreParameterization(Enum):
+    PRECONDITIONED_K = "preconditioned_k"
+    PRECONDITIONED_S = "preconditioned_s"
+    NONE = "none"
+
+    @staticmethod
+    def get(method: str) -> ScoreParameterization:
+        if method.lower() == "preconditioned_k":
+            return ScoreParameterization.PRECONDITIONED_K
+        elif method.lower() == "preconditioned_s":
+            return ScoreParameterization.PRECONDITIONED_S
+        elif method.lower() == "none":
+            return ScoreParameterization.NONE
+        raise ValueError(f"Unknown score parameterization method: {method}")
+
+
 @dataclasses.dataclass
 class SDE:
     limiting_kernel: jaxkern.base.AbstractKernel
@@ -92,7 +111,8 @@ class SDE:
     beta_schedule: LinearBetaSchedule
     std_trick: bool = True
     residual_trick: bool = True
-    is_score_preconditioned: bool = True
+    # is_score_preconditioned: bool = True
+    score_parameterization: ScoreParameterization = ScoreParameterization.PRECONDITIONED_K
     weighted: bool = False
     exact_score: bool = False
 
@@ -221,9 +241,11 @@ class SDE:
         """ This parametrises the (preconditioned) score K(x,x) grad log p(y_t|x) """
         score = network(t, yt, x, mask, key=key)
         if self.std_trick:
+            print("STD TRICK")
             std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
             score = score / (std + 1e-3)
         if self.residual_trick:
+            print("RESIDUAL TRICK")
             # NOTE: s.t. bwd SDE = fwd SDE
             # NOTE: wrong sign?
             # fwd_drift = self.drift(t, yt, x)
@@ -252,8 +274,29 @@ class SDE:
                 # Σ⁻¹ (yt - m_0(x))
                 Sigma_inv_b = Sigma_t.solve(b)
                 out = - Sigma_inv_b
-                if self.is_score_preconditioned:
-                   out = self.limiting_gram(x) @ out
+
+                if self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
+                    print("Score PRECONDITIONING_K")
+                    out = self.limiting_gram(x) @ out
+                elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
+                    print("Score PRECONDITIONING_S")
+                    μ0t, k0t, params = self.p0t(t, yt * 666.)
+                    dist = prior_gp(μ0t, k0t, params)(x)
+                    sqrt = dist.scale.to_root()
+                    out = sqrt.T @ out
+                    # Sout = sqrt.to_dense().T @ out
+
+                    # how to rescale to K score:
+                    var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+                    Kout2 = (sqrt @ out) / var
+                    Kout = self.limiting_gram(x) @ -Sigma_inv_b
+                    print("Kout", Kout)
+                    print("Kout2", Kout2)
+
+                elif self.score_parameterization == ScoreParameterization.NONE:
+                    print("Score PRECONDITIONING_NONE")
+                    pass
+
                 return unflatten(out, yt.shape[-1])
 
         return _ExactScoreNetwork()
@@ -262,16 +305,44 @@ class SDE:
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_ode(self, key, t: Array, yt: Array, x: Array, mask: Array, network) -> Array:
         second_term = 0.5 * self.beta_schedule(t) * self.score(key, t, yt, x, mask, network)
-        if not self.is_score_preconditioned:
+
+        if self.score_parameterization == ScoreParameterization.NONE:
+            print("reverse drift ode: ScoreParameterization.NONE")
             second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
+        elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
+            print("reverse drift ode: ScoreParameterization.PRECONDITIONED_S")
+            μ0t, k0t, params = self.p0t(t, yt)
+            dist = prior_gp(μ0t, k0t, params)(x)
+            sqrt = dist.scale.to_root()
+            var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+            print("second_term.shape", second_term.shape)
+            print("sqrt.shape", sqrt.shape)
+            second_term = unflatten(sqrt @ flatten(second_term), yt.shape[-1]) / (var + 1e-3)
+
+            print("second_term2", second_term)
+
+        elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
+            print("reverse drift ode: ScoreParameterization.PRECONDITIONED_K")
+            pass
         return self.drift(t, yt, x) - second_term
 
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
     def reverse_drift_sde(self, key, t: Array, yt: Array, x: Array, mask, network) -> Array:
         second_term = self.beta_schedule(t) * self.score(key, t, yt, x, mask, network)
-        if not self.is_score_preconditioned:
+        if self.score_parameterization == ScoreParameterization.NONE:
+            print("reverse drift sde: ScoreParameterization.NONE")
             second_term = unflatten(self.limiting_gram(x) @ flatten(second_term), yt.shape[-1])
+        elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
+            print("reverse drift sde: ScoreParameterization.PRECONDITIONED_S")
+            μ0t, k0t, params = self.p0t(t, yt)
+            dist = prior_gp(μ0t, k0t, params)(x)
+            sqrt = dist.scale.to_root()
+            var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+            second_term = unflatten(sqrt @ flatten(second_term), yt.shape[-1]) / (var + 1e-3)
+        elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
+            print("reverse drift sde: ScoreParameterization.PRECONDITIONED_K")
+            pass
         return self.drift(t, yt, x) - second_term
 
 
@@ -609,15 +680,26 @@ def conditional_sample2(
         yt = unflatten(yt, y_dim)
         score = flatten(sde.score(key, t, yt, x, mask, network))
         if langevin_kernel:
-            if sde.is_score_preconditioned:
-                score = score
-            else:
+            if sde.score_parameterization == ScoreParameterization.NONE:
+                print("reverse_drift_langevin: None")
                 score = sde.limiting_gram(x) @ score
+            elif sde.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
+                print("WARNING: broken!")
+                print("reverse_drift_langevin: PRECONDITIONED_S")
+                μ0t, k0t, params = sde.p0t(t, yt)
+                dist = prior_gp(μ0t, k0t, params)(x)
+                sqrt = dist.scale.to_root()
+                var = 1.0 - jnp.exp(-sde.beta_schedule.B(t))
+                score = sqrt @ score / var
+            elif sde.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
+                print("reverse_drift_langevin: PRECONDITIONED_K")
+                pass
         else:
-            if sde.is_score_preconditioned:
-                score = sde.limiting_gram(x).solve(score)
-            else:
-                score = score
+            raise NotImplementedError("not supported")
+            # if sde.is_score_preconditioned:
+            #     score = sde.limiting_gram(x).solve(score)
+            # else:
+            #     score = score
         return 0.5 * sde.beta_schedule(t) * score
     
     def diffusion_langevin(t, yt, args) -> LinearOperator:
@@ -625,7 +707,8 @@ def conditional_sample2(
         if langevin_kernel:
             return diffusion(t, yt, args)
         else:
-            return jnp.sqrt(sde.beta_schedule(t)) * identity(yt.shape[-1])
+            raise NotImplementedError("not supported")
+            # return jnp.sqrt(sde.beta_schedule(t)) * identity(yt.shape[-1])
 
     key, subkey = jax.random.split(key)
     shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
