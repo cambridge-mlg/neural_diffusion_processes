@@ -15,14 +15,7 @@ from diffrax import AbstractStepSizeController, PIDController, ConstantStepSize
 from diffrax import AbstractSolver, Dopri5, Tsit5
 import jaxkern
 import gpjax
-from gpjax.mean_functions import Zero, Constant
-from jaxlinop import (
-    LinearOperator,
-    DenseLinearOperator,
-    DiagonalLinearOperator,
-    identity,
-    ZeroLinearOperator,
-)
+from jaxlinop import LinearOperator, identity
 
 # import equinox as eqx
 import numpy as np
@@ -39,7 +32,6 @@ from .kernels import (
     log_prob_prior_gp,
     promote_compute_engines,
     SumKernel,
-    SquaredLinearOperator,
 )
 from .utils.misc import flatten, unflatten
 from .config import get_config
@@ -301,36 +293,58 @@ class SDE:
         μ0t, k0t, params = self.p0t(t, y)
         dist = prior_gp(μ0t, k0t, params)(x)
 
-        sqrt = dist.scale.to_root()
+        Ktt = self.limiting_gram(x)
+        Ktt = Ktt._add_diagonal(get_config().jitter * identity(int(np.prod(y.shape))))
+        scale = Ktt.to_root()
+        # L = dist.scale.to_root()
+        L = std * scale
         Z = jax.random.normal(ekey, flatten(y).shape)
-        affine_transformation = lambda x: dist.loc + sqrt @ x
+        affine_transformation = lambda x: dist.loc + L @ x
         yt = unflatten(affine_transformation(Z), y_dim)
 
         precond_score_net = self.score(nkey, t, yt, x, network)
 
-        # print("self.is_score_preconditioned", self.is_score_preconditioned)
-
         # loss = jnp.square(precond_score_net - unflatten(-precond_noise, y_dim))
 
         if self.is_score_preconditioned:
-            precond_noise = sqrt @ Z
-            if self.weighted:
+            precond_noise = scale @ Z
+            if self.weighted:  # var**2 * DSM for K*score
                 loss = jnp.square(
-                    var * precond_score_net + unflatten(precond_noise, y_dim)
+                    std * precond_score_net + unflatten(precond_noise, y_dim)
                 )
-            else:
+            else:  # DSM for K*score
                 loss = jnp.square(
-                    precond_score_net - unflatten(-precond_noise / var, y_dim)
+                    precond_score_net - unflatten(-precond_noise / std, y_dim)
                 )
         else:
             if self.weighted:
                 loss = jnp.square(
-                    unflatten(sqrt @ flatten(precond_score_net), y_dim)
+                    unflatten(L @ flatten(precond_score_net), y_dim)
                     + unflatten(Z, y_dim)
                 )
-            else:
-                precond_noise = sqrt.T.solve(Z)
+            else:  # DSM
+                precond_noise = L.T.solve(Z)
                 loss = jnp.square(precond_score_net + unflatten(precond_noise, y_dim))
+
+        # if self.is_score_preconditioned:
+        #     precond_noise = L @ Z
+        #     if self.weighted:  # var**2 * DSM for K*score
+        #         loss = jnp.square(
+        #             var * precond_score_net + unflatten(precond_noise, y_dim)
+        #         )
+        #     else:  # DSM for K*score
+        #         loss = jnp.square(
+        #             precond_score_net - unflatten(-precond_noise / var, y_dim)
+        #         )
+        # else:
+        #     if self.weighted:
+        #         loss = jnp.square(
+        #             unflatten(L @ flatten(precond_score_net), y_dim)
+        #             + unflatten(Z, y_dim)
+        #         )
+        #     else:  # DSM
+        #         precond_noise = L.T.solve(Z)
+        #         loss = jnp.square(precond_score_net + unflatten(precond_noise, y_dim))
 
         # if not self.is_score_preconditioned:
         #     precond_noise = self.limiting_gram(x).solve(precond_noise)
@@ -346,125 +360,6 @@ class SDE:
 
         loss = jnp.mean(jnp.sum(loss, -1))
         return loss
-
-
-@dataclasses.dataclass
-class SphericalBrownian(SDE):
-    dim: int = 2  # NOTE: actual dim not the dim of the ambient space
-
-    @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
-    def sample_prior(self, key, x):
-        """sample from white noise / U(S^d)^n"""
-        n = x.shape[0]
-
-        def sample_spherical_uniform(key):
-            u = jax.random.normal(key, (self.dim + 1))
-            return u / jnp.linalg.norm(u, axis=-1)
-
-        subkeys = jax.random.split(key, n)
-        return jax.vmap(sample_spherical_uniform)(subkeys)
-
-    @check_shapes("x: [N, x_dim]", "y: [N, y_dim]", "return: []")
-    def log_prob_prior(self, x, y):
-        """white noise prob  / U(S^d)^n"""
-        n = x.shape[0]
-        # https://en.wikipedia.org/wiki/N-sphere#Closed_forms
-        half_dim = (self.dim + 1) / 2
-        spherical_log_volume = (
-            math.log(2) + half_dim * math.log(math.pi) - math.lgamma(half_dim)
-        )
-        return n * spherical_log_volume
-
-    @check_shapes("x: [N, x_dim]")
-    def limiting_gram(self, y) -> LinearOperator:
-        # A = I - N N^t with N orthonormal basis of normal space
-        A = jax.vmap(lambda y: jnp.eye(y.shape[-1]) - y @ y.T)(y)
-        K = SquaredLinearOperator(flatten(A))
-        return K
-
-    @check_shapes("t: []", "x: [N, x_dim]", "y: [N, y_dim]", "return: [N, y_dim]")
-    def sample_marginal(self, key, t: Array, x: Array, y: Array) -> Array:
-        kwargs = {"forward": True, "rtol": None, "num_steps": 10, "solver": GRW()}
-        # TODO: need to implement GRW extending dfx.Euler
-        # TODO: need to add t1 argument to sde_solve
-        return jax.vmap(lambda x, y: sde_solve(self, None, x=x, y=y, t1=t, **kwargs))(
-            x, y
-        )
-
-    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
-    def drift(self, t: Array, yt: Array, x: Array) -> Array:
-        return jnp.zeros_like(yt)
-
-    @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]")
-    def diffusion(self, t, yt, x) -> LinearOperator:
-        """projection operator"""
-        Ktt = self.limiting_gram(yt)
-        # np = yt.shape[-2] * yt.shape[-1]
-        # Ktt = Ktt._add_diagonal(get_config().jitter * identity(np))
-        sqrt_K = Ktt.to_root()
-        beta_term = jnp.sqrt(self.beta_schedule(t))
-        diffusion = beta_term * sqrt_K
-        return diffusion
-
-    def grad_log_heat_kernel_exp(self, x0, x, t):
-        return self.metric.log(x0, x) / jnp.expand_dims(t, -1)
-
-    def grad_marginal_log_prob(self, x0, x, t, thresh, n_max):
-        cond = jnp.expand_dims(t <= thresh, -1)
-        approx = self.grad_log_heat_kernel_exp(x0, x, t)
-        log_heat_kernel = lambda x0, x, s: jnp.reshape(
-            self._log_heat_kernel(x0, x, s, n_max=n_max), ()
-        )
-        logp_grad_fn = jax.grad(log_heat_kernel, argnums=1)
-        logp_grad = jax.vmap(logp_grad_fn)(x0, x, t)
-        exact = self.to_tangent(logp_grad, x)
-        return jnp.where(cond, approx, exact)
-
-    def _log_heat_kernel(self, x0, x, t, n_max):
-        """
-        log p_t(x, y) = \sum^\infty_n e^{-t \lambda_n} \psi_n(x) \psi_n(y)
-        = \sum^\infty_n e^{-n(n+1)t} \frac{2n+d-1}{d-1} \frac{1}{A_{\mathbb{S}^n}} \mathcal{C}_n^{(d-1)/2}(x \cdot y
-        """
-        from neural_diffusion_processes.utils.misc import gegenbauer_polynomials
-
-        # NOTE: Should we rely on the Russian roulette estimator even though the log would bias it?
-        if len(t.shape) == len(x.shape):
-            t = t[..., 0]
-        t = t / 2  # NOTE: to match random walk
-        d = self.dim
-        if d == 1:
-            n = jnp.expand_dims(jnp.arange(-n_max, n_max + 1), axis=-1)
-            t = jnp.expand_dims(t, axis=0)
-            sigma_squared = t  # NOTE: factor 2 is needed empirically to match kernel?
-            cos_theta = jnp.sum(x0 * x, axis=-1)
-            theta = jnp.arccos(cos_theta)
-            coeffs = jnp.exp(-jnp.power(theta + 2 * math.pi * n, 2) / 2 / sigma_squared)
-            prob = jnp.sum(coeffs, axis=0)
-            prob = prob / jnp.sqrt(2 * math.pi * sigma_squared[0])
-        else:
-            n = jnp.expand_dims(jnp.arange(0, n_max + 1), axis=-1)
-            t = jnp.expand_dims(t, axis=0)
-            coeffs = (
-                jnp.exp(-n * (n + 1) * t)
-                * (2 * n + d - 1)
-                / (d - 1)
-                / self.metric.volume
-            )
-            inner_prod = jnp.sum(x0 * x, axis=-1)
-            cos_theta = jnp.clip(inner_prod, -1.0, 1.0)
-            P_n = gegenbauer_polynomials(
-                alpha=(self.dim - 1) / 2, l_max=n_max, x=cos_theta
-            )
-            prob = jnp.sum(coeffs * P_n, axis=0)
-        return jnp.log(prob)
-
-    @check_shapes("t: []", "y: [N, y_dim]", "x: [N, x_dim]", "return: []")
-    def loss(self, key, t: Array, y: Array, x: Array, network: ScoreNetwork) -> Array:
-        raise NotImplementedError()
-        # TODO: implement ISM or DSM (approx)
-        s = self.beta_schedule.rescale_t(t)
-        kwargs = {"thresh", "n_max"}
-        logp_grad = self.grad_marginal_log_prob(x0, x, s, **kwargs)
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):
@@ -516,6 +411,7 @@ def sde_solve(
     atol: float = 1e-5,
     forward: bool = False,
     ts=None,
+    tf=None,
 ):
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
@@ -536,6 +432,7 @@ def sde_solve(
         drift_sde = lambda t, yt, arg: flatten(
             sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network)
         )
+    t1 = tf if tf is not None else t1
     dt = (t1 - t0) / num_steps  # TODO: dealing properly with endpoint?
 
     if prob_flow:
@@ -898,27 +795,31 @@ def get_exact_div_fn(fn):
 
     @check_shapes("t: []", "y: [N, y_dim]", "return: []")
     def div_fn(t, y, arg, num_context=None) -> jnp.ndarray:
-        # print("y", y.shape)
-        # print("num_context", num_context)
         y_dim = y.shape[-1]
         if num_context:
-            yc = y[:num_context]
-            y = y[num_context:]
-            # flattened_fn = lambda y: flatten(fn(t, jnp.concatenate([yc, unflatten(y, y_dim)], axis=0), arg)[num_context:])
-            flattened_fn = lambda y: fn(t, jnp.concatenate([yc, y], axis=0), arg)[
-                num_context:
-            ]
-        else:
-            # flattened_fn = lambda y: flatten(fn(t, unflatten(y, y_dim), arg))
+            # yc = y[:num_context]
+            # y = y[num_context:]
+            # flattened_fn = lambda y: fn(t, jnp.concatenate([yc, y], axis=0), arg)[
+            #     num_context:
+            # ]
             flattened_fn = lambda y: fn(t, y, arg)
-        # jac = jax.jacrev(flattened_fn)(flatten(y))
-        jac = jax.jacrev(flattened_fn)(y)
-        # print("jac", jac.shape)
-        # jac = jac.reshape(np.prod(jac.shape[:2]), np.prod(jac.shape[:2]))
-        # jac = rearrange(jac, "n1 p1 n2 p2 -> (n1 p1) (n2 p2)")
-        jac = rearrange(jac, "n1 p1 n2 p2 -> (p1 n1) (p2 n2)")
-        # print("jac", jac.shape)
-        return jnp.trace(jac, axis1=-1, axis2=-2)
+            jac = jax.jacrev(flattened_fn)(y)
+            jac = rearrange(jac, "n1 p1 n2 p2 -> (p1 n1) (p2 n2)")
+            print("jac", jac.shape)
+            trace1 = jnp.trace(jac, axis1=-1, axis2=-2)
+            flattened_fn = lambda y: fn(t, y, arg[:num_context])
+            jac = jax.jacrev(flattened_fn)(y[:num_context])
+            jac = rearrange(jac, "n1 p1 n2 p2 -> (p1 n1) (p2 n2)")
+            print("jac", jac.shape)
+            trace2 = jnp.trace(jac, axis1=-1, axis2=-2)
+            return trace1 - trace2
+        else:
+            flattened_fn = lambda y: fn(t, y, arg)
+            jac = jax.jacrev(flattened_fn)(y)
+            # jac = jac.reshape(np.prod(jac.shape[:2]), np.prod(jac.shape[:2]))
+            # jac = rearrange(jac, "n1 p1 n2 p2 -> (n1 p1) (n2 p2)")
+            jac = rearrange(jac, "n1 p1 n2 p2 -> (p1 n1) (p2 n2)")
+            return jnp.trace(jac, axis1=-1, axis2=-2)
 
     return div_fn
 
