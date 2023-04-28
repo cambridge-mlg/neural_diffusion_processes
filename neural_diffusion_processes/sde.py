@@ -690,7 +690,7 @@ def conditional_sample2(
                 dist = prior_gp(μ0t, k0t, params)(x)
                 sqrt = dist.scale.to_root()
                 var = 1.0 - jnp.exp(-sde.beta_schedule.B(t))
-                score = sqrt @ score / var
+                score = sqrt @ score / (var + 1e-3)
             elif sde.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
                 print("reverse_drift_langevin: PRECONDITIONED_K")
                 pass
