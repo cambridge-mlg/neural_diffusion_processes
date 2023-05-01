@@ -59,6 +59,7 @@ SCORE_PARAM = [
     "preconditioned_k",
     "preconditioned_s",
     "none",
+    "y0"
 ]
 
 if __name__ == "__main__":
@@ -71,9 +72,11 @@ if __name__ == "__main__":
     commands = (
         CommandsBuilder()
         # .add("config.data.dataset", ["se"])
-        .add("config.sde.limiting_kernel", ["noisy-se", "noisy-matern52", "white"])
+        .add("config.sde.limiting_kernel", ["noisy-se"])
         .add("config.sde.score_parametrization", SCORE_PARAM)
         .add("config.sde.weighted", [True, False])
+        .add("config.sde.residual_trick", [True, False])
+        .add("config.sde.std_trick", [True, False])
         .build()
     )
 

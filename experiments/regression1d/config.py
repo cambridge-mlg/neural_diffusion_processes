@@ -13,11 +13,11 @@ class SdeConfig:
     limiting_kernel: str = "noisy-se"
     limiting_kernel_noise_variance: float = 0.05
     t0: float = 5e-4
-    score_parametrization: str = "y0"
+    score_parametrization: str = "preconditioned_s"
     std_trick: bool = False
-    residual_trick: bool = True
+    residual_trick: bool = False
     weighted: bool = False
-    loss: str = "l1"
+    loss: str = "l2"
 
     def __post_init__(self):
         assert self.score_parametrization.lower() in [
@@ -30,7 +30,7 @@ class SdeConfig:
 @dataclasses.dataclass
 class OptimizationConfig:
     batch_size: int = 256
-    num_epochs: int = 200
+    num_epochs: int = 300
     num_warmup_epochs: int = 10
     num_decay_epochs: int = 200
     init_lr: float = 1e-4
@@ -45,7 +45,7 @@ class OptimizationConfig:
 @dataclasses.dataclass
 class NetworkConfig:
     num_bidim_attention_layers: int = 5
-    hidden_dim: int = 64
+    hidden_dim: int = 128
     num_heads: int = 8
     translation_invariant: bool = True
 
@@ -59,7 +59,7 @@ class EvalConfig:
 @dataclasses.dataclass
 class Config:
     seed: int = 42
-    mode: str = "eval"
+    mode: str = "train"
     eval: EvalConfig = EvalConfig()
     data: DataConfig = DataConfig()
     sde: SdeConfig = SdeConfig()

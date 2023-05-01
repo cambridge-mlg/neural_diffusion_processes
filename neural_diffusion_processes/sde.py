@@ -264,8 +264,8 @@ class SDE:
             residual = yt
             score += residual
 
-        print("WARNING ADD NAME FOR NEW TRICK")
-        score = score * jnp.exp(-0.5 * self.beta_schedule.B(t))
+        # print("WARNING ADD NAME FOR NEW TRICK")
+        # score = score * jnp.exp(-0.5 * self.beta_schedule.B(t))
 
         # set score of masked values (i.e. mask == 1) to zero
         score = score * (1. - mask[:, None])
@@ -290,13 +290,7 @@ class SDE:
                 out = - Sigma_inv_b
 
                 if self.score_parameterization == ScoreParameterization.Y0:
-                    y0s = sample_prior_gp(key, mean0, k0, params0, x, obs_noise=params0["noise_variance"], num_samples=1)
-                    return y0s[0]
-                    # raise ValueError("Exact score not implemented for ScoreParameterization.Y0")
-                    # L = Sigma_t.to_root()
-                    # eps = L.solve(unflatten(b, yt.shape[-1]))
-                    # m = mu_t(params['mean_function'], x)
-                    # return L @ eps + m
+                    raise ValueError("Exact score not implemented for ScoreParameterization.Y0")
                 elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
                     out = self.limiting_gram(x) @ out
                 elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
@@ -304,6 +298,9 @@ class SDE:
                     dist = prior_gp(μ0t, k0t, params)(x)
                     sqrt = dist.scale.to_root()
                     out = sqrt.T @ out
+                    var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+                    var += get_config().jitter
+                    out = out / var**.5
                 elif self.score_parameterization == ScoreParameterization.NONE:
                     pass
 
@@ -330,7 +327,8 @@ class SDE:
             dist = prior_gp(μ0t, k0t, params)(x)
             sqrt = dist.scale.to_root()
             var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
-            out = unflatten(sqrt @ flatten(out), yt.shape[-1]) / (var + get_config().jitter)
+            var += get_config().jitter
+            out = unflatten(sqrt @ flatten(out), yt.shape[-1]) / var**.5
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
             pass
         return out
@@ -383,8 +381,8 @@ class SDE:
             precond_noise = sqrt @ Z
             loss = loss_fn(var * score_nn_output + unflatten(precond_noise, y_dim))
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
-            loss = loss_fn(score_nn_output + unflatten(Z, y_dim))
-            check_shape(loss, "[N, y_dim]")
+            print("mul by std")
+            loss = loss_fn(var**.5 * score_nn_output + unflatten(Z, y_dim))
         elif self.score_parameterization == ScoreParameterization.NONE:
             loss = loss_fn(unflatten(sqrt @ flatten(score_nn_output), y_dim) + unflatten(Z, y_dim))
 

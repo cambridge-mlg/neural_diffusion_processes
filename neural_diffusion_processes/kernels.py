@@ -563,6 +563,7 @@ def get_kernel(kernel_type: str, active_dims = Optional[List[int]]) -> jaxkern.b
             jaxkern.stationary.RBF(active_dims=active_dims),
         ])
     elif kernel_type.lower() in _SQUARED_EXPONENTIAL_NAMES:
+        print("Using RBF kernel as limiting kernel")
         k = jaxkern.stationary.RBF(active_dims=active_dims)
     else:
         raise NotImplementedError("Unknown kernel: %s" % kernel_type)

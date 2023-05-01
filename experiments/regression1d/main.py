@@ -79,7 +79,7 @@ except:
 
 
 USE_TRUE_SCORE = False
-EXPERIMENT = "regression1d-May01-lim"
+EXPERIMENT = "regression1d-May01-lim2"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -370,16 +370,10 @@ def main(_):
         hyps["kernel"]["variance"] = 1. - v
         hyps["kernel"] = [hyps["kernel"], {"variance": config.sde.limiting_kernel_noise_variance}]
 
-    factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
-    assert isinstance(factory, regression1d.GPFunctionalDistribution)
-    mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
-
     sde = ndp.sde.SDE(
-        # limiting_kernel,
-        kernel0,
+        limiting_kernel,
         gpjax.mean_functions.Zero(),
-        # hyps,
-        params0,
+        hyps,
         beta,
         score_parameterization=ndp.sde.ScoreParameterization.get(
             config.sde.score_parametrization
@@ -577,7 +571,6 @@ def main(_):
     )
 
     if config.mode == "eval": num_steps = 0
-    # elif is_smoketest(config): num_steps = 250
 
     actions = [
         ml_tools.actions.PeriodicCallback(
