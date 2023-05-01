@@ -13,16 +13,24 @@ class SdeConfig:
     limiting_kernel: str = "noisy-se"
     limiting_kernel_noise_variance: float = 0.05
     t0: float = 5e-4
-    is_score_precond: bool = True
-    std_trick: bool = True
+    score_parametrization: str = "y0"
+    std_trick: bool = False
     residual_trick: bool = True
-    weighted: bool = True
+    weighted: bool = False
+    loss: str = "l1"
+
+    def __post_init__(self):
+        assert self.score_parametrization.lower() in [
+            "preconditioned_s", "preconditioned_k", "none", "y0",
+        ], "Unknown score parametrization {}.".format(self.score_parametrization)
+
+        assert self.loss in ["l1", "l2"], "Unknown loss {}.".format(self.loss)
 
 
 @dataclasses.dataclass
 class OptimizationConfig:
     batch_size: int = 256
-    num_epochs: int = 400
+    num_epochs: int = 200
     num_warmup_epochs: int = 10
     num_decay_epochs: int = 200
     init_lr: float = 1e-4
@@ -45,13 +53,13 @@ class NetworkConfig:
 @dataclasses.dataclass
 class EvalConfig:
     batch_size: int = 32
-    num_samples_in_epoch: int = int(2**10)
+    num_samples_in_epoch: int = int(2**7)
 
 
 @dataclasses.dataclass
 class Config:
     seed: int = 42
-    mode: str = "train"
+    mode: str = "eval"
     eval: EvalConfig = EvalConfig()
     data: DataConfig = DataConfig()
     sde: SdeConfig = SdeConfig()

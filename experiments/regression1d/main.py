@@ -78,8 +78,8 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = True
-EXPERIMENT = "regression1d-Apr28"
+USE_TRUE_SCORE = False
+EXPERIMENT = "regression1d-May01-lim"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -347,7 +347,7 @@ def main(_):
         config.network = restored_config.network
     elif config.mode == "eval":
         print("****** eval mode:")
-        f = str(experiment_dir_if_exists / "config.yaml")
+        f = str((experiment_dir_if_exists / "config.yaml").absolute())
         print(f"Building and evaluating new model as {f} did not exist.")
 
 
@@ -370,32 +370,27 @@ def main(_):
         hyps["kernel"]["variance"] = 1. - v
         hyps["kernel"] = [hyps["kernel"], {"variance": config.sde.limiting_kernel_noise_variance}]
 
+    factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
+    assert isinstance(factory, regression1d.GPFunctionalDistribution)
+    mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
+
     sde = ndp.sde.SDE(
-        limiting_kernel,
+        # limiting_kernel,
+        kernel0,
         gpjax.mean_functions.Zero(),
-        hyps,
+        # hyps,
+        params0,
         beta,
-        # is_score_preconditioned=config.sde.is_score_precond if not USE_TRUE_SCORE else False,
-        score_parameterization=ndp.sde.ScoreParameterization.PRECONDITIONED_S,
+        score_parameterization=ndp.sde.ScoreParameterization.get(
+            config.sde.score_parametrization
+        ),
         # Below parameterisations are all set to False if we use the true score.
         std_trick=config.sde.std_trick if not USE_TRUE_SCORE else False,
         residual_trick=config.sde.residual_trick if not USE_TRUE_SCORE else False,
         weighted=config.sde.weighted,
         exact_score=USE_TRUE_SCORE,
+        loss_type=config.sde.loss,
     )
-
-    print(">>>>>>>>>>>>")
-
-    t = 0.1
-    x = jnp.linspace(-2, 2, 6)[:, None]
-    yt = jnp.ones((6, 1)) * .01
-    μ0t, k0t, params = sde.p0t(t, yt)
-    dist = ndp.kernels.prior_gp(μ0t, k0t, params)(x)
-    scale = dist.scale
-    sqrt = scale.to_root()
-    scale2 = sqrt.to_dense() @ sqrt.T.to_dense()
-
-
 
     if USE_TRUE_SCORE:
         factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
@@ -404,14 +399,6 @@ def main(_):
         true_score_network = sde.get_exact_score(mean0, kernel0, params0)
     else:
         true_score_network = None
-    
-    mask = jnp.zeros_like(x[...,0])
-    sde.reverse_drift_ode(
-        None, t, yt, x, mask, true_score_network
-    )
-    print("<<<<<<<<<<<<<<<<<")
-
-    # exit(0)
 
     ##### Plot a training databatch
     batch0 = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "training")
@@ -598,7 +585,7 @@ def main(_):
             callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=None, # if is_smoketest(config) else num_steps // 2,
+            every_steps=None if is_smoketest(config) else num_steps // 4,
             callback_fn=lambda step, t, **kwargs: [
                 cb(step, t, **kwargs) for cb in task_callbacks
             ]

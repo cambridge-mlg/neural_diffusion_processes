@@ -55,9 +55,14 @@ DATASETS = [
     "sawtooth",
 ]
 
+SCORE_PARAM = [
+    "preconditioned_k",
+    "preconditioned_s",
+    "none",
+]
 
 if __name__ == "__main__":
-    NAME = "commands_regression1d.txt"
+    NAME = "commands_lim.txt"
 
     if os.path.exists(NAME):
         print("File to store script already exists", NAME)
@@ -65,9 +70,10 @@ if __name__ == "__main__":
 
     commands = (
         CommandsBuilder()
-        .add("config.data.dataset", DATASETS)
-        .add("config.sde.limiting_kernel", ["white", "noisy-se", "noisy-matern52"])
-        .add("config.network.translation_invariant", [True, False])
+        # .add("config.data.dataset", ["se"])
+        .add("config.sde.limiting_kernel", ["noisy-se", "noisy-matern52", "white"])
+        .add("config.sde.score_parametrization", SCORE_PARAM)
+        .add("config.sde.weighted", [True, False])
         .build()
     )
 
