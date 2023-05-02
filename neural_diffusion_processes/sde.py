@@ -295,7 +295,7 @@ class SDE:
                     out = self.limiting_gram(x) @ out
                     var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
                     var += get_config().jitter
-                    out = out / var**.5
+                    out = out * var**.5
                 elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
                     μ0t, k0t, params = self.p0t(t, yt)
                     dist = prior_gp(μ0t, k0t, params)(x)
@@ -342,7 +342,7 @@ class SDE:
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
             var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
             var += get_config().jitter
-            out = out / var **.5
+            out = out / (var **.5)
             
         return out
 

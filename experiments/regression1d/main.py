@@ -78,7 +78,7 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = True
+USE_TRUE_SCORE = False
 EXPERIMENT = "regression1d-May02-lim"
 
 
