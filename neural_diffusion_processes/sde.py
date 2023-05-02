@@ -293,6 +293,9 @@ class SDE:
                     raise ValueError("Exact score not implemented for ScoreParameterization.Y0")
                 elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
                     out = self.limiting_gram(x) @ out
+                    var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+                    var += get_config().jitter
+                    out = out / var**.5
                 elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
                     μ0t, k0t, params = self.p0t(t, yt)
                     dist = prior_gp(μ0t, k0t, params)(x)
@@ -379,7 +382,7 @@ class SDE:
             loss = loss_fn(score_nn_output - y)
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
             precond_noise = sqrt @ Z
-            loss = loss_fn(var * score_nn_output + unflatten(precond_noise, y_dim))
+            loss = loss_fn(var**.5 * score_nn_output + unflatten(precond_noise, y_dim))
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
             print("mul by std")
             loss = loss_fn(var**.5 * score_nn_output + unflatten(Z, y_dim))
