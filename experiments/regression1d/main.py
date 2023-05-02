@@ -78,8 +78,8 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = False
-EXPERIMENT = "regression1d-May01-lim2"
+USE_TRUE_SCORE = True
+EXPERIMENT = "regression1d-May02-lim"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")

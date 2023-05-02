@@ -319,6 +319,7 @@ class SDE:
             μ0t, k0t, params = self.p0t(t, y0)
             dist = prior_gp(μ0t, k0t, params)(x)
             b = flatten(yt) - dist.loc
+            # old:
             # Score
             out = - dist.scale.solve(unflatten(b, yt.shape[-1]))
             # K score
@@ -326,14 +327,23 @@ class SDE:
         elif self.score_parameterization == ScoreParameterization.NONE:
             out = unflatten(self.limiting_gram(x) @ flatten(out), yt.shape[-1])
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
-            μ0t, k0t, params = self.p0t(t, yt)
-            dist = prior_gp(μ0t, k0t, params)(x)
-            sqrt = dist.scale.to_root()
+            Ktt = self.limiting_gram(x)
+            Ktt = Ktt._add_diagonal(get_config().jitter * identity(int(np.prod(yt.shape))))
+            S = Ktt.to_root()
+            out = unflatten(S @ flatten(out), yt.shape[-1])
+
+            # old:
+            # μ0t, k0t, params = self.p0t(t, yt)
+            # dist = prior_gp(μ0t, k0t, params)(x)
+            # sqrt = dist.scale.to_root()
+            # var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+            # var += get_config().jitter
+            # out = unflatten(sqrt @ flatten(out), yt.shape[-1]) / var**.5
+        elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
             var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
             var += get_config().jitter
-            out = unflatten(sqrt @ flatten(out), yt.shape[-1]) / var**.5
-        elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
-            pass
+            out = out / var **.5
+            
         return out
 
     @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")

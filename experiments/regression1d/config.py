@@ -15,8 +15,8 @@ class SdeConfig:
     t0: float = 5e-4
     score_parametrization: str = "preconditioned_s"
     std_trick: bool = False
-    residual_trick: bool = False
-    weighted: bool = False
+    residual_trick: bool = True
+    weighted: bool = True
     loss: str = "l2"
 
     def __post_init__(self):
