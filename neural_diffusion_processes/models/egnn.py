@@ -120,11 +120,7 @@ class E_GCL(hk.Module):
         w_init = hk.initializers.VarianceScaling(0.001, "fan_avg", "uniform")
         # torch.nn.init.xavier_uniform_(layer.weight, gain=0.001)
         layer = hk.Linear(1, with_bias=False, w_init=w_init)
-
-        coord_mlp = []
-        coord_mlp.append(hk.Linear(self.hidden_dim))
-        coord_mlp.append(self.act_fn)
-        coord_mlp.append(layer)
+        coord_mlp = [hk.Linear(self.hidden_dim), self.act_fn, layer]
         if self.tanh:
             coord_mlp.append(jnp.tanh)
         coord_mlp = hk.Sequential(coord_mlp)
@@ -410,13 +406,19 @@ class EGNNScore(EGNN):
         "return: [batch_size, num_points, output_dim]",
     )
     def __call__(self, x, y, t):
-        print("EGNNScore.__call__")
+        #     print("EGNNScore.__call__")
         return jax.vmap(self.score)(x, y, t)
 
+    # def __call__(self, x, y):
+    # print("EGNNScore.__call__")
+    # return jax.vmap(self.score)(x, y)
+
     def score(self, x, y, t):
+        # def score(self, x, y):
         # compute graph
         if self.k > 0:
-            edges = get_edges_knn(x, self.k)
+            edges = get_edges_knn(x, min(self.k, x.shape[0]))
+            # edges = get_edges_knn(x, self.k)
             print("edges", edges[0].shape)
         elif self.k == 0:
             # edges = get_edges_knn(x, 20)
@@ -440,13 +442,15 @@ class EGNNScore(EGNN):
             raise NotImplementedError()
 
         h = jnp.linalg.norm(x, axis=-1, keepdims=True)
-        # t = jnp.broadcast_to(t[None, :], (x.shape[0], t.shape[-1]))
-        t = jnp.broadcast_to(t[None, ...], (x.shape[0]))
-        t_embedding = timestep_embedding(t, self.hidden_dim).squeeze()
-        t = timestep_embedding(t, 16).squeeze()  # TODO: to factor
-        # node_attr = t if self.node_attr else None
+
+        # # t = jnp.broadcast_to(t[None, :], (x.shape[0], t.shape[-1]))
+        # t = jnp.broadcast_to(t[None, ...], (x.shape[0]))
+        # t_embedding = timestep_embedding(t, self.hidden_dim).squeeze()
+        # t = timestep_embedding(t, 16).squeeze()  # TODO: to factor
+        # # node_attr = t if self.node_attr else None
+        # h = jnp.concatenate([h, t], axis=-1)
         node_attr = None
-        h = jnp.concatenate([h, t], axis=-1)
+
         h = hk.Linear(self.hidden_dim)(h)
         act_fn = get_activation(self.act_fn)
 
@@ -477,18 +481,18 @@ class EGNNScore(EGNN):
                 tanh=self.tanh,
                 coords_agg=self.coords_agg,
             )
-            print("t_embedding", t_embedding.shape)
-            if self.node_attr:
-                # t = hk.Linear(self.hidden_dim)(t_embedding)  # [:, None, None, :]
-                t = hk.Linear(16)(t_embedding)  # [:, None, None, :]
-                node_attr = t
-            print("t", t.shape)
-            print("h", h.shape)
+            # print("t_embedding", t_embedding.shape)
+            # if self.node_attr:
+            #     # t = hk.Linear(self.hidden_dim)(t_embedding)  # [:, None, None, :]
+            #     t = hk.Linear(16)(t_embedding)  # [:, None, None, :]
+            #     node_attr = t
+            # print("t", t.shape)
+            # print("h", h.shape)
             # h = h + hk.Linear(self.hidden_dim)(t_embedding)
-            print("h", h.shape)
+            # print("h", h.shape)
             # h = jnp.concatenate([h, t], axis=-1)
             # h, y, _ = layer(h, edges, y, edge_attr=edge_attr, node_attr=node_attr)
             # h, y, _ = layer(h, edges, x, y, edge_attr=edge_attr, node_attr=node_attr)
             h, y, x, _ = layer(h, edges, x, y, edge_attr=edge_attr, node_attr=node_attr)
-            print("h, y", h.shape, y.shape)
+            # print("h, y", h.shape, y.shape)
         return y

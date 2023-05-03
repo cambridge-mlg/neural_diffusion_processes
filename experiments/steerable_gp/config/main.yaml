@@ -40,11 +40,13 @@ optim:
   batch_size: 40
   num_steps: 80_000
   lr: 5e-4
-  learning_rate: ${eval:${optim.lr}*${eval:${optim.batch_size}/40}}
-  ema_rate: 0.999
+  # learning_rate: ${eval:${optim.lr}*${eval:${optim.batch_size}/40}}
+  learning_rate: ${optim.lr}
+  ema_rate: 0.99
 
 eval:
   batch_size: ${eval:${optim.batch_size}//4}
+  n_test: 1
   prior:
     n_steps: 100
     rtol: 1e-4

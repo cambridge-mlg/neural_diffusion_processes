@@ -711,6 +711,7 @@ def conditional_sample2(
             None,
             made_jump=False,
         )
+        yt = yt_m_dt[num_context * y_dim :]
         # yt_m_dt = yt_augmented
         # yt_m_dt += -dt * reverse_drift_diffeq(t, yt_augmented, x_augmented)
         # # yt_m_dt += terms_reverse.contr(t, t-dt) * terms_reverse.vf(t, yt_augmented, x_augmented)
