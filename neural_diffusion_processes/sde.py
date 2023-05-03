@@ -608,7 +608,8 @@ def conditional_sample2(
 
         shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
         key, subkey = jax.random.split(key)
-        bm = dfx.VirtualBrownianTree(t0=t1, t1=t0, tol=dt, shape=shape, key=key)
+        # bm = dfx.VirtualBrownianTree(t0=t1, t1=t0, tol=dt, shape=shape, key=key)
+        bm = dfx.UnsafeBrownianPath(shape=shape, key=key)
         terms_reverse = dfx.MultiTerm(
             dfx.ODETerm(reverse_drift_sde), LinOpControlTerm(diffusion, bm)
         )
@@ -643,11 +644,11 @@ def conditional_sample2(
 
     key, subkey = jax.random.split(key)
     shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
-    bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
+    # bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
     # bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
-    langevin_terms = dfx.MultiTerm(
-        dfx.ODETerm(reverse_drift_langevin), LinOpControlTerm(diffusion_langevin, bm)
-    )
+    # langevin_terms = dfx.MultiTerm(
+    #     dfx.ODETerm(reverse_drift_langevin), LinOpControlTerm(diffusion_langevin, bm)
+    # )
 
     def sample_marginal(key, t, x_context, y_context):
         if len(y_context) == 0:
@@ -711,6 +712,7 @@ def conditional_sample2(
             None,
             made_jump=False,
         )
+        # yt = yt_m_dt[num_context * y_dim :]
         # yt_m_dt = yt_augmented
         # yt_m_dt += -dt * reverse_drift_diffeq(t, yt_augmented, x_augmented)
         # # yt_m_dt += terms_reverse.contr(t, t-dt) * terms_reverse.vf(t, yt_augmented, x_augmented)

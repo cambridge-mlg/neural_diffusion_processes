@@ -1,0 +1,7 @@
+default_solver:
+  _target_: diffrax.Euler
+
+kwargs:
+  rtol: none
+  atol: none
+  num_steps: 1000

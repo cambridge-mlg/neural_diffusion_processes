@@ -4,9 +4,7 @@
 
 # %%
 import os
-
-os.environ["GEOMSTATS_BACKEND"] = "jax"
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+import setGPU
 import jax
 import numpy as np
 import jax.numpy as jnp
@@ -39,6 +37,9 @@ from equinox import filter_jit
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.basemap import Basemap
+import matplotlib as mpl
+mpl.rcParams['figure.dpi'] = 300
+
 
 from omegaconf import OmegaConf
 import hydra
@@ -72,7 +73,9 @@ def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:
 
 log = logging.getLogger(__name__)
 # %%
-run_path = "/data/ziz/not-backed-up/mhutchin/score-sde-sp/results/storm_data/net.hidden_dim=128,optim.batch_size=256,optim.num_steps=500000/0"
+# run_path = "/data/ziz/not-backed-up/mhutchin/score-sde-sp/results/storm_data/net.hidden_dim=128,optim.batch_size=256,optim.num_steps=500000/0"
+# run_path = "/data/ziz/not-backed-up/mhutchin/score-sde-sp/results/storm_data/data.normalise=true,kernel.params.variance=2.0,net.hidden_dim=128,optim.batch_size=256,optim.num_steps=500000/0"
+run_path = "/data/ziz/not-backed-up/mhutchin/score-sde-sp/results/storm_data/data.basin=na,data.normalise=True,optim.num_steps=500000/0"
 cfg = OmegaConf.load(run_path + "/.hydra/config.yaml")
 # %%
     # jax.config.update("jax_enable_x64", True)
@@ -517,7 +520,7 @@ state = load_checkpoint(state, ckpt_path, cfg.optim.num_steps)
 # %%
 # plots(state, next(key_iter), "post_train")
 # %%
-def plot_tracks(xs, ys, axes, title="", color=None, lw=0.3):
+def plot_tracks(xs, ys, axes, title="", lw=0.3, **kwargs):
     m = Basemap(
         projection="mill",
         llcrnrlat=-80,
@@ -567,120 +570,39 @@ def plot_tracks(xs, ys, axes, title="", color=None, lw=0.3):
     m_coords = m_coords.at[nan_index].set(jnp.nan)
 
     # for row in m_coords:
-    axes.plot(m_coords[..., 1].T, m_coords[..., 0].T, linewidth=lw, color=color)
+    axes.plot(m_coords[..., 1].T, m_coords[..., 0].T, lw=lw, **kwargs)
     # lc = LineCollection(jnp.flip(m_coords, axis=-1), array=jnp.linspace(0,1, m_coords.shape[1])[None, :], linewidth=0.3, cmap='viridis')
 
     axes.set_title(title)
 
-fig_comp, axes = plt.subplots(
-    1,
-    2,
-    figsize=(2*4 * 2, 2* 1 * (2 + 0.5)),
-    sharex=True,
-    sharey=True,
-    squeeze=True,
-)
-
-
-plot_tracks(x_grid, y_model_heun[:100], axes[0], "Model samples (heun)")
-plot_tracks(x_grid, y_model[:100], axes[1], "Model samples (euler)")
-# %%
-import diffrax as dfx
-@jit
-def reverse_sample2(key, x_grid, params, yT=None):
-    print("reverse_sample", x_grid.shape)
-    net_ = partial(net, params)
-    return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=False, solver=dfx.Euler(), rtol=None, atol=None)
-
-
-x_grid = plot_batch.xs[0]
-
-n_samples = 100
-N = 100
-k = jax.random.split(next(key_iter), N)
-y_model = jnp.concatenate(
-    [
-        vmap(reverse_sample2, in_axes=[0, None, None, 0])(
-            jax.random.split(k[i], n_samples),
-            x_grid,
-            state.params_ema,
-            vmap(sde.sample_prior, in_axes=[0, None])(
-                jax.random.split(k[i], n_samples), x_grid
-            ).squeeze(),
-            # ts_bwd,
-        ).squeeze()
-        for i in tqdm.trange(N)
-    ],
-    axis=0,
-)
-
-# %%
-y_model_heun = jnp.concatenate(
-    [
-        vmap(reverse_sample, in_axes=[0, None, None, 0])(
-            jax.random.split(k[i], n_samples),
-            x_grid,
-            state.params_ema,
-            vmap(sde.sample_prior, in_axes=[0, None])(
-                jax.random.split(k[i], n_samples), x_grid
-            ).squeeze(),
-            # ts_bwd,
-        ).squeeze()
-        for i in range(N)
-    ],
-    axis=0,
-)
-# %%
-
-fig_comp, axes = plt.subplots(
-    1,
-    2,
-    figsize=(2*4 * 2, 2* 1 * (2 + 0.5)),
-    sharex=True,
-    sharey=True,
-    squeeze=True,
-)
-
-
-plot_tracks(data[0], data[1], axes[0], "Full data")
-plot_tracks(x_grid, y_model, axes[1], "Model samples")
-# %%
-
-fig_comp, axes = plt.subplots(
-    1,
-    2,
-    figsize=(2*4 * 2, 2* 1 * (2 + 0.5)),
-    sharex=True,
-    sharey=True,
-    squeeze=True,
-)
-
-
-plot_tracks(x_grid, y_model_heun[:100], axes[0], "Model samples (heun)")
-plot_tracks(x_grid, y_model[:100], axes[1], "Model samples (euler)")
-# %%
-
-def plot_tracks2(xs, ys, axes, title="", lon0=-105, lat0=40):
-    m = Basemap(projection='ortho',lon_0=lon0,lat_0=lat0,resolution='l', ax=axes)
-
+def plot_tracks_latlon(xs, ys, axes, title="", lw=0.3, **kwargs):
+    # m = Basemap(
+    #     projection="mill",
+    #     llcrnrlat=-80,
+    #     urcrnrlat=80,
+    #     llcrnrlon=LONSTART,
+    #     urcrnrlon=LONSTOP,
+    #     lat_ts=20,
+    #     ax=axes,
+    # )
     # m = Basemap(projection='npstere', lon_0=0, boundinglat=-30)
     # m = Basemap(projection='ortho',lat_0=45,lon_0=-100,resolution='l')
 
-    m.drawmapboundary(fill_color="#ffffff")
-    m.fillcontinents(color="#cccccc", lake_color="#ffffff")
-    m.drawcoastlines(color="#000000", linewidth=0.2)
-    m.drawparallels(
-        np.linspace(-60, 60, 7, endpoint=True, dtype=int),
-        linewidth=0.1,
-        # labels=[True, False, False, False],
-    )
-    m.drawmeridians(
-        np.linspace(-160, 160, 9, endpoint=True, dtype=int),
-        linewidth=0.1,
-        # labels=[False, False, False, True],
-    )
+    # m.drawmapboundary(fill_color="#ffffff")
+    # m.fillcontinents(color="#cccccc", lake_color="#ffffff")
+    # m.drawcoastlines(color="#000000", linewidth=0.2)
+    # m.drawparallels(
+    #     np.linspace(-60, 60, 7, endpoint=True, dtype=int),
+    #     linewidth=0.1,
+    #     # labels=[True, False, False, False],
+    # )
+    # m.drawmeridians(
+    #     np.linspace(-160, 160, 9, endpoint=True, dtype=int),
+    #     linewidth=0.1,
+    #     # labels=[False, False, False, True],
+    # )
 
-    ys = ys * transform[1] + transform[0]
+    # ys = ys * transform[1] + transform[0]
     dists = jnp.linalg.norm((ys[:, :-1] - ys[:, 1:]), axis=-1)
     nan_index = dists > ((50 * RADDEG) ** 2)
     nan_index = jnp.repeat(
@@ -693,45 +615,507 @@ def plot_tracks2(xs, ys, axes, title="", lon0=-105, lat0=40):
     lons = ((lons + LONSTART) % 360) - LONSTART  # Put into plot frame
     lats = ys[..., 0] / RADDEG
 
-    m_coords = jnp.stack(
-        m(
-            lons,
-            lats,
-        )[::-1],
-        axis=-1,
-    )
-    m_coords = m_coords.at[nan_index].set(jnp.nan)
+    # m_coords = jnp.stack(
+    #     m(
+    #         lons,
+    #         lats,
+    #     )[::-1],
+    #     axis=-1,
+    # )
+    # m_coords = m_coords.at[nan_index].set(jnp.nan)
 
-    for row in m_coords:
-        m.plot(row[..., 1], row[..., 0], linewidth=0.3, latlon=False)
-    axes.set_title(title)
+    # for row in m_coords:
+    # axes.plot(m_coords[..., 1].T, m_coords[..., 0].T, lw=lw, **kwargs)
+    axes[0].plot(xs[..., 0].T, ys[..., 0].T, lw=lw, **kwargs)
+    axes[1].plot(xs[..., 0].T, ys[..., 1].T, lw=lw, **kwargs)
+    # lc = LineCollection(jnp.flip(m_coords, axis=-1), array=jnp.linspace(0,1, m_coords.shape[1])[None, :], linewidth=0.3, cmap='viridis')
 
-x_grid = plot_batch.xs[0]
+    axes[0].set_title("lat")
+    axes[1].set_title("lon")
+
+    # axes[0].set_ylim([-jnp.pi/2, jnp.pi/2])
+    # axes[1].set_ylim([-jnp.pi, jnp.pi])
+
 
 fig_comp, axes = plt.subplots(
     1,
-    4,
-    figsize=(4 * 2 * 1, 4 * 2 * (1 + 0.25)),
+    2,
+    figsize=(2*4 * 2, 2* 1 * (2 + 0.5)),
     sharex=True,
     sharey=True,
     squeeze=True,
 )
 
-lat0=0
-lon1=-90
-lon2=140
-plot_tracks2(data[0], data[1], axes[0], "Full data", lon0=lon1, lat0=lat0)
-plot_tracks2(data[0], data[1], axes[1], "Full data", lon0=lon2, lat0=lat0)
-plot_tracks2(x_grid, y_model, axes[2], "Model samples", lon0=lon1, lat0=lat0)
-plot_tracks2(x_grid, y_model, axes[3], "Model samples", lon0=lon2, lat0=lat0)
+
+# plot_tracks(x_grid, y_model_heun[:100], axes[0], "Model samples (heun)")
+# plot_tracks(x_grid, y_model[:100], axes[1], "Model samples (euler)")
+# %%
+import diffrax as dfx
+
+@jit
+def reverse_sample_euler(key, x_grid, params, yT=None, n_steps=1000):
+    print("reverse_sample", x_grid.shape)
+    net_ = partial(net, params)
+    return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=False, solver=dfx.Euler(), rtol=None, atol=None, num_steps=n_steps)
+
+@jit
+def reverse_sample_heun(key, x_grid, params, yT=None, n_steps=1000):
+    print("reverse_sample", x_grid.shape)
+    net_ = partial(net, params)
+    return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=False)
+
+@jit
+def reverse_ode_euler(key, x_grid, params, yT=None, n_steps=1000):
+    print("reverse_sample", x_grid.shape)
+    net_ = partial(net, params)
+    return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=True, solver=dfx.Euler(), rtol=None, atol=None, num_steps=n_steps)
+
+@jit
+def reverse_ode_heun(key, x_grid, params, yT=None, n_steps=1000):
+    print("reverse_sample", x_grid.shape)
+    net_ = partial(net, params)
+    return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=True)
+
+x_grid = plot_batch.xs[0]
+
+
+def batched_sample(key, x_grid, sample_fn, prior_sample_fn, n_batches, n_samples):
+    k = jax.random.split(key, n_batches)
+    return jnp.concatenate(
+        [
+            vmap(sample_fn, in_axes=[0, None, None, 0])(
+                jax.random.split(k[i], n_samples),
+                x_grid,
+                state.params_ema,
+                vmap(prior_sample_fn, in_axes=[0, None])(
+                    jax.random.split(k[i], n_samples), x_grid
+                ).squeeze(),
+                # ts_bwd,
+            ).squeeze()
+            for i in tqdm.trange(n_batches)
+        ],
+        axis=0,
+    )
+
+y_euler = batched_sample(
+    next(key_iter),
+    x_grid,
+    reverse_sample_euler,
+    sde.sample_prior,
+    1,
+    100
+)
+
+y_heun = batched_sample(
+    next(key_iter),
+    x_grid,
+    reverse_sample_heun,
+    sde.sample_prior,
+    1,
+    100
+)
+
+y_euler_ode = batched_sample(
+    next(key_iter),
+    x_grid,
+    reverse_ode_euler,
+    sde.sample_prior,
+    1,
+    100
+)
+
+y_heun_ode = batched_sample(
+    next(key_iter),
+    x_grid,
+    reverse_ode_heun,
+    sde.sample_prior,
+    1,
+    100
+)
+
+fig, axes = plt.subplots(
+    2,2,
+    figsize=(2*8, 2*4), sharex=True, sharey=True,
+)
+
+plot_tracks(None, y_euler, axes[0][0], "Euler SDE")
+plot_tracks(None, y_heun, axes[0][1], "Heun SDE")
+plot_tracks(None, y_euler_ode, axes[1][0], "Euler ODE")
+plot_tracks(None, y_heun_ode, axes[1][1], "Heun ODE")
+# %%
+from neural_diffusion_processes.sde import SDE, ScoreNetwork, LinOpControlTerm, Array, LinearOperator, identity
+
+def langevin_correct(
+    sde: SDE,
+    network: ScoreNetwork,
+    t,
+    x_context,
+    y_context,
+    x_test,
+    y_test,
+    key,
+    num_steps: int = 100,
+    num_inner_steps: int = 5,
+    prob_flow: bool = True,
+    langevin_kernel=True,
+    psi: float = 1.0,
+    lambda0: float = 1.0,
+    tau: float = None,
+):
+    # TODO: Langevin dynamics option
+
+    num_context = len(x_context)
+    num_target = len(x_test)
+    y_dim = y_context.shape[-1]
+    shape_augmented_state = [(num_context + num_target) * y_dim]
+    x_augmented = jnp.concatenate([x_context, x_test], axis=0)
+
+    t0 = sde.beta_schedule.t0
+    t1 = sde.beta_schedule.t1
+    ts = jnp.linspace(t1, t0, num_steps, endpoint=True)
+    dt = ts[0] - ts[1]
+    tau = tau if tau is not None else t1
+
+    solver = dfx.Euler()
+
+    diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
+    if not prob_flow:
+        # reverse SDE:
+        reverse_drift_sde = lambda t, yt, arg: flatten(
+            sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network)
+        )
+
+        shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
+        key, subkey = jax.random.split(key)
+        bm = dfx.VirtualBrownianTree(t0=t1, t1=t0, tol=dt, shape=shape, key=key)
+        terms_reverse = dfx.MultiTerm(
+            dfx.ODETerm(reverse_drift_sde), LinOpControlTerm(diffusion, bm)
+        )
+    else:
+        # reverse ODE:
+        reverse_drift_ode = lambda t, yt, arg: flatten(
+            sde.reverse_drift_ode(key, t, unflatten(yt, y_dim), arg, network)
+        )
+        terms_reverse = dfx.ODETerm(reverse_drift_ode)
+
+    # langevin dynamics:
+    def reverse_drift_langevin(t, yt, x) -> Array:
+        yt = unflatten(yt, y_dim)
+        score = flatten(sde.score(key, t, yt, x, network))
+        if langevin_kernel:
+            if sde.is_score_preconditioned:
+                score = score
+            else:
+                score = sde.limiting_gram(x) @ score
+        else:
+            if sde.is_score_preconditioned:
+                score = sde.limiting_gram(x).solve(score)
+            else:
+                score = score
+        return 0.5 * sde.beta_schedule(t) * score
+
+    def diffusion_langevin(t, yt, x) -> LinearOperator:
+        if langevin_kernel:
+            return diffusion(t, yt, x)
+        else:
+            return jnp.sqrt(sde.beta_schedule(t)) * identity(yt.shape[-1])
+
+    key, subkey = jax.random.split(key)
+    shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
+    # bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
+    # bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
+    # langevin_terms = dfx.MultiTerm(
+    #     dfx.ODETerm(reverse_drift_langevin), LinOpControlTerm(diffusion_langevin, bm)
+    # )
+
+    def sample_marginal(key, t, x_context, y_context):
+        if len(y_context) == 0:
+            return y_context
+        else:
+            return flatten(sde.sample_marginal(key, t, x_context, y_context))
+
+    def inner_loop(key, ys, t):
+        # reverse step
+        yt, yt_context = ys
+        yt_context = sample_marginal(
+            key, t, x_context, y_context
+        )  # NOTE: should resample?
+        yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
+
+        # yt_m_dt, *_ = solver.step(
+        #     langevin_terms,
+        #     t - dt,
+        #     t,
+        #     # t + dt,
+        #     yt_augmented,
+        #     x_augmented,
+        #     None,
+        #     made_jump=False,
+        # )
+
+        yt_m_dt = yt_augmented
+        yt_m_dt += (
+            lambda0
+            * psi
+            * dt
+            * reverse_drift_langevin(t, yt_augmented, x_augmented)
+        )
+        noise = (
+            jnp.sqrt(psi)
+            * jnp.sqrt(dt)
+            * jax.random.normal(key, shape=yt_augmented.shape)
+        )
+        yt_m_dt += diffusion_langevin(t, yt_augmented, x_augmented) @ noise
+        # yt_m_dt += langevin_terms.contr(t, t)[0] * langevin_terms.vf(t, yt_augmented, x_augmented)[0]
+        # yt_m_dt += langevin_terms.vf(t, yt_augmented, x_augmented)[1] @ noise
+
+        yt = yt_m_dt[num_context * y_dim :]
+        # strip context from augmented state
+        return (yt, yt_context), yt_m_dt
+
+    # def outer_loop(key, yt, t):
+    #     # jax.debug.print("time {t}", t=t)
+
+    #     # yt_context = sde.sample_marginal(key, t, x_context, y_context)
+    #     yt_context = sample_marginal(key, t, x_context, y_context)
+    #     # yt_context = y_context #NOTE: doesn't need to be noised?
+    #     yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
+
+    #     yt_m_dt, *_ = solver.step(
+    #         terms_reverse,
+    #         t,
+    #         t - dt,
+    #         yt_augmented,
+    #         x_augmented,
+    #         None,
+    #         made_jump=False,
+    #     )
+    #     # yt = yt_m_dt[num_context * y_dim :]
+    #     # yt_m_dt = yt_augmented
+    #     # yt_m_dt += -dt * reverse_drift_diffeq(t, yt_augmented, x_augmented)
+    #     # # yt_m_dt += terms_reverse.contr(t, t-dt) * terms_reverse.vf(t, yt_augmented, x_augmented)
+    #     # noise = jax.random.normal(key, shape=yt_augmented.shape)
+    #     # yt_m_dt += jnp.sqrt(dt) * sde.diffusion(t, yt_augmented, x_augmented) @ noise
+
+    #     def corrector(key, yt, yt_context, t):
+    #         _, yt_m_dt = jax.lax.scan(
+    #             lambda ys, key: inner_loop(key, ys, t),
+    #             (yt, yt_context),
+    #             jax.random.split(key, num_inner_steps),
+    #         )
+    #         yt = yt_m_dt[-1][num_context * y_dim :]
+    #         return yt
+
+    #     yt = jax.lax.cond(
+    #         tau > t,
+    #         corrector,
+    #         lambda key, yt, yt_context, t: yt,
+    #         key,
+    #         yt,
+    #         yt_context,
+    #         t,
+    #     )
+    #     return yt, yt
+
+
+    def corrector(key, yt, yt_context, t):
+        _, yt_m_dt = jax.lax.scan(
+            lambda ys, key: inner_loop(key, ys, t),
+            (yt, yt_context),
+            jax.random.split(key, num_inner_steps),
+        )
+
+        
+
+        yt = yt_m_dt[-1][num_context * y_dim :]
+        return yt
+    
+    y0 = corrector(key, flatten(y_test), flatten(y_context), t)
+
+    # key, subkey = jax.random.split(key)
+    # yT = flatten(sde.sample_prior(subkey, x_test))
+
+    # xs = (ts[:-1], jax.random.split(key, len(ts) - 1))
+    # y0, _ = jax.lax.scan(lambda yt, x: outer_loop(x[1], yt, x[0]), yT, xs)
+    return unflatten(y0, y_dim)
+
+
 
 # %%
 
 n_cond = 25
+n_samples = 5
+n_tracks = 5
+off=15
 
-x_grid = data[0][:10]
-x_context = data[0][:10, :n_cond]
-y_context = data[1][:10, :n_cond]
+x_grid = data[0][:n_tracks]
+x_context = jnp.concatenate([data[0][(off):(n_tracks+off), :n_cond//2], data[0][(off):(n_tracks+off), (50 - n_cond//2):]], axis=1)
+y_context = jnp.concatenate([data[1][(off):(n_tracks+off), :n_cond//2], data[1][(off):(n_tracks+off), (50 - n_cond//2):]], axis=1)
+x_missing = data[0][(off):(n_tracks+off), n_cond//2:(50-n_cond//2)]
+y_missing = data[1][(off):(n_tracks+off), n_cond//2:(50-n_cond//2)]
+
+@jit
+def cond_sample(key, x_grid, x_context, y_context, params):
+    net_ = partial(net, params)
+    # x_context += 1.0e-5  # NOTE: to avoid context overlapping with grid
+    # return conditional_sample3(
+    return ndp.sde.conditional_sample2(
+        sde, 
+        net_, 
+        x_context, 
+        y_context, 
+        x_grid, 
+        key=key, 
+        num_steps=1000,
+        num_inner_steps=100,
+        tau=0.5,
+        psi=0.1,
+        lambda0=1.5,
+        prob_flow=False,
+    )
+
+
+# def langevin_correct(
+#     sde: SDE,
+#     network: ScoreNetwork,
+#     t,
+#     x_context,
+#     y_context,
+#     x_test,
+#     y_test,
+#     key,
+#     num_steps: int = 100,
+#     num_inner_steps: int = 5,
+#     prob_flow: bool = True,
+#     langevin_kernel=True,
+#     psi: float = 1.0,
+#     lambda0: float = 1.0,
+#     tau: float = None,
+# ):
+@jit
+def langevin_sample(key, x_grid, y_samples, x_context, y_context, params):
+    net_ = partial(net, params)
+
+    return langevin_correct(
+        sde, 
+        partial(net, state.params_ema),
+        sde.beta_schedule.t0,
+        x_context, 
+        y_context, 
+        x_grid,
+        y_samples,
+        key, 
+        num_steps=1000,
+        num_inner_steps=1000,
+        tau=0.5,
+        psi=0.1,
+        lambda0=1.5,
+        prob_flow=False,
+    )
+# %%
+
+interp_samples = jax.vmap(
+    jax.vmap(
+        cond_sample, 
+        in_axes=[0,0,0,0,None]
+    ), 
+    in_axes=[0,None,None,None,None]
+)(
+    jax.random.split(next(key_iter), len(x_grid)*n_samples).reshape((n_samples, n_tracks, 2)), 
+    x_grid, 
+    x_context, 
+    y_context, 
+    state.params_ema
+)
+# %%
+langevin_samples = jax.vmap(
+    jax.vmap(
+        langevin_sample,
+        in_axes=(0,0,0,0,0,None)
+    ),
+    in_axes=(0, None, 0, None, None, None),
+)(
+    jax.random.split(next(key_iter), len(x_grid)*n_samples).reshape((n_samples, n_tracks, 2)), 
+    x_grid,
+    interp_samples,
+    x_context, 
+    y_context, 
+    state.params_ema
+)
+
+# %%
+
+fig_comp, axes = plt.subplots(
+    1,
+    2,
+    figsize=(4 * 2 * 2, 4 * 2 * (1 + 0.25)),
+    sharex=True,
+    sharey=True,
+    squeeze=True,
+)
+
+
+plot_tracks(x_context[:,:(n_cond//2)], y_context[:,:(n_cond//2)], axes[0], "Full data", color='tab:blue', lw=1.0)
+plot_tracks(x_context[:,(n_cond//2):], y_context[:,(n_cond//2):], axes[0], "Full data", color='tab:blue', lw=1.0)
+plot_tracks(x_missing, y_missing, axes[0], "Full data", color='tab:green', lw=1.0)
+
+# for sample in interp_samples:
+for sample in langevin_samples:
+    plot_tracks(x_grid[:, (n_cond//2):(50 - n_cond//2)], sample[:, (n_cond//2):(50 - n_cond//2)], axes[0], "Full data", color='tab:orange', lw=1.0, alpha=0.2)
+
+
+plot_tracks(x_context[:,:(n_cond//2)], y_context[:,:(n_cond//2)], axes[1], "Full data", color='tab:blue', lw=1.0)
+plot_tracks(x_context[:,(n_cond//2):], y_context[:,(n_cond//2):], axes[1], "Full data", color='tab:blue', lw=1.0)
+plot_tracks(x_missing, y_missing, axes[1], "Full data", color='tab:green', lw=1.0)
+
+# for sample in interp_samples:
+for sample in langevin_samples:
+    plot_tracks(x_grid[:, (n_cond//2):(50 - n_cond//2)], sample[:, (n_cond//2):(50 - n_cond//2)], axes[1], "Full data", color='tab:orange', lw=1.0, alpha=0.2)
+# %%
+
+fig_comp, axes = plt.subplots(
+    2,
+    1,
+    figsize=(4 * 2 * 1, 2 * 2 * (1 + 0.5)),
+    sharex=True,
+    sharey=False,
+    squeeze=True,
+)
+
+plot_tracks_latlon(x_context[:,:(n_cond//2)], y_context[:,:(n_cond//2)], axes, "Full data", color='tab:blue', lw=1.0)
+plot_tracks_latlon(x_context[:,(n_cond//2):], y_context[:,(n_cond//2):], axes, "Full data", color='tab:blue', lw=1.0)
+plot_tracks_latlon(x_missing, y_missing, axes, "Full data", color='tab:green', lw=1.0)
+
+for sample in interp_samples:
+    plot_tracks_latlon(x_grid[:, (n_cond//2):(50 - n_cond//2)], sample[:, (n_cond//2):(50 - n_cond//2)], axes, "Full data", color='tab:orange', lw=1.0, alpha=0.2)
+# %%
+fig_comp, axes = plt.subplots(
+    2,
+    5,
+    figsize=(4 * 2 * 5, 2 * 2 * (1 + 0.5)),
+    sharex=True,
+    sharey=False,
+    squeeze=True,
+)
+
+for idx, i in enumerate([0,100,500,800,999]):
+    plot_tracks_latlon(x_context[:,:(n_cond//2)], y_context[:,:(n_cond//2)], [axes[0][idx], axes[1][idx]], "Full data", color='tab:blue', lw=1.0)
+    plot_tracks_latlon(x_context[:,(n_cond//2):], y_context[:,(n_cond//2):], [axes[0][idx], axes[1][idx]], "Full data", color='tab:blue', lw=1.0)
+    plot_tracks_latlon(x_missing, y_missing, [axes[0][idx], axes[1][idx]], "Full data", color='tab:green', lw=1.0)
+    for sample in interp_tracks[:, :, i, :]:
+        plot_tracks_latlon(x_grid, sample, [axes[0][idx], axes[1][idx]], "Full data", color='tab:orange', lw=1.0, alpha=0.2)
+
+# %%
+n_cond = 25
+n_samples = 20
+n_tracks = 2
+off=17
+
+x_grid = data[0][:n_tracks]
+x_context = data[0][(off):(n_tracks+off), :n_cond]
+y_context = data[1][(off):(n_tracks+off), :n_cond]
+x_missing = data[0][(off):(n_tracks+off), n_cond:]
+y_missing = data[1][(off):(n_tracks+off), n_cond:]
 
 @jit
 def cond_sample(key, x_grid, x_context, y_context, params):
@@ -746,14 +1130,16 @@ def cond_sample(key, x_grid, x_context, y_context, params):
         x_grid,
         key=key,
         num_steps=1000,
-        num_inner_steps=100,
-        tau=1.0,
+        num_inner_steps=10,
+        tau=0.5,
         psi=1.0,
         lambda0=1.0,
         prob_flow=False,
     )
 
-samples = jax.vmap(cond_sample, in_axes=[0,0,0,0,None])(jax.random.split(next(key_iter), len(x_grid)), x_grid, x_context, y_context, state.params_ema)
+extrap_samples = jax.vmap(jax.vmap(cond_sample, in_axes=[0,0,0,0,None]), in_axes=[0,None,None,None,None])(jax.random.split(next(key_iter), len(x_grid)*n_samples).reshape((n_samples, n_tracks, 2)), x_grid, x_context, y_context, state.params_ema)
+
+# %%
 
 fig_comp, axes = plt.subplots(
     1,
@@ -766,5 +1152,26 @@ fig_comp, axes = plt.subplots(
 
 
 plot_tracks(x_context, y_context, axes, "Full data", color='tab:blue', lw=1.0)
-plot_tracks(x_grid[:, n_cond:], samples[:, n_cond:], axes, "Full data", color='tab:orange', lw=1.0)
+plot_tracks(x_missing, y_missing, axes, "Full data", color='tab:green', lw=1.0)
+
+for sample in extrap_samples:
+    plot_tracks(x_grid[:, n_cond:], sample[:, n_cond:], axes, "Full data", color='tab:orange', lw=1.0, alpha=0.2)
+# %%
+
+fig_comp, axes = plt.subplots(
+    2,
+    1,
+    figsize=(4 * 2 * 1, 2 * 2 * (1 + 0.5)),
+    sharex=True,
+    sharey=False,
+    squeeze=True,
+)
+
+plot_tracks_latlon(x_context, y_context, axes, "Full data", color='tab:blue', lw=1.0)
+plot_tracks_latlon(x_missing, y_missing, axes, "Full data", color='tab:green', lw=1.0)
+
+for sample in extrap_samples:
+    plot_tracks_latlon(x_grid[:, n_cond:], sample[:, n_cond:], axes, "Full data", color='tab:orange', lw=1.0, alpha=0.2)
+#
+
 # %%

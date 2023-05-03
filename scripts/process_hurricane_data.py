@@ -48,7 +48,7 @@ def process_file(basin):
     data.loc[:, "LON"] = data.loc[:, "LON"].astype(np.float32)
     data = data[data['TRACK_TYPE'] == 'main'].reset_index(drop=True) # Filter only reanalysed storm data
     data['ISO_TIME'] = pd.to_datetime(data['ISO_TIME'])
-    storm_starts = data.groupby(by='SID').min()["ISO_TIME"]
+    storm_starts = data[['ISO_TIME', 'SID']].groupby(by='SID').min()["ISO_TIME"]
     data["STORM_TIME"] = data.apply(lambda row: row["ISO_TIME"] - storm_starts[row["SID"]], axis=1)
 
     idx = pd.IndexSlice
@@ -64,7 +64,7 @@ def process_file(basin):
             "LON",
             "USA_SSHS", # For category
             "USA_WIND",
-            "NATURE",
+            # "NATURE",
         ]
     )
 
@@ -73,7 +73,7 @@ def process_file(basin):
   
     pivot_data.to_csv(f"/data/ziz/not-backed-up/mhutchin/score-sde-sp/data/storm/{basin}_processed.csv")
 # %%
-process_file('wp')
+process_file('na')
 # %%
 for basin in [
     'all',

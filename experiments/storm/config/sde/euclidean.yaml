@@ -1,0 +1,13 @@
+_target_: neural_diffusion_processes.sde.SDE
+std_trick: true
+residual_trick: true
+# limiting_kernel_hyperparameters: 
+#   variance: 1.0
+#   lengthscale: 1.0
+limiting_kernel: ${kernel.cls}
+  # _target_: neural_diffusion_processes.kernels.RBFVec
+  # _target_: neural_diffusion_processes.kernels.WhiteVec
+  # output_dim: 2
+limiting_mean_fn:
+  _target_: gpjax.Zero
+  output_dim: 2

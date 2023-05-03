@@ -18,13 +18,14 @@ import jmp
 import numpy as np
 from einops import rearrange
 from equinox import filter_jit
+import diffrax as dfx
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.basemap import Basemap
 
 from omegaconf import OmegaConf
 import hydra
-from hydra.utils import instantiate, call
+from hydra.utils import instantiate, call, get_method
 from jax.config import config as jax_config
 
 import neural_diffusion_processes as ndp
@@ -91,8 +92,13 @@ def run(cfg):
     log.info(f"beta_schedule: {sde.beta_schedule}")
 
     ####### prepare data
-    data, transform = call(
+    data, data_normalisation = call(
         cfg.data,
+    )
+    transform = get_method(cfg.transform._target_)
+    data = (
+        data[0],
+        transform(data[1]),
     )
     dataloader = ndp.data.dataloader(
         data,
@@ -219,17 +225,50 @@ def run(cfg):
 
     # ########## Plotting
     @jit
-    def reverse_sample(key, x_grid, params, yT=None):
+    def reverse_sample_heun(key, x_grid, params, yT=None):
         print("reverse_sample", x_grid.shape)
         net_ = partial(net, params)
         return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=False)
 
     @filter_jit
-    def reverse_sample_times(key, x_grid, params, yT=None, ts=None):
+    def reverse_sample_times_heun(key, x_grid, params, yT=None, ts=None):
         print("reverse_sample", x_grid.shape)
         net_ = partial(net, params)
         return ndp.sde.sde_solve(
             sde, net_, x_grid, key=key, y=yT, prob_flow=False, ts=ts
+        )
+
+    @jit
+    def reverse_sample_euler(key, x_grid, params, yT=None):
+        print("reverse_sample", x_grid.shape)
+        net_ = partial(net, params)
+        return ndp.sde.sde_solve(
+            sde,
+            net_,
+            x_grid,
+            key=key,
+            y=yT,
+            prob_flow=False,
+            solver=dfx.Euler(),
+            rtol=None,
+            atol=None,
+        )
+
+    @filter_jit
+    def reverse_sample_times_euler(key, x_grid, params, yT=None, ts=None):
+        print("reverse_sample", x_grid.shape)
+        net_ = partial(net, params)
+        return ndp.sde.sde_solve(
+            sde,
+            net_,
+            x_grid,
+            key=key,
+            y=yT,
+            prob_flow=False,
+            ts=ts,
+            solver=dfx.Euler(),
+            rtol=None,
+            atol=None,
         )
 
     @jit
@@ -267,7 +306,7 @@ def run(cfg):
         ts_fwd = [0.1, 0.2, 0.5, 0.8, float(sde.beta_schedule.t1)]
         ts_bwd = [0.8, 0.5, 0.2, 0.1, float(sde.beta_schedule.t0)]
 
-        def plot_tracks(xs, ys, axes, title=""):
+        def plot_tracks(xs, ys, axes, title="", lw=0.3, **kwargs):
             m = Basemap(
                 projection="mill",
                 llcrnrlat=-80,
@@ -294,14 +333,15 @@ def run(cfg):
                 # labels=[False, False, False, True],
             )
 
-            ys = ys * transform[1] + transform[0]
+            ys = ys * data_normalisation[1] + data_normalisation[0]
+            ys = transform(ys, reverse=True)
             dists = jnp.linalg.norm((ys[:, :-1] - ys[:, 1:]), axis=-1)
-            nan_index = dists > ((50 * RADDEG) ** 2)
-            nan_index = jnp.repeat(
-                jnp.concatenate([nan_index, nan_index[:, -2:-1]], axis=-1)[..., None],
-                2,
-                axis=-1,
-            )
+            # nan_index = dists > ((50 * RADDEG) ** 2)
+            # nan_index = jnp.repeat(
+            #     jnp.concatenate([nan_index, nan_index[:, -2:-1]], axis=-1)[..., None],
+            #     2,
+            #     axis=-1,
+            # )
 
             lons = ((ys[..., 1] / RADDEG) + LONOFFSET) % 360  # remove lon offset
             lons = ((lons + LONSTART) % 360) - LONSTART  # Put into plot frame
@@ -314,10 +354,12 @@ def run(cfg):
                 )[::-1],
                 axis=-1,
             )
-            m_coords = m_coords.at[nan_index].set(jnp.nan)
+            # m_coords = m_coords.at[nan_index].set(jnp.nan)
 
-            for row in m_coords:
-                m.plot(row[..., 1], row[..., 0], linewidth=0.3, latlon=False)
+            # for row in m_coords:
+            axes.plot(m_coords[..., 1].T, m_coords[..., 0].T, lw=lw, **kwargs)
+            # lc = LineCollection(jnp.flip(m_coords, axis=-1), array=jnp.linspace(0,1, m_coords.shape[1])[None, :], linewidth=0.3, cmap='viridis')
+
             axes.set_title(title)
 
         nb_cols = len(ts_fwd) + 2
@@ -345,7 +387,7 @@ def run(cfg):
         # y_model = vmap(reverse_sample, in_axes=[0, None, None, 0])(
         #     jax.random.split(keys[3], n_samples), x_grid, state.params_ema, y_ref
         # ).squeeze()
-        y_model = vmap(reverse_sample_times, in_axes=[0, None, None, 0, None])(
+        y_model = vmap(reverse_sample_times_euler, in_axes=[0, None, None, 0, None])(
             jax.random.split(keys[3], n_samples),
             x_grid,
             state.params_ema,
@@ -429,7 +471,7 @@ def run(cfg):
         k = jax.random.split(keys[3], N)
         y_model = jnp.concatenate(
             [
-                vmap(reverse_sample, in_axes=[0, None, None, 0])(
+                vmap(reverse_sample_euler, in_axes=[0, None, None, 0])(
                     jax.random.split(k[i], n_samples),
                     x_grid,
                     state.params_ema,

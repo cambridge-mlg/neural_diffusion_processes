@@ -62,7 +62,8 @@ logp = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
 print(logp.shape)
 
 from neural_diffusion_processes.sde import flatten, unflatten
-from neural_diffusion_processes.kernels import ProjectionOperator
+
+# from neural_diffusion_processes.kernels import ProjectionOperator
 
 # From Moser flow paper's codebase
 

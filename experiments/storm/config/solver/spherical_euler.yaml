@@ -1,0 +1,7 @@
+default_solver:
+  _target_: neural_diffusion_processes.brownian_sde.SphericalGRW
+
+kwargs:
+  rtol: none
+  atol: none
+  num_steps: 1000
