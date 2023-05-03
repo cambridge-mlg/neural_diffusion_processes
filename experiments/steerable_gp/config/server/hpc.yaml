@@ -44,7 +44,8 @@ hydra:
     executable: /home/${oc.env:USER}/rds/hpc-work/${PROJECT_NAME}/venv/bin/python
     # executable: /home/${oc.env:USER}/rds/miniconda3/envs/venv/bin/python
     additional_parameters: {
-      "account": "T2-CS162-GPU",
+      #"account": "T2-CS162-GPU",
+      "account": "TURNER-SL3-GPU",
       # "gres": "gpu:${num_gpus}",
     }
 
