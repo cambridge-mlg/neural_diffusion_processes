@@ -64,10 +64,10 @@ eval:
     hutchinson_type: Rademacher
     # hutchinson_type: None
     n_steps: 100
-    # rtol: null
+    rtol: null
     # rtol: 1e-6
     # atol: 1e-6
-    rtol: 1e-4
+    # rtol: 1e-4
     atol: 1e-4
     # atol: 1e-6
     hutchinson_samples: 8
