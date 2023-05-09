@@ -341,7 +341,7 @@ def run(cfg):
             plot_vf_and_cov(x_grid, y_model, axes[:, 2], rf"$p_{{model}}$")
 
         # plot conditional data
-        x_grid = batch.xs[idx]
+        xs = batch.xs[idx]
 
         theta_deg = 45
         theta = np.deg2rad(theta_deg)
@@ -374,8 +374,8 @@ def run(cfg):
             ax[1].set_aspect("equal")
 
         # print("x_grid", x_grid)
-        plot_cond_data(x_grid, xc, yc, I, axes.T[3], rf"$p_{{data}}$")
-        plot_cond_data(x_grid, xc, yc, R, axes.T[5], rf"$p_{{data}}$ ({theta_deg}°)")
+        plot_cond_data(xs, xc, yc, I, axes.T[3], rf"$p_{{data}}$")
+        plot_cond_data(xs, xc, yc, R, axes.T[5], rf"$p_{{data}}$ ({theta_deg}°)")
 
         # plot conditional samples
         if cfg.eval.cond.n_steps > 0:
@@ -393,10 +393,8 @@ def run(cfg):
                 plot_vf(xc, yc, color="red", ax=ax[0])
                 plot_vf(xc, yc, color="red", ax=ax[1])
 
-            plot_cond_model(x_grid, xc, yc, I, axes.T[4], rf"$p_{{model}}$")
-            plot_cond_model(
-                x_grid, xc, yc, R, axes.T[6], rf"$p_{{model}}$ ({theta_deg}°)"
-            )
+            plot_cond_model(xs, xc, yc, I, axes.T[4], rf"$p_{{model}}$")
+            plot_cond_model(xs, xc, yc, R, axes.T[6], rf"$p_{{model}}$ ({theta_deg}°)")
 
         dict_plots["backward"] = fig_backward
 
@@ -463,24 +461,24 @@ def run(cfg):
         metrics = defaultdict(list)
         eval_log_prob = jit(vmap(partial(log_prob, params=state.params_ema)))
 
-        if step == cfg.optim.n_steps:
-            log.info("Evaluate ground truth")
-            # TODO: evaluate diagonal cov GP
-            for i, batch in enumerate(data_test):
-                log.info(f"${step=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}")
-                n_test = batch.ys.shape[-2]
-                true_cond_logp = jax.vmap(
-                    lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(flatten(y))
-                )(batch.xc, batch.yc, batch.xs, batch.ys)
-                metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
+        # if step == cfg.optim.n_steps:
+        #     log.info("Evaluate ground truth")
+        #     # TODO: evaluate diagonal cov GP
+        #     for i, batch in enumerate(data_test):
+        #         log.info(f"${step=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}")
+        #         n_test = batch.ys.shape[-2]
+        #         true_cond_logp = jax.vmap(
+        #             lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(flatten(y))
+        #         )(batch.xc, batch.yc, batch.xs, batch.ys)
+        #         metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
 
-                x = jnp.concatenate([batch.xs, batch.xc], axis=1)
-                y = jnp.concatenate([batch.ys, batch.yc], axis=1)
-                true_logp = jax.vmap(lambda x, y: true_prior(x).log_prob(flatten(y)))(
-                    x, y
-                )
-                n = y.shape[-2]
-                metrics["true_logp"].append(jnp.mean(true_logp / n))
+        #         x = jnp.concatenate([batch.xs, batch.xc], axis=1)
+        #         y = jnp.concatenate([batch.ys, batch.yc], axis=1)
+        #         true_logp = jax.vmap(lambda x, y: true_prior(x).log_prob(flatten(y)))(
+        #             x, y
+        #         )
+        #         n = y.shape[-2]
+        #         metrics["true_logp"].append(jnp.mean(true_logp / n))
 
         log.info("Evaluate model")
         for n in range(cfg.eval.n_test):
@@ -588,13 +586,13 @@ def run(cfg):
     # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
 
-    logger.log_plot("process", plots(state, key, 0), 0)
-    logger.log_metrics(eval(state, key, 0), 0)
-    # logger.log_metrics(eval(state, key, 1), 1)
-    # logger.log_plot("process", plots(state, key, 1), 1)
-    # logger.save()
-
     if cfg.mode == "train":
+        logger.log_plot("process", plots(state, key, 0), 0)
+        logger.log_metrics(eval(state, key, 0), 0)
+        # logger.log_metrics(eval(state, key, 1), 1)
+        # logger.log_plot("process", plots(state, key, 1), 1)
+        # logger.save()
+
         miniters = 50
         progress_bar = tqdm.tqdm(
             list(range(1, cfg.optim.num_steps + 1)),
