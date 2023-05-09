@@ -38,18 +38,20 @@ beta_schedule:
 
 optim:
   batch_size: 40
-  num_steps: 80_000
+  n_steps: 80_000
   lr: 5e-4
   # learning_rate: ${eval:${optim.lr}*${eval:${optim.batch_size}/40}}
   learning_rate: ${optim.lr}
   ema_rate: 0.99
 
 eval:
-  batch_size: ${eval:${optim.batch_size}//4}
+  # batch_size: ${eval:${optim.batch_size}//4}
+  batch_size: ${max:${eval:${optim.batch_size}//4},1}
   n_test: 1
   prior:
     n_steps: 100
-    rtol: 1e-4
+    # rtol: 1e-4
+    rtol: null
     atol: 1e-4
     prob_flow: false
   cond:
@@ -75,7 +77,8 @@ eval:
 
 data:
   # _target_: neural_diffusion_processes.data.get_vec_gp_data
-  num_samples_train: 80_000
+  _convert_: all
+  n_train: 80_000
   num_points: 30
   x_radius: 10
   # x_radius: 20
@@ -95,14 +98,15 @@ data:
   obs_noise: 0.02
   seed_test: 1
   # num_samples_test:  1_000
-  num_samples_test: 10_000
+  n_test: 10_000
   seed: 0
   # min_context: 5
   # max_context: 50
   min_context: 25
   max_context: ${data.min_context}
+  # context_sizes:
   # n_points: 50
-  n_points: -1
+  n_points: [-1]
 
 kernel:
   params:

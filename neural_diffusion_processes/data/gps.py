@@ -94,7 +94,7 @@ def get_vec_gp_data(
     y = sample_prior_gp(
         key,
         mean_function,
-        kernel, 
+        kernel,
         params,
         x,
         num_samples=num_samples,
@@ -103,14 +103,16 @@ def get_vec_gp_data(
     x = jnp.repeat(x[None, ...], y.shape[0], 0)
     return x, y
 
+
 def get_vec_gp_prior(
     kernel: jaxkern.base.AbstractKernel,
     mean_function,
     obs_noise: float,
     params: Optional[Mapping[str, float]] = None,
     **kwargs,
-    ):
+):
     return lambda xs: prior_gp(mean_function, kernel, params, obs_noise)(xs)
+
 
 def get_vec_gp_cond(
     kernel: jaxkern.base.AbstractKernel,
@@ -118,8 +120,11 @@ def get_vec_gp_cond(
     obs_noise: float,
     params: Optional[Mapping[str, float]] = None,
     **kwargs,
-    ):
-    return lambda xc, yc, xs: posterior_gp(mean_function, kernel, params, xc, yc, obs_noise)(xs)
+):
+    return lambda xc, yc, xs: posterior_gp(
+        mean_function, kernel, params, xc, yc, obs_noise
+    )(xs)
+
 
 def get_gp_data(
     key,
@@ -165,56 +170,56 @@ def get_gp_data(
 def load_gp_data_set(
     key,
     kernel: jaxkern.base.AbstractKernel,
-    dataset='train',
-    file_path='',
+    dataset="train",
+    file_path="",
     **kwargs,
 ):
     assert kwargs["params"]["kernel"]["variance"] == 1
-    assert kwargs["params"]["kernel"]["lengthscale"] == np.sqrt(5.)
+    assert kwargs["params"]["kernel"]["lengthscale"] == np.sqrt(5.0)
 
     if isinstance(kernel, RBFDivFree):
-        data_type = 'div_free'
+        data_type = "div_free"
     elif isinstance(kernel, RBFCurlFree):
-        data_type = 'curl_free'
+        data_type = "curl_free"
     elif isinstance(kernel, RBFVec):
-        data_type = 'rbf'
+        data_type = "rbf"
     else:
         sys.exit("Unknown data type. Must be either rbf, div_free or curl_free.")
 
-    if dataset == 'test':
+    if dataset == "test":
         pass
-    elif dataset == 'train':
+    elif dataset == "train":
         pass
-    elif dataset == 'valid':
+    elif dataset == "valid":
         pass
     else:
-        sys.exit('Unkown data set. Must be either train, valid or test')
- 
+        sys.exit("Unkown data set. Must be either train, valid or test")
+
     path = os.path.join(file_path, f"gp_{data_type}", "data")
     print("path", path)
     x = np.load(os.path.join(path, f"gp_{data_type}_{dataset.capitalize()}_X.npy"))
     y = np.load(os.path.join(path, f"gp_{data_type}_{dataset.capitalize()}_Y.npy"))
-    
+
     x = jnp.array(x, dtype=float)
     y = jnp.array(y, dtype=float)
 
     # perm = jax.random.permutation(key, jnp.arange(len(x)))
     perm = jnp.arange(len(x))
-    if dataset == 'train':
-        if kwargs["num_samples_train"] > len(x):
+    if dataset == "train":
+        if kwargs["n_train"] > len(x):
             raise Exception("Not enough samples available")
-        elif kwargs["num_samples_train"] < len(x):
-            x = jnp.take(x, axis=0, indices=perm[:kwargs["num_samples_train"]])
-            y = jnp.take(y, axis=0, indices=perm[:kwargs["num_samples_train"]])
+        elif kwargs["n_train"] < len(x):
+            x = jnp.take(x, axis=0, indices=perm[: kwargs["n_train"]])
+            y = jnp.take(y, axis=0, indices=perm[: kwargs["n_train"]])
         else:
             pass
 
-    if dataset in ['valid', 'test']:
-        if kwargs["num_samples_test"] > len(x):
+    if dataset in ["valid", "test"]:
+        if kwargs["n_test"] > len(x):
             raise Exception("Not enough samples available")
-        elif kwargs["num_samples_test"] < len(x):
-            x = jnp.take(x, axis=0, indices=perm[:kwargs["num_samples_test"]])
-            y = jnp.take(y, axis=0, indices=perm[:kwargs["num_samples_test"]])
+        elif kwargs["n_test"] < len(x):
+            x = jnp.take(x, axis=0, indices=perm[: kwargs["n_test"]])
+            y = jnp.take(y, axis=0, indices=perm[: kwargs["n_test"]])
         else:
             pass
 

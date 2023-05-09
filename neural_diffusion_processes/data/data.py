@@ -1,12 +1,14 @@
 from __future__ import annotations
-from typing import Tuple, Iterator, Optional, Mapping
+from typing import Tuple, Iterator, Optional, Mapping, Sequence
 import dataclasses
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 from simple_pytree import Pytree
 from check_shapes import check_shapes, check_shape
 from jaxtyping import Array
+
 
 @dataclasses.dataclass
 class DataBatch(Pytree):
@@ -33,29 +35,30 @@ class DataBatch(Pytree):
     "data[1]: [len_data, num_points, output_dim]",
 )
 def dataloader(
-    data: Tuple[Array, Array], batch_size: int, *, key, run_forever=True, n_points=-1
+    data: Tuple[Array, Array], batch_size: int, *, key, run_forever=True, n_points=[-1]
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
-    n_points = n_points if n_points > 0 else x.shape[1]
-    # x = x.astype(jnp.float32)
-    # y = y.astype(jnp.float32)
+    n_points = jnp.array(list(n_points))
     dataset_size = len(x)
     indices_batch = jnp.arange(dataset_size)
     indices_points = jnp.arange(x.shape[1])
     while True:
-        perm = jax.random.permutation(key, indices_batch)
-        (key,) = jax.random.split(key, 1)
+        perm = jr.permutation(key, indices_batch)
+        (key,) = jr.split(key, 1)
         start = 0
         end = batch_size
         while end < dataset_size:
             batch_perm = perm[start:end]
-            (key,) = jax.random.split(key, 1)
-            points_perm = jax.random.permutation(key, indices_points)[:n_points]
+            (key,) = jr.split(key, 1)
+            n_point = jr.permutation(key, n_points)[0]
+            n_point = n_point if n_point > 0 else x.shape[1]
+            (key,) = jr.split(key, 1)
+            points_perm = jr.permutation(key, indices_points)[:n_point]
             yield DataBatch(
                 xs=jnp.take(x[batch_perm], axis=1, indices=points_perm),
                 ys=jnp.take(y[batch_perm], axis=1, indices=points_perm),
-                )
+            )
             start = end
             end = start + batch_size
 
@@ -63,16 +66,18 @@ def dataloader(
             break
 
 
-def split_dataset_in_context_and_target(data: DataBatch, key, min_context, max_context) -> DataBatch:
+def split_dataset_in_context_and_target(
+    data: DataBatch, key, min_context, max_context
+) -> DataBatch:
     if key is None:
-        key = jax.random.PRNGKey(0)
+        key = jr.PRNGKey(0)
 
-    key1, key2 = jax.random.split(key)
+    key1, key2 = jr.split(key)
     x, y = data.xs, data.ys
     indices = jnp.arange(data.num_points)
-    num_context = jax.random.randint(key1, (), minval=min_context, maxval=max_context)
+    num_context = jr.randint(key1, (), minval=min_context, maxval=max_context)
     num_target = data.num_points - num_context
-    perm = jax.random.permutation(key2, indices)
+    perm = jr.permutation(key2, indices)
     # print("split_dataset_in_context_and_target")
     # print("x.shape", x.shape)
     # print("num_target", num_target, "num_target", num_target)

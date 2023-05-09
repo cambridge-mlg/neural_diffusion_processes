@@ -8,7 +8,7 @@ from functools import partial
 import tqdm
 import yaml
 
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import haiku as hk
 import jax
@@ -89,7 +89,7 @@ def run(cfg):
     data = call(
         cfg.data,
         key=jax.random.PRNGKey(cfg.data.seed),
-        num_samples=cfg.data.num_samples_train,
+        num_samples=cfg.data.n_train,
         dataset="train",
     )
     dataloader = ndp.data.dataloader(
@@ -106,7 +106,7 @@ def run(cfg):
     data_test = call(
         cfg.data,
         key=jax.random.PRNGKey(cfg.data.seed_test),
-        num_samples=cfg.data.num_samples_test,
+        num_samples=cfg.data.n_test,
         dataset="test",
     )
     plot_batch = DataBatch(xs=data_test[0][:32], ys=data_test[1][:32])
@@ -119,9 +119,9 @@ def run(cfg):
         batch_size=cfg.eval.batch_size,
         key=next(key_iter),
         run_forever=False,  # only run once
-        n_points=cfg.data.n_points,
+        # n_points=cfg.data.n_points,
     )
-    data_test: List[ndp.data.DataBatch] = [
+    data_test = [
         ndp.data.split_dataset_in_context_and_target(
             batch, next(key_iter), cfg.data.min_context, cfg.data.max_context
         )
@@ -195,7 +195,9 @@ def run(cfg):
     def init(batch: ndp.data.DataBatch, key) -> TrainingState:
         key, init_rng = jax.random.split(key)
         t = 1.0 * jnp.zeros((batch.ys.shape[0]))
-        initial_params = network.init(init_rng, t=t, y=batch.ys, x=batch.xs)
+        initial_params = network.init(
+            init_rng, t=t[0][None], y=batch.ys[0][None], x=batch.xs[0][None]
+        )
         initial_params = policy.cast_to_param((initial_params))
         initial_opt_state = optimizer.init(initial_params)
         return TrainingState(
@@ -228,12 +230,13 @@ def run(cfg):
             key=new_key,
             step=state.step + 1,
         )
+        # metrics = {"loss": loss_value, "step": state.step, "grad_norm": grad_norm}
         metrics = {"loss": loss_value, "step": state.step}
         return new_state, metrics
 
     state = init(batch0, jax.random.PRNGKey(cfg.seed))
     if cfg.mode == "eval":  # if resume or evaluate
-        state = load_checkpoint(state, ckpt_path, cfg.optim.num_steps)
+        state = load_checkpoint(state, ckpt_path, cfg.optim.n_steps)
 
     nb_params = sum(x.size for x in jax.tree_util.tree_leaves(state.params))
     log.info(f"Number of parameters: {nb_params}")
@@ -284,7 +287,7 @@ def run(cfg):
 
     # TODO: data as a class with such methods?
     # @jit
-    def cond_log_prob(xc, yc, xs):
+    def cond_data(xc, yc, xs):
         cfg.data._target_ = "neural_diffusion_processes.data.get_vec_gp_cond"
         posterior_log_prob = call(cfg.data)
         return posterior_log_prob(xc, yc, xs)
@@ -311,12 +314,13 @@ def run(cfg):
 
         batch = plot_batch  # batch = next(iter(data_test))
         idx = jax.random.randint(keys[0], (), minval=0, maxval=len(batch.xs))
+        xc, yc = batch.xc[idx], batch.yc[idx]
 
         # define grid over x space
         x_grid = radial_grid_2d(cfg.data.x_radius, cfg.data.num_points)
 
         fig_backward, axes = plt.subplots(
-            2, 5, figsize=(8 * 5, 8 * 2), sharex=True, sharey=True
+            2, 7, figsize=(8 * 7, 8 * 2), sharex=True, sharey=True
         )
         fig_backward.subplots_adjust(wspace=0, hspace=0.0)
 
@@ -337,45 +341,62 @@ def run(cfg):
             plot_vf_and_cov(x_grid, y_model, axes[:, 2], rf"$p_{{model}}$")
 
         # plot conditional data
-        # x_grid_w_contxt = x_grid
-        x_grid_w_contxt = batch.xs[idx]
+        x_grid = batch.xs[idx]
 
-        posterior_gp = cond_log_prob(batch.xc[idx], batch.yc[idx], x_grid_w_contxt)
-        # y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(n_samples))
-        # y_cond = rearrange(y_cond, "k (n d) -> k n d", d=y_dim)
-        # plot_vf_and_cov(x_grid_w_contxt, y_cond, axes[:, 3], rf"$p_{{model}}$")
-        y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(1))
-        y_cond = rearrange(y_cond, "k (n d) -> k n d", d=y_dim)
-        plot_vf(x_grid_w_contxt, y_cond.squeeze(), ax=axes[0, 3])
-        plot_vf(x_grid_w_contxt, unflatten(posterior_gp.mean(), y_dim), ax=axes[1, 3])
-        ktt = rearrange(
-            posterior_gp.covariance(),
-            "(n1 p1) (n2 p2) -> n1 n2 p1 p2",
-            p1=y_dim,
-            p2=y_dim,
+        theta_deg = 45
+        theta = np.deg2rad(theta_deg)
+        R = jnp.array(
+            [[jnp.cos(theta), -jnp.sin(theta)], [jnp.sin(theta), jnp.cos(theta)]]
         )
-        covariances = ktt[jnp.diag_indices(ktt.shape[0])]
-        plot_cov(x_grid_w_contxt, covariances, ax=axes[1, 3])
-        axes[0, 3].set_title(rf"$p_{{model}}$")
+        I = jnp.eye(2)
 
-        # plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][3])
-        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][3])
-        plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[1][3])
-        axes[0][3].set_title(rf"$p_{{data}}$")
-        axes[1][3].set_aspect("equal")
+        def plot_cond_data(xs, xc, yc, rot, ax, title=""):
+            posterior_gp = cond_data(xc @ rot.T, yc @ rot.T, xs @ rot.T)
+            Ktt = posterior_gp.covariance()
+            # print("jnp.linalg.det(Ktt)", jnp.linalg.det(Ktt))
+            # y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(n_samples))
+            # y_cond = rearrange(y_cond, "k (n d) -> k n d", d=y_dim)
+            # plot_vf_and_cov(xs, y_cond, axes[:, 3], rf"$p_{{model}}$")
+            y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(1))
+            y_cond = rearrange(y_cond, "k (n d) -> k n d", d=y_dim)
+            y_cond = y_cond @ rot
+            plot_vf(xs, y_cond.squeeze(), ax=ax[0])
+            plot_vf(xs, unflatten(posterior_gp.mean(), y_dim) @ rot, ax=ax[1])
+            Ktt = posterior_gp.covariance()
+            ktt = rearrange(Ktt, "(n1 p1) (n2 p2) -> n1 n2 p1 p2", p1=y_dim, p2=y_dim)
+            covariances = ktt[jnp.diag_indices(ktt.shape[0])]
+            plot_cov(xs, covariances @ rot, ax=ax[1])
+
+            # plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][3])
+            plot_vf(xc, yc, color="red", ax=ax[0])
+            plot_vf(xc, yc, color="red", ax=ax[1])
+            ax[0].set_title(title)
+            ax[1].set_aspect("equal")
+
+        # print("x_grid", x_grid)
+        plot_cond_data(x_grid, xc, yc, I, axes.T[3], rf"$p_{{data}}$")
+        plot_cond_data(x_grid, xc, yc, R, axes.T[5], rf"$p_{{data}}$ ({theta_deg}°)")
 
         # plot conditional samples
         if cfg.eval.cond.n_steps > 0:
-            y_cond = vmap(
-                lambda key: cond_sample(
-                    key, x_grid_w_contxt, batch.xc[idx], batch.yc[idx], state.params_ema
-                )
-            )(jax.random.split(keys[3], n_samples)).squeeze()
-            print("y_cond", (jnp.isinf(y_cond) | jnp.isnan(y_cond)).sum())
-            # ax.plot(x_grid, y_cond[:, -1, :, 0].T, "C0", alpha=0.3)
-            plot_vf_and_cov(x_grid_w_contxt, y_cond, axes[:, 4], rf"$p_{{model}}$")
-            plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[0][4])
-            plot_vf(batch.xc[idx], batch.yc[idx], color="red", ax=axes[1][4])
+
+            def plot_cond_model(xs, xc, yc, rot, ax, title=""):
+                y_cond = vmap(
+                    lambda key: cond_sample(
+                        key, xs @ rot.T, xc @ rot.T, yc @ rot.T, state.params_ema
+                    )
+                )(jax.random.split(keys[3], n_samples)).squeeze()
+                y_cond = y_cond @ rot
+                print("y_cond", (jnp.isinf(y_cond) | jnp.isnan(y_cond)).sum())
+                # ax.plot(x_grid, y_cond[:, -1, :, 0].T, "C0", alpha=0.3)
+                plot_vf_and_cov(xs, y_cond, ax, title)
+                plot_vf(xc, yc, color="red", ax=ax[0])
+                plot_vf(xc, yc, color="red", ax=ax[1])
+
+            plot_cond_model(x_grid, xc, yc, I, axes.T[4], rf"$p_{{model}}$")
+            plot_cond_model(
+                x_grid, xc, yc, R, axes.T[6], rf"$p_{{model}}$ ({theta_deg}°)"
+            )
 
         dict_plots["backward"] = fig_backward
 
@@ -442,7 +463,7 @@ def run(cfg):
         metrics = defaultdict(list)
         eval_log_prob = jit(vmap(partial(log_prob, params=state.params_ema)))
 
-        if step == cfg.optim.num_steps:
+        if step == cfg.optim.n_steps:
             log.info("Evaluate ground truth")
             # TODO: evaluate diagonal cov GP
             for i, batch in enumerate(data_test):
@@ -462,66 +483,72 @@ def run(cfg):
                 metrics["true_logp"].append(jnp.mean(true_logp / n))
 
         log.info("Evaluate model")
-        for i, batch in enumerate(data_test):
-            key, *keys = jax.random.split(key, num_samples + 1)
+        for n in range(cfg.eval.n_test):
+            for i, batch in enumerate(data_test):
+                key, *keys = jax.random.split(key, num_samples + 1)
 
-            # NOTE: only eval on 2 batches appart from the last iteration
-            if step >= cfg.optim.num_steps or i < 2:
-                # if True:
-                log.info(f"${step=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}")
-                subkeys = jax.random.split(key, num=batch.ys.shape[0])
+                # NOTE: only eval on 2 batches appart from the last iteration
+                if step >= cfg.optim.n_steps or (i < 2 and n == 0):
+                    # if True:
+                    log.info(
+                        f"${step=}, ${n=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}"
+                    )
+                    subkeys = jax.random.split(key, num=batch.ys.shape[0])
 
-                if cfg.eval.like.n_steps > 0:
-                    # predictive log-likelihood
-                    n_test = batch.ys.shape[-2]
+                    if cfg.eval.like.n_steps > 0:
+                        # predictive log-likelihood
+                        n_test = batch.ys.shape[-2]
 
-                    # cond_logp2, nfe = eval_log_prob(
-                    #     subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc
-                    # )
-                    # metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
-                    # metrics["cond_nfe"].append(jnp.mean(nfe))
-                    # print("cond_logp2", cond_logp2.shape)
-                    # print("true_cond_logp", true_cond_logp.shape)
-                    # print("cond logp", metrics["cond_logp2"][-1])
+                        # cond_logp2, nfe = eval_log_prob(
+                        #     subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc
+                        # )
+                        # metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
+                        # metrics["cond_nfe"].append(jnp.mean(nfe))
+                        # print("cond_logp2", cond_logp2.shape)
+                        # print("true_cond_logp", true_cond_logp.shape)
+                        # print("cond logp", metrics["cond_logp2"][-1])
 
-                    logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
-                    x = jnp.concatenate([batch.xs, batch.xc], axis=1)
-                    y = jnp.concatenate([batch.ys, batch.yc], axis=1)
-                    logp_joint, nfe = eval_log_prob(subkeys, x, y)
-                    cond_logp = logp_joint - logp_context
-                    metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
-                    print("cond logp", metrics["cond_logp"][-1])
-                    # raise
+                        logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
+                        x = jnp.concatenate([batch.xs, batch.xc], axis=1)
+                        y = jnp.concatenate([batch.ys, batch.yc], axis=1)
+                        logp_joint, nfe = eval_log_prob(subkeys, x, y)
+                        cond_logp = logp_joint - logp_context
+                        metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
+                        print("cond logp", metrics["cond_logp"][-1])
 
-                    # prior likelihood
-                    n = y.shape[-2]
-                    metrics["prior_logp"].append(jnp.mean(logp_joint / n))
-                    metrics["prior_nfe"].append(jnp.mean(nfe))
-                    print("prior logp", metrics["prior_logp"][-1])
+                        # prior likelihood
+                        n = y.shape[-2]
+                        metrics["prior_logp"].append(jnp.mean(logp_joint / n))
+                        metrics["prior_nfe"].append(jnp.mean(nfe))
+                        print(
+                            "prior logp",
+                            metrics["prior_logp"][-1],
+                            metrics["prior_nfe"][-1],
+                        )
 
-                # # predictive mean and covariance mse
-                # # TODO: depends on dataset if dist is avail or not
-                # if cfg.eval.cond.n_steps > 0:
-                #     # true_mean = batch.ys
-                #     true_mean = vmap(lambda x: unflatten(true_prior(x).mean(), y_dim))(batch.xs)
-                #     def f(x):
-                #         ktt = true_prior(x).covariance()
-                #         ktt = rearrange(ktt, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=y_dim, p2=y_dim)
-                #         return ktt[jnp.diag_indices(ktt.shape[0])]
-                #     true_cov = vmap(f)(batch.xs)
+                    # # predictive mean and covariance mse
+                    # # TODO: depends on dataset if dist is avail or not
+                    # if cfg.eval.cond.n_steps > 0:
+                    #     # true_mean = batch.ys
+                    #     true_mean = vmap(lambda x: unflatten(true_prior(x).mean(), y_dim))(batch.xs)
+                    #     def f(x):
+                    #         ktt = true_prior(x).covariance()
+                    #         ktt = rearrange(ktt, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=y_dim, p2=y_dim)
+                    #         return ktt[jnp.diag_indices(ktt.shape[0])]
+                    #     true_cov = vmap(f)(batch.xs)
 
-                #     ys = jit(vmap(lambda key: vmap(lambda xs, xc, yc: cond_sample(key, xs, xc, yc, state.params_ema))(batch.xs, batch.xc, batch.yc)))(jnp.stack(keys)).squeeze()
-                #     f_pred = jnp.mean(ys, axis=0)
-                #     mse_mean_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
-                #     metrics["cond_mse"].append(mse_mean_pred)
-                #     f_pred = jnp.median(ys, axis=0)
-                #     mse_med_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
-                #     metrics["cond_mse_median"].append(mse_med_pred)
+                    #     ys = jit(vmap(lambda key: vmap(lambda xs, xc, yc: cond_sample(key, xs, xc, yc, state.params_ema))(batch.xs, batch.xc, batch.yc)))(jnp.stack(keys)).squeeze()
+                    #     f_pred = jnp.mean(ys, axis=0)
+                    #     mse_mean_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
+                    #     metrics["cond_mse"].append(mse_mean_pred)
+                    #     f_pred = jnp.median(ys, axis=0)
+                    #     mse_med_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
+                    #     metrics["cond_mse_median"].append(mse_med_pred)
 
-                #     f_pred = vmap(vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1]), in_axes=[2])(ys).transpose(1,0,2,3)
-                #     mse_cov_pred = jnp.sum((true_cov - f_pred).reshape(*true_cov.shape[:-2], -1) ** 2, -1)
-                #     mse_cov_pred = mse_cov_pred.mean(1).mean(0)
-                #     metrics["mse_cov_pred"].append(mse_cov_pred)
+                    #     f_pred = vmap(vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1]), in_axes=[2])(ys).transpose(1,0,2,3)
+                    #     mse_cov_pred = jnp.sum((true_cov - f_pred).reshape(*true_cov.shape[:-2], -1) ** 2, -1)
+                    #     mse_cov_pred = mse_cov_pred.mean(1).mean(0)
+                    #     metrics["mse_cov_pred"].append(mse_cov_pred)
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
         v = {k: jnp.mean(jnp.stack(v)) for k, v in metrics.items()}
@@ -535,21 +562,23 @@ def run(cfg):
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=cfg.optim.num_steps // 1,
+            every_steps=cfg.optim.n_steps // 1,
             callback_fn=lambda step, t, **kwargs: save_checkpoint(
                 kwargs["state"], ckpt_path, step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=cfg.optim.num_steps // 5,
-            # every_steps=cfg.optim.num_steps // 20,
+            every_steps=cfg.optim.n_steps // 5,
+            # every_steps=cfg.optim.n_steps // 40,
+            # every_steps=cfg.optim.n_steps // 10,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 eval(kwargs["state"], kwargs["key"], step), step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
-            every_steps=cfg.optim.num_steps // 5,
-            # every_steps=cfg.optim.num_steps // 100,
+            every_steps=cfg.optim.n_steps // 5,
+            # every_steps=cfg.optim.n_steps // 40,
+            # every_steps=cfg.optim.n_steps // 1,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"], step), step
             ),
@@ -585,11 +614,15 @@ def run(cfg):
                 progress_bar.set_description(
                     f"loss {metrics['loss']:.2f}", refresh=False
                 )
-    else:
+    elif cfg.mode == "eval":
         for action in actions[2:]:
             # action = actions[2]
-            action._cb_fn(cfg.optim.num_steps + 1, t=None, state=state, key=key)
+            action._cb_fn(cfg.optim.n_steps + 1, t=None, state=state, key=key)
             logger.save()
+    elif cfg.mode == "plot":
+        actions[-1]._cb_fn(cfg.optim.n_steps + 1, t=None, state=state, key=key)
+    elif cfg.mode == "metric":
+        actions[-2]._cb_fn(cfg.optim.n_steps + 1, t=None, state=state, key=key)
 
 
 @hydra.main(config_path="config", config_name="main", version_base="1.3.2")
