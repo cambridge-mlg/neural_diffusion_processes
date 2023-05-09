@@ -447,7 +447,7 @@ def run(cfg):
             rtol=config.rtol,
             atol=config.atol,
             hutchinson_type=config.hutchinson_type,
-            hutchinson_samples=config.hutchinson_samples,
+            n_hutchinson=config.n_hutchinson,
         )
 
     cfg.data._target_ = "neural_diffusion_processes.data.get_vec_gp_prior"
@@ -587,7 +587,7 @@ def run(cfg):
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
 
     if cfg.mode == "train":
-        logger.log_plot("process", plots(state, key, 0), 0)
+        # logger.log_plot("process", plots(state, key, 0), 0)
         logger.log_metrics(eval(state, key, 0), 0)
         # logger.log_metrics(eval(state, key, 1), 1)
         # logger.log_plot("process", plots(state, key, 1), 1)

@@ -869,7 +869,7 @@ def log_prob(
     rtol: float = 1e-3,
     atol: float = 1e-4,
     hutchinson_type: str = "None",
-    hutchinson_samples: int = 1,
+    n_hutchinson: int = 1,
     forward: bool = True,
     ts=None,
     return_all: bool = False,
@@ -893,7 +893,7 @@ def log_prob(
         key, t, yt, arg, network
     )
     div_fn = get_div_fn(reverse_drift_ode, hutchinson_type)
-    eps = div_noise(key, (hutchinson_samples, *y.shape), hutchinson_type)
+    eps = div_noise(key, (n_hutchinson, *y.shape), hutchinson_type)
 
     if x_known is not None and y_known is not None:
         num_context = len(x_known)

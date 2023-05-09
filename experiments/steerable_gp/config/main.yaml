@@ -37,7 +37,7 @@ beta_schedule:
   beta1: 15.0
 
 optim:
-  batch_size: 40
+  batch_size: 32
   n_steps: 80_000
   lr: 5e-4
   # learning_rate: ${eval:${optim.lr}*${eval:${optim.batch_size}/40}}
@@ -72,7 +72,7 @@ eval:
     # rtol: 1e-4
     atol: 1e-4
     # atol: 1e-6
-    hutchinson_samples: 8
+    n_hutchinson: 1
 
 
 data:
