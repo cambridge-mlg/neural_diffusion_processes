@@ -687,7 +687,7 @@ def conditional_sample2(
             * jax.random.normal(key, shape=yt_augmented.shape)
         )
         yt_m_dt += diffusion_langevin(t - dt, yt_augmented, x_augmented) @ noise
-        # yt_m_dt += langevin_terms.contr(t, t)[0] * langevin_terms.vf(t, yt_augmented, x_augmented)[0]
+        # yt_m_dt += langevin_terms.contr(t, t+dt)[0] * langevin_terms.vf(t, yt_augmented, x_augmented)[0]
         # yt_m_dt += langevin_terms.vf(t, yt_augmented, x_augmented)[1] @ noise
 
         yt = yt_m_dt[num_context * y_dim :]
@@ -864,7 +864,8 @@ def log_prob(
     key,
     # dt=1e-3/2,
     num_steps: int = 100,
-    solver: AbstractSolver = Tsit5(),
+    # solver: AbstractSolver = Tsit5(),
+    solver: AbstractSolver = dfx.Heun(),
     rtol: float = 1e-3,
     atol: float = 1e-4,
     hutchinson_type: str = "None",
@@ -914,6 +915,7 @@ def log_prob(
 
         drift = flatten(reverse_drift_ode(t, yt, x))
         logp = div_fn(t, yt, x, eps)
+        # logp = jnp.ones(())
         return drift, logp
 
     terms = dfx.ODETerm(logp_wrapper)
@@ -936,13 +938,26 @@ def log_prob(
     yT = unflatten(yT, y_dim)
     nfe = sol.stats["num_steps"]
     if x_known is not None and y_known is not None:
-        print("yT", yT.shape)
-        print("yT[num_context:]", yT[num_context:].shape)
-        print("x", x.shape)
-        print("x[num_context:]", x[num_context:].shape)
+        from neural_diffusion_processes.kernels import posterior_gp
+
+        # print("x_known", x_known.shape)
+        # print("y_known", y_known.shape)
+        # print("yT", yT.shape)
+        # print("x", x.shape)
+        # logp_prior = jax.vmap(
+        #     lambda y: sde.log_prob_prior(x[num_context:], y[num_context:])
+        # )(yT)
+
         logp_prior = jax.vmap(
-            lambda y: sde.log_prob_prior(x[num_context:], y[num_context:])
+            lambda y: posterior_gp(
+                sde.limiting_mean_fn,
+                sde.limiting_kernel,
+                sde.limiting_params,
+                x_known,
+                y_known,
+            )(x[num_context:]).log_prob(y.squeeze(-1)[num_context:])
         )(yT)
+        # logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
     else:
         logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
     # logp_prior = jax.vmap(lambda y: sde.log_prob_prior(x, y))(yT)
