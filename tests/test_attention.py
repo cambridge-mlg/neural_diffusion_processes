@@ -10,11 +10,10 @@ from check_shapes import check_shape, check_shapes
 
 from neural_diffusion_processes.models.attention import (
     BiDimensionalAttentionBlock,
-    # DenoiseModel,
+    MultiOutputBiAttentionModel,
     MultiOutputAttentionModel,
 )
 
-# from score_sde.models.embedding import TimeEmbeddingAndTransformation
 from neural_diffusion_processes.utils.tests import (
     _check_permutation_invariance,
     _check_permutation_equivariance,
@@ -79,17 +78,29 @@ def _denoise_model_fixture(rng, inputs):
     x, y, t = inputs
 
     def model(x, y, t):
-        # score = DenoiseModel(
         score = MultiOutputAttentionModel(
             Consts.num_layers,
             Consts.hidden_dim,
             Consts.num_heads,
         )
+        return score(x, y, t)
 
-        # t = TimeEmbeddingAndTransformation(128, 1000, 2)(t.reshape(-1, 1))
-        # y = rearrange(y, "... (n d) -> ... n d", d=x.shape[-1])
-        res = score(x, y, t)
-        return res
+    init, apply = hk.without_apply_rng(hk.transform(model))
+    params = init(rng, x, y, t)
+    return jax.jit(lambda x_, y_, t_: apply(params, x_, y_, t_))
+
+
+@pytest.fixture(name="denoise_model2")
+def _denoise_model_fixture(rng, inputs):
+    x, y, t = inputs
+
+    def model(x, y, t):
+        score = MultiOutputBiAttentionModel(
+            Consts.num_layers,
+            Consts.hidden_dim,
+            Consts.num_heads,
+        )
+        return score(x, y, t)
 
     init, apply = hk.without_apply_rng(hk.transform(model))
     params = init(rng, x, y, t)
@@ -153,3 +164,37 @@ def test_denoise_model_equivariance_for_input_dimensionality(
 ):
     x, y, t = inputs
     _check_permutation_equivariance(rng, lambda y_: denoise_model(x, y_, t), 2, 2, y)
+
+
+@check_shapes(
+    "inputs[0]: [batch_size, seq_len, x_dim]",
+    "inputs[1]: [batch_size, seq_len, y_dim]",
+    "inputs[2]: [batch_size]",
+)
+def test_denoise_model_equivariance_for_data_sequence(rng, inputs, denoise_model2):
+    x, y, t = inputs
+    _check_permutation_equivariance(
+        rng, lambda x_, y_: denoise_model2(x_, y_, t), 1, 1, x, y
+    )
+
+
+@check_shapes(
+    "inputs[0]: [batch_size, seq_len, x_dim]",
+    "inputs[1]: [batch_size, seq_len, y_dim]",
+    "inputs[2]: [batch_size]",
+)
+def test_denoise_model_invariance_for_input_dimensionality(rng, inputs, denoise_model2):
+    x, y, t = inputs
+    _check_permutation_invariance(rng, lambda x_: denoise_model2(x_, y, t), 2, x)
+
+
+@check_shapes(
+    "inputs[0]: [batch_size, seq_len, x_dim]",
+    "inputs[1]: [batch_size, seq_len, y_dim]",
+    "inputs[2]: [batch_size]",
+)
+def test_denoise_model_equivariance_for_input_dimensionality(
+    rng, inputs, denoise_model2
+):
+    x, y, t = inputs
+    _check_permutation_equivariance(rng, lambda y_: denoise_model2(x, y_, t), 2, 2, y)

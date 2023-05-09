@@ -70,3 +70,22 @@ def generate_logarithmic_sequence(end, L):
 
 def jax_unstack(x, axis=0):
     return [lax.index_in_dim(x, i, axis, keepdims=False) for i in range(x.shape[axis])]
+
+
+class dotdict(dict):
+    """dot.notation access to dictionary attributes"""
+
+    __getattr__ = dict.get
+    __setattr__ = dict.__setitem__
+    __delattr__ = dict.__delitem__
+
+
+mydict = {"val": "it works"}
+nested_dict = {"val": "nested works too"}
+mydict = dotdict(mydict)
+mydict.val
+# 'it works'
+
+mydict.nested = dotdict(nested_dict)
+mydict.nested.val
+# 'nested works too'

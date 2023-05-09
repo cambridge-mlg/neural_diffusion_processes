@@ -299,9 +299,7 @@ def scaled_dot_product_attention(
 
 
 class MultiHeadAttention(hk.Module):
-    def __init__(
-        self, d_model: int, num_heads: int, sparse: bool = False, name: str = None
-    ):
+    def __init__(self, d_model: int, num_heads: int, name: str = None):
         super().__init__(name=name)
         self.d_model = d_model
         self.num_heads = num_heads
@@ -309,7 +307,6 @@ class MultiHeadAttention(hk.Module):
         assert d_model % self.num_heads == 0
 
         self.depth = d_model // self.num_heads
-        assert sparse == False
         self.attention = scaled_dot_product_attention
 
     @check_shapes(
@@ -355,7 +352,6 @@ class MultiHeadAttention(hk.Module):
 class BiDimensionalAttentionBlock(hk.Module):
     hidden_dim: int
     num_heads: int
-    sparse: bool = False
 
     @check_shapes(
         "s: [batch_size, num_points, input_dim, hidden_dim]",
@@ -375,17 +371,13 @@ class BiDimensionalAttentionBlock(hk.Module):
         )
         y = cs(s + t, "[batch_size, num_points, input_dim, hidden_dim]")
 
-        y_att_d = MultiHeadAttention(2 * self.hidden_dim, self.num_heads, self.sparse)(
-            y, y, y
-        )
+        y_att_d = MultiHeadAttention(2 * self.hidden_dim, self.num_heads)(y, y, y)
         y_att_d = cs(y_att_d, "[batch_size, num_points, input_dim, hidden_dim_x2]")
 
         y_r = cs(
             jnp.swapaxes(y, 1, 2), "[batch_size, input_dim, num_points, hidden_dim]"
         )
-        y_att_n = MultiHeadAttention(2 * self.hidden_dim, self.num_heads, self.sparse)(
-            y_r, y_r, y_r
-        )
+        y_att_n = MultiHeadAttention(2 * self.hidden_dim, self.num_heads)(y_r, y_r, y_r)
         y_att_n = cs(y_att_n, "[batch_size, input_dim, num_points, hidden_dim_x2]")
         y_att_n = cs(
             jnp.swapaxes(y_att_n, 1, 2),
@@ -404,7 +396,6 @@ class BiDimensionalAttentionBlock(hk.Module):
 class AttentionBlock(hk.Module):
     hidden_dim: int
     num_heads: int
-    sparse: bool
 
     @check_shapes(
         "s: [batch_size, num_points, hidden_dim]",
@@ -425,9 +416,7 @@ class AttentionBlock(hk.Module):
         # y = cs(s + t, "[batch_size, num_points, hidden_dim]")
         y = cs(s + t.squeeze(1), "[batch_size, num_points, hidden_dim]")
 
-        y_att_d = MultiHeadAttention(2 * self.hidden_dim, self.num_heads, self.sparse)(
-            y, y, y
-        )
+        y_att_d = MultiHeadAttention(2 * self.hidden_dim, self.num_heads)(y, y, y)
         y_att_d = cs(y_att_d, "[batch_size, num_points, hidden_dim_x2]")
 
         # y = y_att_n + y_att_d
@@ -591,14 +580,14 @@ class MultiOutputAttentionModel(hk.Module):
         n_layers: int,  # Number of bi-dimensional attention blocks
         hidden_dim: int,
         num_heads: int,
-        sparse: bool = False,
+        zero_init: bool = True,
         **kwargs,
     ):
         super().__init__()
         self.num_layers = n_layers
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
-        self.sparse = sparse
+        self.zero_init = zero_init
 
     def __post_init__(self):
         print(">>>>>>>>>> AttentionModel")
@@ -637,7 +626,7 @@ class MultiOutputAttentionModel(hk.Module):
         skip = None
         for _ in range(self.num_layers):
             # layer = BiDimensionalAttentionBlock(self.hidden_dim, self.num_heads)
-            layer = AttentionBlock(self.hidden_dim, self.num_heads, self.sparse)
+            layer = AttentionBlock(self.hidden_dim, self.num_heads)
             x, skip_connection = layer(x, t_embedding)
             skip = skip_connection if skip is None else skip_connection + skip
 
@@ -654,7 +643,8 @@ class MultiOutputAttentionModel(hk.Module):
         skip = skip / math.sqrt(self.num_layers * 1.0)
         eps = jax.nn.gelu(hk.Linear(self.hidden_dim)(skip))
         # eps = hk.Linear(1, w_init=jnp.zeros)(eps)
-        eps = hk.Linear(y_dim, w_init=jnp.zeros)(eps)
+        w_init = jnp.zeros if self.zero_init else None
+        eps = hk.Linear(y_dim, w_init=w_init)(eps)
         # eps = cs(jnp.squeeze(eps, -1), "[batch, num_points, y_dim]")
         eps = cs(eps, "[batch, num_points, y_dim]")
         return eps
