@@ -594,8 +594,9 @@ def run(cfg):
         # logger.save()
 
         miniters = 50
+        # miniters = 1
         progress_bar = tqdm.tqdm(
-            list(range(1, cfg.optim.num_steps + 1)),
+            list(range(1, cfg.optim.n_steps + 1)),
             mininterval=5.0,
         )
         for step, batch, key in zip(progress_bar, dataloader, key_iter):
