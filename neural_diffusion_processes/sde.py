@@ -123,19 +123,9 @@ class SDE:
     beta_schedule: LinearBetaSchedule
     std_trick: bool = True
     residual_trick: bool = True
-    # is_score_preconditioned: bool = True
     score_parameterization: ScoreParameterization = ScoreParameterization.PRECONDITIONED_K
-    weighted: bool = False
     exact_score: bool = False
     loss_type: str = "l2"
-
-    def __post_init__(self):
-        if self.exact_score:
-            assert (
-                not self.std_trick and
-                not self.residual_trick# and
-                # not self.is_score_preconditioned
-            ), "Exact score. Do not apply re-parameterizations or preconditioning"
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):
@@ -253,16 +243,18 @@ class SDE:
     def score(self, key, t: Array, yt: Array, x: Array, mask: Array, network: ScoreNetwork) -> Array:
         """ This parametrises the (preconditioned) score K(x,x) grad log p(y_t|x) """
         score = network(t, yt, x, mask, key=key)
-        if self.std_trick:
-            std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
-            score = score / (std + 1e-3)
-        if self.residual_trick:
-            # NOTE: s.t. bwd SDE = fwd SDE
-            # NOTE: wrong sign?
-            # fwd_drift = self.drift(t, yt, x)
-            # residual = 2 * fwd_drift / self.beta_schedule(t)
-            residual = yt
-            score += residual
+
+        if not self.exact_score:
+            if self.std_trick:
+                std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
+                score = score / (std + 1e-3)
+            if self.residual_trick:
+                # NOTE: s.t. bwd SDE = fwd SDE
+                # NOTE: wrong sign?
+                # fwd_drift = self.drift(t, yt, x)
+                # residual = 2 * fwd_drift / self.beta_schedule(t)
+                residual = yt
+                score += residual
 
         # print("WARNING ADD NAME FOR NEW TRICK")
         # score = score * jnp.exp(-0.5 * self.beta_schedule.B(t))
@@ -293,17 +285,11 @@ class SDE:
                     raise ValueError("Exact score not implemented for ScoreParameterization.Y0")
                 elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
                     out = self.limiting_gram(x) @ out
-                    var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
-                    var += get_config().jitter
-                    out = out * var**.5
                 elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
-                    μ0t, k0t, params = self.p0t(t, yt)
-                    dist = prior_gp(μ0t, k0t, params)(x)
-                    sqrt = dist.scale.to_root()
-                    out = sqrt.T @ out
-                    var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
-                    var += get_config().jitter
-                    out = out / var**.5
+                    Ktt = self.limiting_gram(x)
+                    Ktt = Ktt._add_diagonal(get_config().jitter * identity(int(np.prod(yt.shape))))
+                    S = Ktt.to_root()
+                    out = S.T @ out
                 elif self.score_parameterization == ScoreParameterization.NONE:
                     pass
 
@@ -331,18 +317,8 @@ class SDE:
             Ktt = Ktt._add_diagonal(get_config().jitter * identity(int(np.prod(yt.shape))))
             S = Ktt.to_root()
             out = unflatten(S @ flatten(out), yt.shape[-1])
-
-            # old:
-            # μ0t, k0t, params = self.p0t(t, yt)
-            # dist = prior_gp(μ0t, k0t, params)(x)
-            # sqrt = dist.scale.to_root()
-            # var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
-            # var += get_config().jitter
-            # out = unflatten(sqrt @ flatten(out), yt.shape[-1]) / var**.5
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
-            var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
-            var += get_config().jitter
-            out = out / (var **.5)
+            pass
             
         return out
 
@@ -367,13 +343,21 @@ class SDE:
         x = move_far_away(x, mask)
 
         y_dim = y.shape[-1]
-        var = 1.0 - jnp.exp(-self.beta_schedule.B(t))
+        var = jnp.maximum(1.0 - jnp.exp(-self.beta_schedule.B(t)), 1e-5)
+        std = var ** .5
+
 
         ekey, nkey = jax.random.split(key)
         μ0t, k0t, params = self.p0t(t, y)
         dist = prior_gp(μ0t, k0t, params)(x)
 
-        sqrt = dist.scale.to_root()
+        # sqrt = dist.scale.to_root()
+
+        Ktt = self.limiting_gram(x)
+        Ktt = Ktt._add_diagonal(get_config().jitter * identity(int(np.prod(y.shape))))
+        scale = Ktt.to_root()
+        sqrt = std * scale
+
         Z = jax.random.normal(ekey, flatten(y).shape)
         affine_transformation = lambda x: dist.loc + sqrt @ x
         yt = unflatten(affine_transformation(Z), y_dim)
@@ -391,24 +375,19 @@ class SDE:
         if self.score_parameterization == ScoreParameterization.Y0:
             loss = loss_fn(score_nn_output - y)
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_K:
-            precond_noise = sqrt @ Z
-            loss = loss_fn(var**.5 * score_nn_output + unflatten(precond_noise, y_dim))
+            precond_noise = scale @ Z
+            loss = loss_fn(std * score_nn_output + unflatten(precond_noise, y_dim))
         elif self.score_parameterization == ScoreParameterization.PRECONDITIONED_S:
-            print("mul by std")
-            loss = loss_fn(var**.5 * score_nn_output + unflatten(Z, y_dim))
+            loss = loss_fn(std * score_nn_output + unflatten(Z, y_dim))
         elif self.score_parameterization == ScoreParameterization.NONE:
-            loss = loss_fn(unflatten(sqrt @ flatten(score_nn_output), y_dim) + unflatten(Z, y_dim))
+            target = scale.solve(unflatten(Z, y_dim))
+            loss = loss_fn(std * score_nn_output + target)
 
         loss = loss * (1. - mask[:, None])
         num_points = len(x) - jnp.count_nonzero(mask)
         loss = jnp.sum(jnp.sum(loss, -1)) / num_points
 
-        if self.weighted:
-            w = 1. - jnp.exp(-self.beta_schedule.B(t))
-        else:
-            w = 1.0
-
-        return w * loss
+        return loss
 
 
 def loss(sde: SDE, network: ScoreNetwork, batch: DataBatch, key):

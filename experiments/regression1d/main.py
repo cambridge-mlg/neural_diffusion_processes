@@ -28,11 +28,11 @@ loads the latest weights for the model, and evaluates to model.
 Flags
 -----
 
-1/ USE_TRUE_SCORE == False
+1/ config.sde.exact_score == False
 
 Default setting. Approximate the score by a neural network.
 
-2/ USE_TRUE_SCORE == True
+2/ config.sde.exact_score == True
 
 For the GP datasets (squared exponential, matern and weakly periodic) we
 use use the true score. In this case no training is required.
@@ -78,8 +78,7 @@ except:
     from config import Config, toy_config
 
 
-USE_TRUE_SCORE = False
-EXPERIMENT = "regression1d-May02-lim"
+EXPERIMENT = "regression1d-May11"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -379,14 +378,13 @@ def main(_):
             config.sde.score_parametrization
         ),
         # Below parameterisations are all set to False if we use the true score.
-        std_trick=config.sde.std_trick if not USE_TRUE_SCORE else False,
-        residual_trick=config.sde.residual_trick if not USE_TRUE_SCORE else False,
-        weighted=config.sde.weighted,
-        exact_score=USE_TRUE_SCORE,
+        std_trick=config.sde.std_trick,
+        residual_trick=config.sde.residual_trick,
         loss_type=config.sde.loss,
+        exact_score=config.sde.exact_score,
     )
 
-    if USE_TRUE_SCORE:
+    if config.sde.exact_score:
         factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
         assert isinstance(factory, regression1d.GPFunctionalDistribution)
         mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
@@ -502,13 +500,13 @@ def main(_):
     @jax.jit
     def conditional(params, key, xc, yc, maskc, xs, mask):
         net_params = (
-            true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
+            true_score_network if config.sde.exact_score else functools.partial(net, params)
         )
         return ndp.sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key, mask_context=maskc, mask_test=mask)
 
     logp = get_log_prob(
         sde,
-        lambda params, *args, **kwargs: true_score_network(*args, **kwargs) if USE_TRUE_SCORE else \
+        lambda params, *args, **kwargs: true_score_network(*args, **kwargs) if config.sde.exact_score else \
             net(params, *args, **kwargs)
     )
     
@@ -525,7 +523,7 @@ def main(_):
     if is_smoketest(config):
         tasks = ["interpolation"]
     else:
-        tasks = ["interpolation", "generalization"]  # extrapolation
+        tasks = ["interpolation"] #, "generalization"]  # extrapolation
 
     tasks = [
         Task(
@@ -548,7 +546,7 @@ def main(_):
     @functools.partial(jax.vmap, in_axes=[None, None, 0])
     def prior(params, x_target, key):
         net_params = (
-            true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
+            true_score_network if config.sde.exact_score else functools.partial(net, params)
         )
         return ndp.sde.sde_solve(sde, net_params, x_target, key=key)
     
@@ -592,7 +590,7 @@ def main(_):
     progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
 
     for step, batch, key in zip(progress_bar, train_ds, key_iter):
-        if USE_TRUE_SCORE:
+        if config.sde.exact_score:
             metrics = {'loss': 0.0, 'step': step}
         else:
             state, metrics = update_step(state, batch)

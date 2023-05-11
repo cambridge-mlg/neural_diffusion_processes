@@ -13,11 +13,11 @@ class SdeConfig:
     limiting_kernel: str = "noisy-se"
     limiting_kernel_noise_variance: float = 0.05
     t0: float = 5e-4
-    score_parametrization: str = "preconditioned_s"
-    std_trick: bool = False
+    score_parametrization: str = "preconditioned_k"
+    std_trick: bool = True
     residual_trick: bool = True
-    weighted: bool = True
     loss: str = "l2"
+    exact_score: bool = False
 
     def __post_init__(self):
         assert self.score_parametrization.lower() in [
@@ -45,7 +45,7 @@ class OptimizationConfig:
 @dataclasses.dataclass
 class NetworkConfig:
     num_bidim_attention_layers: int = 5
-    hidden_dim: int = 128
+    hidden_dim: int = 64
     num_heads: int = 8
     translation_invariant: bool = True
 

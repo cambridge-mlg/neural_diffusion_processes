@@ -58,7 +58,7 @@ DATASETS = [
 SCORE_PARAM = [
     "preconditioned_k",
     "preconditioned_s",
-    # "none",
+    "none",
     "y0"
 ]
 
@@ -72,12 +72,11 @@ if __name__ == "__main__":
     commands = (
         CommandsBuilder()
         # .add("config.data.dataset", ["se"])
-        .add("config.network.hidden_dim", [128, 256])
-        .add("config.sde.limiting_kernel", ["noisy-se"])
+        .add("config.sde.exact_score", [False, True])
         .add("config.sde.score_parametrization", SCORE_PARAM)
-        .add("config.sde.weighted", [True, False])
-        .add("config.sde.residual_trick", [True, False])
-        .add("config.sde.std_trick", [True, False])
+        .add("config.sde.limiting_kernel", ["noisy-se", "white"])
+        # .add("config.sde.residual_trick", [True, False])
+        # .add("config.sde.std_trick", [True, False])
         .build()
     )
 
