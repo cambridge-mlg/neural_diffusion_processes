@@ -1,0 +1,3 @@
+_target_: neural_diffusion_processes.data.era5.ERA5Dataset
+data_dir: ${hydra:runtime.cwd}/data/era5/us/
+file_ending: ERA5_US

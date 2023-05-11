@@ -1,0 +1,2 @@
+_target_: neural_diffusion_processes.data.load_gp_data_set
+file_path: ${hydra:runtime.cwd}/data/gp

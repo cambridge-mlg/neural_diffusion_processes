@@ -1,0 +1,23 @@
+_target_: neural_diffusion_processes.models.TransformerModule
+# mul0: 32
+# mul1: 8
+mul0: 12
+mul1: 4
+mul2: 0
+shlmax: 2
+# n_layers: 5
+# num_heads: 1
+act_fn: "gelu"
+max_radius: 2
+n_basis: 50
+radial_basis: smooth_finite
+# radial_basis: gaussian
+radial_n_neurons: 64
+radial_n_layers: 2
+k: 20
+# k: 50
+residual: false
+batch_norm: false
+sq_nl: false
+zero_init: false
+attention: true

@@ -1,0 +1,128 @@
+# @package _global_
+
+defaults:
+  # GENERAL #
+  - _self_
+
+  - server: base
+  - logger: csv
+
+  - net: mattn
+  - lr_schedule: rcosine
+  # - lr_schedule: constant
+  - beta_schedule: linear
+  - kernel: whitevec
+  - data: era5
+  
+  # enable color logging
+  - override hydra/hydra_logging: default
+  - override hydra/job_logging: default
+
+
+# net:
+#   n_layers: 5
+#   hidden_dim: 64
+
+name: era5
+mode: train
+seed: 0
+
+beta_schedule:
+  # t0: 3e-4
+  t0: 5e-4
+  t1: 1.0
+  beta0: 1e-4
+  beta1: 15.0
+
+optim:
+  batch_size: 32
+  n_steps: 80_000
+  lr: 5e-4
+  # learning_rate: ${eval:${optim.lr}*${eval:${optim.batch_size}/40}}
+  learning_rate: ${optim.lr}
+  ema_rate: 0.99
+
+eval:
+  # batch_size: ${eval:${optim.batch_size}//4}
+  batch_size: ${max:${eval:${optim.batch_size}//4},1}
+  n_test: 1
+  prior:
+    n_steps: 100
+    # rtol: 1e-4
+    rtol: null
+    atol: 1e-4
+    prob_flow: false
+  cond:
+    lambda0: 1.
+    psi: 1.
+    tau: 0.5
+    n_steps: 50
+    n_inner_steps: 50
+    prob_flow: false
+  like:
+    # hutchinson_type: Gaussian
+    hutchinson_type: Rademacher
+    # hutchinson_type: None
+    n_steps: 100
+    rtol: null
+    # rtol: 1e-6
+    # atol: 1e-6
+    # rtol: 1e-4
+    atol: 1e-4
+    # atol: 1e-6
+    n_hutchinson: 8
+
+
+data:
+  # _target_: neural_diffusion_processes.data.get_vec_gp_data
+  _convert_: all
+  n_train: 80_000
+  seed_test: 1
+  n_test: 10_000
+  seed: 0
+  # min_context: 5
+  # max_context: 50
+  min_context: 25
+  max_context: ${data.min_context}
+  # context_sizes:
+  # n_points: 50
+  n_points: [-1]
+
+kernel:
+  params:
+    variance: 1.
+    # variance: ${data.variance}
+    lengthscale: 1.
+  noise: .1
+  cls:
+    output_dim: 4
+
+sde:
+  _target_: neural_diffusion_processes.sde.SDE
+  _convert_: object
+  std_trick: false
+  residual_trick: true
+  # limiting_kernel_hyperparameters: 
+  #   variance: 1.0
+  #   lengthscale: 1.0
+  limiting_kernel: ${kernel.cls}
+    # _target_: neural_diffusion_processes.kernels.RBFVec
+    # _target_: neural_diffusion_processes.kernels.WhiteVec
+    # output_dim: 2
+  limiting_mean_fn:
+    _target_: gpjax.Zero
+    output_dim: 4
+  exact_score: false
+
+net:
+  n_layers: 5
+  hidden_dim: 128
+  num_heads: 4
+
+# eval_batch_size: ${batch_size}
+now: ${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+# resume: false
+# mode: all
+PROJECT_NAME: score-sde
+# PROJECT_NAME: neural_diffusion_processes

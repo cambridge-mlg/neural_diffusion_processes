@@ -203,8 +203,8 @@ def load_gp_data_set(
     x = jnp.array(x, dtype=float)
     y = jnp.array(y, dtype=float)
 
-    # perm = jax.random.permutation(key, jnp.arange(len(x)))
-    perm = jnp.arange(len(x))
+    perm = jax.random.permutation(key, jnp.arange(len(x)))
+    # perm = jnp.arange(len(x))
     if dataset == "train":
         if kwargs["n_train"] > len(x):
             raise Exception("Not enough samples available")

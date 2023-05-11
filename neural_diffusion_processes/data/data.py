@@ -43,12 +43,13 @@ def dataloader(
     dataset_size = len(x)
     indices_batch = jnp.arange(dataset_size)
     indices_points = jnp.arange(x.shape[1])
+    assert dataset_size >= batch_size
     while True:
         perm = jr.permutation(key, indices_batch)
         (key,) = jr.split(key, 1)
         start = 0
         end = batch_size
-        while end < dataset_size:
+        while end <= dataset_size:
             batch_perm = perm[start:end]
             (key,) = jr.split(key, 1)
             n_point = jr.permutation(key, n_points)[0]
