@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - override /sde: euclidean
+  - override /solver: euler
+  - override /transform: none
+
+optim:
+  batch_size: 1024
+
+beta_schedule:
+  beta1: 15.0

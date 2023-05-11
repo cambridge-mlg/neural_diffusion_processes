@@ -1,7 +1,7 @@
-default_solver:
+solver:
   _target_: diffrax.Euler
 
 kwargs:
-  rtol: none
-  atol: none
+  rtol: ${eval:None}
+  atol: ${eval:None}
   num_steps: 1000

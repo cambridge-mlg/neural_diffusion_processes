@@ -2,4 +2,7 @@ _target_: neural_diffusion_processes.brownian_sde.SphericalBrownian
 std_trick: false
 residual_trick: false
 limiting_kernel: none
-limiting_mean_fn: none
+limiting_mean_fn: # Note: not used
+  _target_: gpjax.Zero
+  output_dim: 2
+loss_type: dsm

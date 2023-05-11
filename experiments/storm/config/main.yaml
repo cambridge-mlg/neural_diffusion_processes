@@ -13,6 +13,8 @@ defaults:
   - kernel: whitevec
   - transform: none
   - sde: euclidean
+  - solver: euler
+  - model: euclidean
   
   # enable color logging
   - override hydra/hydra_logging: default
@@ -36,10 +38,11 @@ beta_schedule:
 
 optim:
   # batch_size: 30
-  batch_size: 128
+  batch_size: 1024
   eval_batch_size: ${eval:${optim.batch_size}//8}
   num_steps: 50_000
   lr: 1e-3
+  lr_decay_factor: 100
   ema_rate: 0.999
 
 data:
@@ -50,7 +53,6 @@ data:
   basin: all
   limit: false
   normalise: false
-  seed_test: 1
   num_samples_test:  64
   # num_samples_test: 20_000
   seed: 0
@@ -60,6 +62,11 @@ data:
   max_context: ${data.min_context}
   # n_points: 50
   n_points: -1
+  split_proportions: [0.9, 0.0, 0.1]
+
+eval:
+  batch_size: 128
+  sample: 5
 
 kernel:
   params:
@@ -67,7 +74,7 @@ kernel:
 
 net:
   n_layers: 5
-  hidden_dim: 64
+  hidden_dim: 128
   num_heads: 4
 
 # eval_batch_size: ${batch_size}

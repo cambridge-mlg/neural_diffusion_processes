@@ -2,5 +2,5 @@
 
 
 defaults:
-  - base_ziz
+  - ziz
   - override /hydra/launcher: submitit_local
