@@ -253,7 +253,7 @@ def _weaklyper_dataset_factory():
         "kernel": [
             {
             "variance": _KERNEL_VAR,
-            "lengthscale": _LENGTHSCALE,
+            "lengthscale": 0.5,
             "period": 1.0,
             },
             {"variance": _NOISE_VAR,},

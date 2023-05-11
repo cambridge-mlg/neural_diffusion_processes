@@ -28,7 +28,7 @@ def set_config(new_config: Config) -> None:
 @contextlib.contextmanager
 def as_context(temporary_config: Optional[Config] = None) -> Generator[None, None, None]:
     """Ensure that global configs defaults, with a context manager. Useful for testing."""
-    current_config = config()
+    current_config = get_config()
     temporary_config = replace(current_config) if temporary_config is None else temporary_config
     try:
         set_config(temporary_config)

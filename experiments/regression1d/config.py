@@ -27,6 +27,9 @@ class SdeConfig:
 
         assert self.loss in ["l1", "l2"], "Unknown loss {}.".format(self.loss)
 
+        if "short" not in self.limiting_kernel:
+            self.limiting_kernel_lengthscale = None
+
 
 @dataclasses.dataclass
 class OptimizationConfig:
@@ -46,7 +49,7 @@ class OptimizationConfig:
 @dataclasses.dataclass
 class NetworkConfig:
     num_bidim_attention_layers: int = 5
-    hidden_dim: int = 64
+    hidden_dim: int = 128
     num_heads: int = 8
     translation_invariant: bool = True
 

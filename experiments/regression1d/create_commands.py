@@ -28,8 +28,9 @@ class CommandsBuilder:
     command_template = "python main.py {config};"
     single_config_template = " --{key}={value}"
 
-    keys = []
-    values = []
+    def __init__(self) -> None:
+        self.keys = []
+        self.values = []
 
     def add(self, key, values):
         self.keys.append(key)
@@ -45,7 +46,7 @@ class CommandsBuilder:
             command = self.command_template.format(config=config)
             commands.append(command)
         return commands
-
+    
 
 DATASETS = [
     "se",
@@ -69,16 +70,27 @@ if __name__ == "__main__":
         print("File to store script already exists", NAME)
         exit(-1)
 
-    commands = (
-        CommandsBuilder()
-        # .add("config.data.dataset", ["se"])
-        .add("config.sde.exact_score", [False, True])
-        .add("config.sde.score_parametrization", SCORE_PARAM)
-        .add("config.sde.limiting_kernel", ["noisy-se", "white"])
-        # .add("config.sde.residual_trick", [True, False])
-        # .add("config.sde.std_trick", [True, False])
-        .build()
-    )
+    commands = []
+
+    for dataset in ["se", "periodic"]:
+        commands.extend(
+            CommandsBuilder()
+            .add("config.data.dataset", [dataset])
+            .add("config.sde.exact_score", [False])
+            .add("config.sde.score_parametrization", SCORE_PARAM)
+            .add("config.sde.limiting_kernel", [f"noisy-{dataset}", "white", f"short-noisy-{dataset}"])
+            .add("config.sde.residual_trick", [True, False])
+            .add("config.sde.std_trick", [True, False])
+            .build()
+        )
+        commands.extend(
+            CommandsBuilder()
+            .add("config.data.dataset", [dataset])
+            .add("config.sde.exact_score", [True])
+            .add("config.sde.score_parametrization", SCORE_PARAM)
+            .add("config.sde.limiting_kernel", [f"noisy-{dataset}", "white", f"short-noisy-{dataset}"])
+            .build()
+        )
 
     with open(NAME, "w") as file:
         file.write("\n".join(commands))
