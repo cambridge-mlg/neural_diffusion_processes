@@ -55,7 +55,7 @@ log = logging.getLogger(__name__)
 
 def run(cfg):
     jax.config.update("jax_enable_x64", True)
-    policy = jmp.get_policy("params=float32,compute=float32,output=float32")
+    policy = jmp.get_policy("params=float32,compute=float32,output=float64")
 
     log.info("Stage : Startup")
     log.info(f"Jax devices: {jax.devices()}")
@@ -172,7 +172,7 @@ def run(cfg):
         t, y, x = policy.cast_to_compute((t, y, x))
         model = instantiate(cfg.net)
         log.info(f"network: {model} | shape={y.shape}")
-        return model(x, y, t)
+        return policy.cast_to_output(model(x, y, t))
 
     @jit
     def net(params, t, yt, x, *, key):
@@ -495,13 +495,13 @@ def run(cfg):
                         # print("true_cond_logp", true_cond_logp.shape)
                         # print("cond logp", metrics["cond_logp2"][-1])
 
-                        logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
+                        # logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
                         x = jnp.concatenate([batch.xs, batch.xc], axis=1)
                         y = jnp.concatenate([batch.ys, batch.yc], axis=1)
                         logp_joint, nfe = eval_log_prob(subkeys, x, y)
-                        cond_logp = logp_joint - logp_context
-                        metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
-                        print("cond logp", metrics["cond_logp"][-1])
+                        # cond_logp = logp_joint - logp_context
+                        # metrics["cond_logp"].append(jnp.mean(cond_logp / n_test))
+                        # print("cond logp", metrics["cond_logp"][-1])
 
                         # prior likelihood
                         n = y.shape[-2]
@@ -562,22 +562,22 @@ def run(cfg):
                 eval(kwargs["state"], kwargs["key"], step), step
             ),
         ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=cfg.optim.n_steps // 5,
-            # every_steps=cfg.optim.n_steps // 40,
-            # every_steps=cfg.optim.n_steps // 1,
-            callback_fn=lambda step, t, **kwargs: logger.log_plot(
-                "process", plots(kwargs["state"], kwargs["key"], step), step
-            ),
-        ),
+        # ml_tools.actions.PeriodicCallback(
+        #     every_steps=cfg.optim.n_steps // 5,
+        #     # every_steps=cfg.optim.n_steps // 40,
+        #     # every_steps=cfg.optim.n_steps // 1,
+        #     callback_fn=lambda step, t, **kwargs: logger.log_plot(
+        #         "process", plots(kwargs["state"], kwargs["key"], step), step
+        #     ),
+        # ),
     ]
 
     # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
     # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
 
     if cfg.mode == "train":
-        # logger.log_plot("process", plots(state, key, 0), 0)
         # logger.log_metrics(eval(state, key, 0), 0)
+        # logger.log_plot("process", plots(state, key, 0), 0)
         # logger.log_metrics(eval(state, key, 1), 1)
         # logger.log_plot("process", plots(state, key, 1), 1)
         # logger.save()

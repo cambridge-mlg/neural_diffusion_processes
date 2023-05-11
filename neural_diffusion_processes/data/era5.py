@@ -61,6 +61,9 @@ def ERA5Dataset(key, data_dir, file_ending, dataset="train", **kwargs):
         x = x[3500:]
         y = y[3500:]
 
+    x = jnp.array(x, dtype=float)
+    y = jnp.array(y, dtype=float)
+
     print("x", x.shape)
     print("y", y.shape)
     return x, y

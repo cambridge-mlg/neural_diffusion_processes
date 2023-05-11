@@ -76,7 +76,7 @@ eval:
 data:
   # _target_: neural_diffusion_processes.data.get_vec_gp_data
   _convert_: all
-  n_train: 80_000
+  n_train: 50_000
   seed_test: 1
   n_test: 10_000
   seed: 0
