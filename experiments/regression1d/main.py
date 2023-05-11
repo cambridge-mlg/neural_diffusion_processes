@@ -355,12 +355,23 @@ def main(_):
 
     ####### init relevant diffusion classes
     beta = ndp.sde.LinearBetaSchedule(t0=config.sde.t0)
-    limiting_kernel = config.sde.limiting_kernel[config.sde.limiting_kernel.find("-")+1:]
+    if "short" in config.sde.limiting_kernel:
+        short_lengthscale = True
+        limiting_kernel = config.sde.limiting_kernel[config.sde.limiting_kernel.find("-")+1:]
+    else:
+        short_lengthscale = False
+        limiting_kernel = config.sde.limiting_kernel
+
+    limiting_kernel = limiting_kernel[config.sde.limiting_kernel.find("-")+1:]
     limiting_kernel = ndp.kernels.get_kernel(limiting_kernel, active_dims=[0])
     hyps = {
         "mean_function": {},
         "kernel": limiting_kernel.init_params(None),
     }
+
+    if short_lengthscale and "lengthscale" in hyps["kernel"]:
+        hyps["kernel"]["lengthscale"] = config.sde.limiting_kernel_lengthscale * hyps["kernel"]["lengthscale"]
+
     if "noisy" in config.sde.limiting_kernel:
         limiting_kernel = jaxkern.SumKernel(
             [limiting_kernel, jaxkern.stationary.White(active_dims=[0])]

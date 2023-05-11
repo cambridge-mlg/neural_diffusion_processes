@@ -10,8 +10,9 @@ class DataConfig:
 
 @dataclasses.dataclass
 class SdeConfig:
-    limiting_kernel: str = "noisy-se"
+    limiting_kernel: str = "short-noisy-se"
     limiting_kernel_noise_variance: float = 0.05
+    limiting_kernel_lengthscale: float = 0.1
     t0: float = 5e-4
     score_parametrization: str = "preconditioned_k"
     std_trick: bool = True
@@ -53,7 +54,7 @@ class NetworkConfig:
 @dataclasses.dataclass
 class EvalConfig:
     batch_size: int = 32
-    num_samples_in_epoch: int = int(2**7)
+    num_samples_in_epoch: int = int(2**9)
 
 
 @dataclasses.dataclass
