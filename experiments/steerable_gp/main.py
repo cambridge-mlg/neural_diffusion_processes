@@ -266,7 +266,7 @@ def run(cfg):
         net_ = partial(net, params) if not cfg.sde.exact_score else exact_score
         config = cfg.eval.cond
         x_context += 1.0e-8  # NOTE: to avoid context overlapping with grid
-        return ndp.sde.conditional_sample2(
+        return ndp.sde.conditional_sample_independant_context_noise(
             sde,
             net_,
             x_context,

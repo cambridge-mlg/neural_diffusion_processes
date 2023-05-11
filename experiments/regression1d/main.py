@@ -322,7 +322,7 @@ def main(_):
         net_params = (
             true_score_network if USE_TRUE_SCORE else functools.partial(net, params)
         )
-        return ndp.sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key)
+        return ndp.sde.conditional_sample_independant_context_noise(sde, net_params, xc, yc, xs, key=key)
 
 
     @jax.jit

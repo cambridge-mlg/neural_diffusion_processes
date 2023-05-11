@@ -1,4 +1,8 @@
 # %%
+%load_ext autoreload
+%autoreload 2
+
+# %%
 from __future__ import annotations
 from functools import partial
 import os
@@ -439,7 +443,7 @@ import time
 start = time.time()
 # conditional_sample = jax.jit(lambda  x, y, x_eval, key: ndp.sde.conditional_sample2(sde, None, x, y, x_eval, key=key, num_steps=num_steps, num_inner_steps=num_inner_steps, langevin_kernel=True, alpha=3.))
 conditional_sample = jax.jit(
-    lambda x, y, x_eval, key: ndp.sde.conditional_sample2(
+    lambda x, y, x_eval, key: ndp.sde.conditional_sample_independant_context_noise(
         sde,
         network,
         x,
@@ -475,9 +479,8 @@ mse_cov_pred = jnp.sum(
 ).mean(0)
 print(f"cov mse={mse_cov_pred:.2f}")
 
-
 # Plotting conditional vs true posterior gP
-fig, axes = plt.subplots(2, 2, sharex=True, sharey=True, figsize=(8 * 2, 8 * 2))
+fig, axes = plt.subplots(2, 2, sharex=True, sharey=True, figsize=(4 * 2, 4 * 2))
 fig.subplots_adjust(wspace=0, hspace=0.0)
 
 for ax, ys in zip(axes.T, [samples, y_test]):

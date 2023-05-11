@@ -42,7 +42,7 @@ from neural_diffusion_processes.utils.vis import (
     plot_covariances,
 )
 from neural_diffusion_processes.utils import flatten, unflatten
-from neural_diffusion_processes.data import radial_grid_2d, DataBatch
+from neural_diffusion_processes.data import shuffle_data, split_data
 
 from neural_diffusion_processes.data.storm import LONOFFSET, RADDEG, LONSTART, LONSTOP
 
@@ -96,20 +96,40 @@ def run(cfg):
         cfg.data,
     )
     transform = get_method(cfg.transform._target_)
+
+    def model_to_latlon_coords(ys):
+        ys = transform(ys, reverse=True)
+        ys = ys * data_normalisation[1] + data_normalisation[0]
+        return ys
+
     data = (
         data[0],
         transform(data[1]),
     )
-    dataloader = ndp.data.dataloader(
-        data,
+    data = shuffle_data(cfg.data.seed, data)
+    train_data, validation_data, test_data = split_data(
+        data, cfg.data.split_proportions
+    )
+
+    train_dataloader = ndp.data.dataloader(
+        train_data,
         batch_size=cfg.optim.batch_size,
         key=next(key_iter),
         n_points=cfg.data.n_points,
     )
-    batch0 = next(dataloader)
+    test_dataloader = ndp.data.dataloader(
+        train_data,
+        batch_size=cfg.optim.batch_size,
+        key=next(key_iter),
+        n_points=cfg.data.n_points,
+        run_forever=False,
+    )
+    batch0 = next(train_dataloader)
     x_dim = batch0.xs.shape[-1]
     y_dim = batch0.ys.shape[-1]
     log.info(f"num elements: {batch0.xs.shape[-2]} & x_dim: {x_dim} & y_dim: {y_dim}")
+
+    solver = instantiate(cfg.solver.solver)
 
     # plot_batch = DataBatch(xs=data[0][:100], ys=data[1][:100])
     plot_batch = next(
@@ -121,29 +141,6 @@ def run(cfg):
             shuffle_xs=False,
         )
     )
-    # data_test = call(
-    #     cfg.data,
-    #     key=jax.random.PRNGKey(cfg.data.seed_test),
-    #     num_samples=cfg.data.num_samples_test,
-    # )
-    # plot_batch = DataBatch(xs=data_test[0][:32], ys=data_test[1][:32])
-    # plot_batch = ndp.data.split_dataset_in_context_and_target(
-    #     plot_batch, next(key_iter), cfg.data.min_context, cfg.data.max_context
-    # )
-
-    # dataloader_test = ndp.data.dataloader(
-    #     data_test,
-    #     batch_size=cfg.optim.eval_batch_size,
-    #     key=next(key_iter),
-    #     run_forever=False,  # only run once
-    #     n_points=cfg.data.n_points,
-    # )
-    # data_test: List[ndp.data.DataBatch] = [
-    #     ndp.data.split_dataset_in_context_and_target(
-    #         batch, next(key_iter), cfg.data.min_context, cfg.data.max_context
-    #     )
-    #     for batch in dataloader_test
-    # ]
 
     ####### Forward haiku model
 
@@ -225,21 +222,7 @@ def run(cfg):
 
     # ########## Plotting
     @jit
-    def reverse_sample_heun(key, x_grid, params, yT=None):
-        print("reverse_sample", x_grid.shape)
-        net_ = partial(net, params)
-        return ndp.sde.sde_solve(sde, net_, x_grid, key=key, y=yT, prob_flow=False)
-
-    @filter_jit
-    def reverse_sample_times_heun(key, x_grid, params, yT=None, ts=None):
-        print("reverse_sample", x_grid.shape)
-        net_ = partial(net, params)
-        return ndp.sde.sde_solve(
-            sde, net_, x_grid, key=key, y=yT, prob_flow=False, ts=ts
-        )
-
-    @jit
-    def reverse_sample_euler(key, x_grid, params, yT=None):
+    def reverse_sample(key, x_grid, params, yT=None):
         print("reverse_sample", x_grid.shape)
         net_ = partial(net, params)
         return ndp.sde.sde_solve(
@@ -249,13 +232,12 @@ def run(cfg):
             key=key,
             y=yT,
             prob_flow=False,
-            solver=dfx.Euler(),
-            rtol=None,
-            atol=None,
+            solver=solver,
+            **cfg.solver.kwargs,
         )
 
     @filter_jit
-    def reverse_sample_times_euler(key, x_grid, params, yT=None, ts=None):
+    def reverse_sample_times(key, x_grid, params, yT=None, ts=None):
         print("reverse_sample", x_grid.shape)
         net_ = partial(net, params)
         return ndp.sde.sde_solve(
@@ -266,9 +248,8 @@ def run(cfg):
             y=yT,
             prob_flow=False,
             ts=ts,
-            solver=dfx.Euler(),
-            rtol=None,
-            atol=None,
+            solver=solver,
+            **cfg.solver.kwargs,
         )
 
     @jit
@@ -276,7 +257,7 @@ def run(cfg):
         net_ = partial(net, params)
         x_context += 1.0e-5  # NOTE: to avoid context overlapping with grid
         # return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_inner_steps=50)
-        return ndp.sde.conditional_sample2(
+        return ndp.sde.conditional_sample_independant_context_noise(
             sde,
             net_,
             x_context,
@@ -333,9 +314,8 @@ def run(cfg):
                 # labels=[False, False, False, True],
             )
 
-            ys = ys * data_normalisation[1] + data_normalisation[0]
-            ys = transform(ys, reverse=True)
-            dists = jnp.linalg.norm((ys[:, :-1] - ys[:, 1:]), axis=-1)
+            ys = model_to_latlon_coords(ys)
+            # dists = jnp.linalg.norm((ys[:, :-1] - ys[:, 1:]), axis=-1)
             # nan_index = dists > ((50 * RADDEG) ** 2)
             # nan_index = jnp.repeat(
             #     jnp.concatenate([nan_index, nan_index[:, -2:-1]], axis=-1)[..., None],
@@ -387,7 +367,7 @@ def run(cfg):
         # y_model = vmap(reverse_sample, in_axes=[0, None, None, 0])(
         #     jax.random.split(keys[3], n_samples), x_grid, state.params_ema, y_ref
         # ).squeeze()
-        y_model = vmap(reverse_sample_times_euler, in_axes=[0, None, None, 0, None])(
+        y_model = vmap(reverse_sample_times, in_axes=[0, None, None, 0, None])(
             jax.random.split(keys[3], n_samples),
             x_grid,
             state.params_ema,
@@ -471,7 +451,7 @@ def run(cfg):
         k = jax.random.split(keys[3], N)
         y_model = jnp.concatenate(
             [
-                vmap(reverse_sample_euler, in_axes=[0, None, None, 0])(
+                vmap(reverse_sample, in_axes=[0, None, None, 0])(
                     jax.random.split(k[i], n_samples),
                     x_grid,
                     state.params_ema,
@@ -524,7 +504,7 @@ def run(cfg):
                         batch.xs,
                         yt,
                         axes[i, k + 1],
-                        rf"$p_{{t=}}$" if i == 0 else None,
+                        rf"$p_{{model}} t={ts_fwd[k]}$" if i == 0 else None,
                     )
 
                 # plot_vf_and_cov(x_grid, y_ref, axes[:, -1], rf"$p_{{ref}}$")
@@ -672,8 +652,8 @@ def run(cfg):
     ]
 
     if cfg.mode == "train":
-        logger.log_plot("process", plots(state, jax.random.PRNGKey(cfg.seed), 0), 0)
-        for step, batch, key in zip(progress_bar, dataloader, key_iter):
+        # logger.log_plot("process", plots(state, jax.random.PRNGKey(cfg.seed), 0), 0)
+        for step, batch, key in zip(progress_bar, train_dataloader, key_iter):
             state, metrics = update_step(state, batch)
             if jnp.isnan(metrics["loss"]).any():
                 log.warning("Loss is nan")
@@ -683,7 +663,7 @@ def run(cfg):
             for action in actions:
                 action(step, t=None, metrics=metrics, state=state, key=key)
 
-            if step % 100 == 0:
+            if step % 100 == 0 or step == 1:
                 progress_bar.set_description(
                     f"log loss {float(jnp.log(metrics['loss'])):.2f}"
                 )

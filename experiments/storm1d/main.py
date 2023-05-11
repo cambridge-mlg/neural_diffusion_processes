@@ -235,7 +235,7 @@ def run(cfg):
         net_ = partial(net, params)
         x_context += 1.0e-5  # NOTE: to avoid context overlapping with grid
         # return ndp.sde.conditional_sample2(sde, net_, x_context, y_context, x_grid, key=key, num_inner_steps=50)
-        return ndp.sde.conditional_sample2(
+        return ndp.sde.conditional_sample_independant_context_noise(
             sde,
             net_,
             x_context,
