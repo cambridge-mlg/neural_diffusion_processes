@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Tuple, Iterator, Optional, Mapping
+from typing import Tuple, Iterator, Optional, Mapping, Union
 import dataclasses
 
 import jax
@@ -102,3 +102,27 @@ def split_dataset_in_context_and_target(
         xc=jnp.take(x, axis=1, indices=perm[:num_context]),
         yc=jnp.take(y, axis=1, indices=perm[:num_context]),
     )
+
+
+def shuffle_data(key_or_seed: Union[int, jax.random.KeyArray], data):
+    if isinstance(key_or_seed, int):
+        key = jax.random.PRNGKey(key_or_seed)
+    else:
+        key = key_or_seed
+
+    perm = jax.random.permutation(key, len(data[0]))
+
+    return (data[0][perm], data[1][perm])
+
+
+def split_data(data, proportions):
+    n = len(data[0])
+    lengths = [0]
+    for p in proportions[:-1]:
+        lengths.append(int(n * p))
+    lengths.append(n - sum(lengths))
+    split_points = jnp.cumsum(jnp.array(lengths, dtype=int))
+    return [
+        (data[0][i1:i2], data[1][i1:i2])
+        for i1, i2 in zip(split_points[:-1], split_points[1:])
+    ]
