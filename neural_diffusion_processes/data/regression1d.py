@@ -33,6 +33,7 @@ _DATASET = [
     "se",
     "matern",
     "weaklyperiodic",
+    "periodic",
     "sawtooth",
     "mixture",
 ]
@@ -72,6 +73,11 @@ _DATASET_CONFIGS = {
         eval_num_context=UniformDiscrete(1, 10),
     ),
     "weaklyperiodic": DatasetConfig(
+        train_num_target=UniformDiscrete(1, 60),
+        eval_num_target=UniformDiscrete(50, 50),
+        eval_num_context=UniformDiscrete(1, 10),
+    ),
+    "periodic": DatasetConfig(
         train_num_target=UniformDiscrete(1, 60),
         eval_num_target=UniformDiscrete(50, 50),
         eval_num_context=UniformDiscrete(1, 10),
@@ -227,6 +233,27 @@ def _weaklyper_dataset_factory():
             "variance": _KERNEL_VAR,
             "per_lengthscale": _LENGTHSCALE,
             "rbf_lengthscale": 0.5,
+            "period": 1.0,
+            },
+            {"variance": _NOISE_VAR,},
+        ],
+        "noise_variance": 0.0,
+    }
+
+    return GPFunctionalDistribution(kernel, params)
+
+
+@register_dataset_factory("periodic")
+def _weaklyper_dataset_factory():
+    per = jaxkern.stationary.Periodic(active_dims=[0])
+    white = jaxkern.White(active_dims=[0])
+    kernel = jaxkern.SumKernel([per, white])
+    params = {
+        "mean_function": {},
+        "kernel": [
+            {
+            "variance": _KERNEL_VAR,
+            "lengthscale": _LENGTHSCALE,
             "period": 1.0,
             },
             {"variance": _NOISE_VAR,},

@@ -554,6 +554,8 @@ def get_kernel(kernel_type: str, active_dims = Optional[List[int]]) -> jaxkern.b
         k = jaxkern.stationary.Matern32(active_dims=active_dims)
     elif kernel_type.lower() == "matern52":
         k =  jaxkern.stationary.Matern52(active_dims=active_dims)
+    elif kernel_type.lower() == "periodic":
+        k = jaxkern.stationary.Periodic(active_dims=active_dims)
     elif kernel_type.lower() == "white":
         k = jaxkern.stationary.White(active_dims=active_dims)
     elif "white" in kernel_type.lower() \
