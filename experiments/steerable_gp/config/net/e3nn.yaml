@@ -21,3 +21,4 @@ batch_norm: false
 sq_nl: false
 zero_init: false
 attention: true
+irreps_out: 1x1e

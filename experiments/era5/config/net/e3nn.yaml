@@ -19,5 +19,6 @@ k: 20
 residual: false
 batch_norm: false
 sq_nl: false
-zero_init: false
+zero_init: true
 attention: true
+irreps_out: 2x0e+1x1e

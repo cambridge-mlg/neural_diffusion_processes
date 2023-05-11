@@ -340,7 +340,7 @@ class TransformerModule(hk.Module):
         # print(config)
         config = dotdict(config)
         self.config = config
-        self.config.irreps_out = e3nn.Irreps("1x1e")  # TODO:
+        self.config.irreps_out = e3nn.Irreps(self.config.irreps_out)
 
         # if use_second_order_repr:
         #     irrep_seq = [
@@ -395,13 +395,18 @@ class TransformerModule(hk.Module):
         # hk.vmap.require_split_rng = False
         # return hk.vmap(self.score, in_axes=0, out_axes=0)(x, y, t)
         # add empty 3rd coordinate for 2d data
+        irreps = self.config.irreps_out
+        scalars = irreps.count("0o") + irreps.count("0e")
+        vectors = irreps.count("1o") + irreps.count("1e")
         x_dim, y_dim = x.shape[-1], y.shape[-1]
         if x_dim == 2:
             x = jnp.concatenate([x, jnp.zeros((*x.shape[:-1], 1), dtype=x.dtype)], -1)
-        if y_dim == 2:
+        # if y_dim == 2:
+        # TODO: only works with 1 vector field at the end atm
+        if y_dim != scalars * 1 + vectors * 3:
             y = jnp.concatenate([y, jnp.zeros((*y.shape[:-1], 1), dtype=y.dtype)], -1)
         out = jax.vmap(self.score)(x, y, t)
-        if y_dim == 2:
+        if y_dim != scalars * 1 + vectors * 3:
             out = out[..., :-1]
         return out
 
@@ -410,7 +415,8 @@ class TransformerModule(hk.Module):
         t = timestep_embedding(t[None], 16).squeeze(0)
         t_emb = jnp.repeat(t.reshape(-1)[None, :], y.shape[-2], -2)
         t_emb = e3nn.IrrepsArray(f"{t.shape[-1]}x0e", t_emb)
-        node_attr = y  # node_attr = e3nn.IrrepsArray("1x1e", y)
+        node_attr = y
+        node_attr = e3nn.IrrepsArray(self.config.irreps_out, node_attr)
         pos = x
 
         senders, receivers = get_edges_knn(pos, config.k)
@@ -445,7 +451,7 @@ class TransformerModule(hk.Module):
         # irreps = e3nn.Irreps(f'{config.mul1}x1e')
         irreps = self.irreps_features
         # print("t", type(t), t.shape)
-        node_attr = e3nn.IrrepsArray("1x1e", node_attr)
+
         ns = node_attr.irreps.count("0e") + node_attr.irreps.count("0o")
 
         # for _ in range(config.n_layers - 1):

@@ -50,7 +50,7 @@ def ERA5Dataset(key, data_dir, file_ending, dataset="train", **kwargs):
         "h w d -> (h w) d",
     )
 
-    y = data[..., 2:]
+    y = data[..., [-2, -1, 2, 3]]
     x = jnp.repeat(latlon[None, ...], data.shape[0], 0)
     y = jax.nn.normalize(y, (0, 1))
     x = jax.nn.normalize(x, (0, 1))
