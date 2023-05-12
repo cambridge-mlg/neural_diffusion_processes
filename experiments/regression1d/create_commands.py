@@ -64,7 +64,7 @@ SCORE_PARAM = [
 ]
 
 if __name__ == "__main__":
-    NAME = "commands_lim.txt"
+    NAME = "commands_lim2.txt"
 
     if os.path.exists(NAME):
         print("File to store script already exists", NAME)

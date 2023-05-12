@@ -49,7 +49,7 @@ class OptimizationConfig:
 @dataclasses.dataclass
 class NetworkConfig:
     num_bidim_attention_layers: int = 5
-    hidden_dim: int = 128
+    hidden_dim: int = 64
     num_heads: int = 8
     translation_invariant: bool = True
 
