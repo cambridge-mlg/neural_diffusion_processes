@@ -269,7 +269,7 @@ class Sawtooth(FuntionalDistribution):
     A = 1.
     K_max = 10
     mean = 0.5
-    variance = 0.07898
+    variance = 1. # 0.07898
 
     """ See appendix H: https://arxiv.org/pdf/2007.01332.pdf"""
     def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:

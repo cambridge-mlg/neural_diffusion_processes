@@ -397,8 +397,7 @@ class BiDimensionalAttentionModel(hk.Module):
     num_heads: int
     translation_invariant: bool = False
     init_zero: bool = True
-    data_mean: float = 0.
-    data_std: float = 1.
+    variance: float = 1.
 
     @check_shapes(
         "x: [batch_size, seq_len, input_dim]",
@@ -441,7 +440,7 @@ class BiDimensionalAttentionModel(hk.Module):
         """
         # print(self.data_mean, self.data_std)
         # y = y - self.data_mean
-        # y = y / self.data_std
+        y = y / self.variance**.5
 
         if self.translation_invariant:
             x = jax.vmap(self.center)(x, mask)

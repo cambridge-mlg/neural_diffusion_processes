@@ -368,6 +368,7 @@ def main(_):
         "mean_function": {},
         "kernel": limiting_kernel.init_params(None),
     }
+    hyps["kernel"]["variance"] = 0.07
 
     if short_lengthscale and "lengthscale" in hyps["kernel"]:
         hyps["kernel"]["lengthscale"] = config.sde.limiting_kernel_lengthscale * hyps["kernel"]["lengthscale"]
@@ -425,6 +426,7 @@ def main(_):
             hidden_dim=config.network.hidden_dim,
             num_heads=config.network.num_heads,
             translation_invariant=config.network.translation_invariant,
+            variance=0.07,
         )
         return model(x, y, t, mask)
 
