@@ -4,21 +4,22 @@ import dataclasses
 @dataclasses.dataclass
 class DataConfig:
     seed: int = 0
-    dataset: str = "se"
+    dataset: str = "sawtooth"
     num_samples_in_epoch: int = int(2**14)
 
 
 @dataclasses.dataclass
 class SdeConfig:
-    limiting_kernel: str = "short-noisy-se"
+    limiting_kernel: str = "white"
     limiting_kernel_noise_variance: float = 0.05
     limiting_kernel_lengthscale: float = 0.1
     t0: float = 5e-4
     score_parametrization: str = "preconditioned_k"
     std_trick: bool = True
-    residual_trick: bool = True
+    residual_trick: bool = False
     loss: str = "l2"
     exact_score: bool = False
+    beta1: float = 10.0
 
     def __post_init__(self):
         assert self.score_parametrization.lower() in [
@@ -48,9 +49,9 @@ class OptimizationConfig:
 
 @dataclasses.dataclass
 class NetworkConfig:
-    num_bidim_attention_layers: int = 5
-    hidden_dim: int = 64
-    num_heads: int = 8
+    num_bidim_attention_layers: int = 2
+    hidden_dim: int = 128
+    num_heads: int = 16
     translation_invariant: bool = True
 
 

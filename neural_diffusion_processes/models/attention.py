@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Tuple
+from typing import Tuple, Optional
 from dataclasses import dataclass
 import functools
 
@@ -397,6 +397,8 @@ class BiDimensionalAttentionModel(hk.Module):
     num_heads: int
     translation_invariant: bool = False
     init_zero: bool = True
+    data_mean: float = 0.
+    data_std: float = 1.
 
     @check_shapes(
         "x: [batch_size, seq_len, input_dim]",
@@ -437,6 +439,10 @@ class BiDimensionalAttentionModel(hk.Module):
         Computes the additive noise that was added to `y_0` to obtain `y_t`
         based on `x_t` and `y_t` and `t`
         """
+        # print(self.data_mean, self.data_std)
+        # y = y - self.data_mean
+        # y = y / self.data_std
+
         if self.translation_invariant:
             x = jax.vmap(self.center)(x, mask)
 

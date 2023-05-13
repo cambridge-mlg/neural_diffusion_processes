@@ -64,7 +64,7 @@ SCORE_PARAM = [
 ]
 
 if __name__ == "__main__":
-    NAME = "commands_lim2.txt"
+    NAME = "commands_sawtooth.txt"
 
     if os.path.exists(NAME):
         print("File to store script already exists", NAME)
@@ -72,25 +72,12 @@ if __name__ == "__main__":
 
     commands = []
 
-    for dataset in ["se", "periodic"]:
-        commands.extend(
-            CommandsBuilder()
-            .add("config.data.dataset", [dataset])
-            .add("config.sde.exact_score", [False])
-            .add("config.sde.score_parametrization", SCORE_PARAM)
-            .add("config.sde.limiting_kernel", [f"noisy-{dataset}", "white", f"short-noisy-{dataset}"])
-            .add("config.sde.residual_trick", [True, False])
-            .add("config.sde.std_trick", [True, False])
-            .build()
-        )
-        commands.extend(
-            CommandsBuilder()
-            .add("config.data.dataset", [dataset])
-            .add("config.sde.exact_score", [True])
-            .add("config.sde.score_parametrization", SCORE_PARAM)
-            .add("config.sde.limiting_kernel", [f"noisy-{dataset}", "white", f"short-noisy-{dataset}"])
-            .build()
-        )
+    commands.extend(
+        CommandsBuilder()
+        .add("config.data.dataset", ["sawtooth"])
+        .add("config.network.hidden_dim", [32, 64, 128, 256])
+        .build()
+    )
 
     with open(NAME, "w") as file:
         file.write("\n".join(commands))

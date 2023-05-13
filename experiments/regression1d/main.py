@@ -78,7 +78,7 @@ except:
     from config import Config, toy_config
 
 
-EXPERIMENT = "regression1d-May11-per"
+EXPERIMENT = "regression1d-May13-sawtooth"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -354,7 +354,7 @@ def main(_):
     key_iter = _get_key_iter(key)
 
     ####### init relevant diffusion classes
-    beta = ndp.sde.LinearBetaSchedule(t0=config.sde.t0)
+    beta = ndp.sde.LinearBetaSchedule(t0=config.sde.t0, beta1=config.sde.beta1)
     if "short" in config.sde.limiting_kernel:
         short_lengthscale = True
         limiting_kernel = config.sde.limiting_kernel[config.sde.limiting_kernel.find("-")+1:]
@@ -563,8 +563,8 @@ def main(_):
     
     def callback_plot_prior(state: TrainingState, key):
         params = state.params_ema
-        xx = jnp.linspace(-2, 2, 60)[:, None]
-        samples = prior(params, xx, jax.random.split(key, 16))
+        xx = jnp.linspace(-2, 2, 50)[:, None]
+        samples = prior(params, xx, jax.random.split(key, 4))
         fig, ax = plt.subplots()
         ax.plot(xx, samples[:, -1, :, 0].T, "C0", alpha=.3)
         return {"prior": fig}
@@ -595,6 +595,10 @@ def main(_):
         ml_tools.actions.PeriodicCallback(
             every_steps=num_steps//10,
             callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
+        ),
+        ml_tools.actions.PeriodicCallback(
+            every_steps=num_steps//4,
+            callback_fn=lambda step, t, **kwargs: writer.write_figures(step, callback_plot_prior(kwargs["state"], kwargs["key"]))
         )
     ]
 

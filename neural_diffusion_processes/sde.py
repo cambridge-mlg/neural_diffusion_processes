@@ -613,7 +613,7 @@ def conditional_sample2(
     mask_test: Optional[Array],
     key,
     num_steps: int = 100,
-    num_inner_steps: int = 5,
+    num_inner_steps: int = 10,
     prob_flow: bool = True,
     langevin_kernel = True,
     psi: float = 1.,
