@@ -43,14 +43,32 @@ def dataloader(
     dataset_size = len(x)
     indices_batch = jnp.arange(dataset_size)
     indices_points = jnp.arange(x.shape[1])
-    assert dataset_size >= batch_size
-    while True:
-        perm = jr.permutation(key, indices_batch)
-        (key,) = jr.split(key, 1)
-        start = 0
-        end = batch_size
-        while end <= dataset_size:
-            batch_perm = perm[start:end]
+    # assert dataset_size >= batch_size:
+    if dataset_size >= batch_size:
+        while True:
+            perm = jr.permutation(key, indices_batch)
+            (key,) = jr.split(key, 1)
+            start = 0
+            end = batch_size
+            while end <= dataset_size:
+                batch_perm = perm[start:end]
+                (key,) = jr.split(key, 1)
+                n_point = jr.permutation(key, n_points)[0]
+                n_point = n_point if n_point > 0 else x.shape[1]
+                (key,) = jr.split(key, 1)
+                points_perm = jr.permutation(key, indices_points)[:n_point]
+                yield DataBatch(
+                    xs=jnp.take(x[batch_perm], axis=1, indices=points_perm),
+                    ys=jnp.take(y[batch_perm], axis=1, indices=points_perm),
+                )
+                start = end
+                end = start + batch_size
+
+            if not run_forever:
+                break
+    else:
+        while True:
+            batch_perm = jr.randint(key, (batch_size,), minval=0, maxval=dataset_size)
             (key,) = jr.split(key, 1)
             n_point = jr.permutation(key, n_points)[0]
             n_point = n_point if n_point > 0 else x.shape[1]
@@ -60,11 +78,8 @@ def dataloader(
                 xs=jnp.take(x[batch_perm], axis=1, indices=points_perm),
                 ys=jnp.take(y[batch_perm], axis=1, indices=points_perm),
             )
-            start = end
-            end = start + batch_size
-
-        if not run_forever:
-            break
+            if not run_forever:
+                break
 
 
 def split_dataset_in_context_and_target(
