@@ -75,7 +75,9 @@ if __name__ == "__main__":
     commands.extend(
         CommandsBuilder()
         .add("config.data.dataset", ["sawtooth"])
-        .add("config.network.hidden_dim", [32, 64, 128, 256])
+        .add("config.network.num_bidim_attention_layers", [2, 4, 6])
+        .add("config.network.hidden_dim", [64, 128, 256, 512])
+        .add("config.network.num_heads", [4, 8, 16, 32])
         .build()
     )
 

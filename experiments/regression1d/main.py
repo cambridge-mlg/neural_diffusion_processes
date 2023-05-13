@@ -78,7 +78,7 @@ except:
     from config import Config, toy_config
 
 
-EXPERIMENT = "regression1d-May13-sawtooth"
+EXPERIMENT = "regression1d-May13-sawtooth-2"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -368,7 +368,8 @@ def main(_):
         "mean_function": {},
         "kernel": limiting_kernel.init_params(None),
     }
-    hyps["kernel"]["variance"] = 0.07
+    DATA_VARIANCE = 0.07965
+    hyps["kernel"]["variance"] = DATA_VARIANCE
 
     if short_lengthscale and "lengthscale" in hyps["kernel"]:
         hyps["kernel"]["lengthscale"] = config.sde.limiting_kernel_lengthscale * hyps["kernel"]["lengthscale"]
@@ -426,7 +427,7 @@ def main(_):
             hidden_dim=config.network.hidden_dim,
             num_heads=config.network.num_heads,
             translation_invariant=config.network.translation_invariant,
-            variance=0.07,
+            variance=DATA_VARIANCE,
         )
         return model(x, y, t, mask)
 

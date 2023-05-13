@@ -267,18 +267,18 @@ def _weaklyper_dataset_factory():
 class Sawtooth(FuntionalDistribution):
 
     A = 1.
-    K_max = 10
+    K_max = 20
     mean = 0.5
-    variance = 1. # 0.07898
+    variance = 1.
 
     """ See appendix H: https://arxiv.org/pdf/2007.01332.pdf"""
     def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
         fkey, skey, kkey = jax.random.split(key, 3)
-        f = jax.random.uniform(fkey, (), minval=1., maxval=2.)
-        s = jax.random.uniform(skey, (), minval=-2., maxval=2.)
+        f = jax.random.uniform(fkey, (), minval=3., maxval=5.)
+        s = jax.random.uniform(skey, (), minval=-5., maxval=5.)
         ks = jnp.arange(1, self.K_max + 1, dtype=x.dtype)[None, :]
         vals = (-1.) ** ks * jnp.sin(2. * jnp.pi * ks * f * (x - s)) / ks
-        k = jax.random.randint(kkey, (), minval=2, maxval=self.K_max + 1)
+        k = jax.random.randint(kkey, (), minval=10, maxval=self.K_max + 1)
         mask = jnp.where(ks < k, jnp.ones_like(ks), jnp.zeros_like(ks))
         # we substract the mean A/2
         o = self.A/2 + self.A/jnp.pi * jnp.sum(vals * mask, axis=1, keepdims=True)
