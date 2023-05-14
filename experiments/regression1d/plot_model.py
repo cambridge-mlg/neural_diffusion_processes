@@ -1,5 +1,5 @@
 """
-Script for training and evaluating a NDP on 1d regression data.
+Script for plotting NDPs on 1d regression data.
 
 Modes
 -----
@@ -42,6 +42,7 @@ from jaxtyping import Float, Array
 
 import os
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import yaml
 import numpy as np
 import functools
@@ -331,24 +332,20 @@ def main(_):
     policy = jmp.get_policy('params=float32,compute=float32,output=float32')
 
     config = config_utils.to_dataclass(Config, _CONFIG.value)
-
+    print(config.data.dataset)
     experiment_dir_if_exists = Path(config.experiment_dir)
-    if config.mode == "eval" and (experiment_dir_if_exists / "config.yaml").exists():
-        print("****** eval mode:")
-        print("Restoring old configuration")
-        config_path = experiment_dir_if_exists / "config.yaml"
-        restored_config = yaml.safe_load(config_path.read_text())
-        restored_config = config_utils.to_dataclass(Config, restored_config)
-        # overwrite values by restored config such that the model can be loaded,
-        # weights restored.
-        config.data = restored_config.data
-        config.sde = restored_config.sde
-        config.network = restored_config.network
-    elif config.mode == "eval":
-        print("****** eval mode:")
-        f = str((experiment_dir_if_exists / "config.yaml").absolute())
-        print(f"Building and evaluating new model as {f} did not exist.")
 
+    # if config.mode == "plot" and (experiment_dir_if_exists / "config.yaml").exists():
+    #     print("****** eval mode:")
+    #     print("Restoring old configuration")
+    #     config_path = experiment_dir_if_exists / "config.yaml"
+    #     restored_config = yaml.safe_load(config_path.read_text())
+    #     restored_config = config_utils.to_dataclass(Config, restored_config)
+    #     # overwrite values by restored config such that the model can be loaded,
+    #     # weights restored.
+    #     config.data = restored_config.data
+    #     config.sde = restored_config.sde
+    #     config.network = restored_config.network
 
     key = jax.random.PRNGKey(config.seed)
     key_iter = _get_key_iter(key)
@@ -405,24 +402,14 @@ def main(_):
         exact_score=config.sde.exact_score,
     )
 
-    if config.sde.exact_score:
-        factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
-        assert isinstance(factory, regression1d.GPFunctionalDistribution)
-        mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
-        true_score_network = sde.get_exact_score(mean0, kernel0, params0)
-    else:
-        true_score_network = None
+    # if config.sde.exact_score:
+    #     factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
+    #     assert isinstance(factory, regression1d.GPFunctionalDistribution)
+    #     mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
+    #     true_score_network = sde.get_exact_score(mean0, kernel0, params0)
+    # else:
+    #     true_score_network = None
 
-    ##### Plot a training databatch
-    batch0 = regression1d.get_batch(next(key_iter), 2, config.data.dataset, "training")
-    _, ax = plt.subplots()
-    ax.plot(batch0.xc[..., 0].T, batch0.yc[..., 0].T, "C0.", label="context")
-    ax.plot(batch0.xs[..., 0].T, batch0.ys[..., 0].T, "C1.", label="target")
-    handles, labels = ax.get_legend_handles_labels()
-    labels, ids = np.unique(labels, return_index=True)
-    handles = [handles[i] for i in ids]
-    ax.legend(handles, labels, loc='best')
-    plt.savefig(str(get_experiment_dir(config, "plots") / "data.png"))
 
 
     ####### Forward haiku model
@@ -444,10 +431,6 @@ def main(_):
         del key  # the network is deterministic
         #NOTE: Network awkwardly requires a batch dimension for the inputs
         return network.apply(params, t[None], yt[None], x[None], mask[None])[0]
-
-    def loss_fn(params, batch: ndp.data.DataBatch, key):
-        net_params = functools.partial(net, params)
-        return ndp.sde.loss(sde, net_params, batch, key)
 
     num_steps_per_epoch = config.data.num_samples_in_epoch // config.optimization.batch_size
     num_steps = num_steps_per_epoch * config.optimization.num_epochs
@@ -481,32 +464,15 @@ def main(_):
             step=0,
         )
 
-    @jax.jit
-    def update_step(state: TrainingState, batch: ndp.data.DataBatch) -> Tuple[TrainingState, Mapping]:
-        new_key, loss_key = jax.random.split(state.key)
-        loss_and_grad_fn = jax.value_and_grad(loss_fn)
-        loss_value, grads = loss_and_grad_fn(state.params, batch, loss_key)
-        updates, new_opt_state = optimizer.update(grads, state.opt_state)
-        new_params = optax.apply_updates(state.params, updates)
-        new_params_ema = jax.tree_util.tree_map(
-            lambda p_ema, p: p_ema * config.optimization.ema_rate
-            + p * (1.0 - config.optimization.ema_rate),
-            state.params_ema,
-            new_params,
-        )
-        new_state = TrainingState(
-            params=new_params,
-            params_ema=new_params_ema,
-            opt_state=new_opt_state,
-            key=new_key,
-            step=state.step + 1
-        )
-        metrics = {
-            'loss': loss_value,
-            'step': state.step
-        }
-        return new_state, metrics
-
+    dataset = regression1d.get_dataset(
+        config.data.dataset,
+        "training",
+        key=next(key_iter),
+        samples_per_epoch=config.data.num_samples_in_epoch,
+        batch_size=config.optimization.batch_size,
+        num_epochs=config.optimization.num_epochs,
+    )
+    batch0 = next(dataset)
     state = init(batch0, jax.random.PRNGKey(config.seed))
     
     if (experiment_dir_if_exists / "checkpoints").exists():
@@ -516,9 +482,10 @@ def main(_):
 
     
     ########## Plotting
+    true_score_network = None
 
+    # @functools.partial(jax.vmap, in_axes=[None, None, 0, 0, 0, 0, 0])
     @functools.partial(jax.vmap, in_axes=[None, 0, None, None, None, None, None])
-    @functools.partial(jax.vmap, in_axes=[None, None, 0, 0, 0, 0, 0])
     @jax.jit
     def conditional(params, key, xc, yc, maskc, xs, mask):
         net_params = (
@@ -526,44 +493,11 @@ def main(_):
         )
         return ndp.sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key, mask_context=maskc, mask_test=mask)
 
-    logp = get_log_prob(
-        sde,
-        lambda params, *args, **kwargs: true_score_network(*args, **kwargs) if config.sde.exact_score else \
-            net(params, *args, **kwargs)
-    )
-    
-    experiment = EXPERIMENT + ("-smoketest" if is_smoketest(config) else "")
-    exp_root_dir = get_experiment_dir(config)
-    local_writer = ml_tools.writers.LocalWriter(str(exp_root_dir), flush_every_n=100)
-    tb_writer = ml_tools.writers.TensorBoardWriter(get_experiment_dir(config, "tensorboard"))
-    aim_writer = ml_tools.writers.AimWriter(experiment)
-    writer = ml_tools.writers.MultiWriter([aim_writer, tb_writer, local_writer])
-
-    hparams = {"experiment": experiment, **asdict(config)}
-    writer.log_hparams(hparams)
-
-    if is_smoketest(config):
-        tasks = ["interpolation"]
-    else:
-        tasks = ["interpolation", "generalization"]  # extrapolation
-
-    tasks = [
-        Task(
-            next(key_iter),
-            task,
-            config.data.dataset,
-            batch_size=config.eval.batch_size,
-            num_data=config.eval.batch_size,  # run for single batch (quick)
-            conditional_sampler=conditional,
-            logp=logp
-        )
-        for task in tasks
-    ]
-
-    task_callbacks = [
-        task.get_callback(writer) for task in tasks
-    ]
-
+    # logp = get_log_prob(
+    #     sde,
+    #     lambda params, *args, **kwargs: true_score_network(*args, **kwargs) if config.sde.exact_score else \
+    #         net(params, *args, **kwargs)
+    # )
     
     @functools.partial(jax.vmap, in_axes=[None, None, 0])
     def prior(params, x_target, key):
@@ -581,60 +515,80 @@ def main(_):
         return {"prior": fig}
 
 
-    train_ds = regression1d.get_dataset(
-        config.data.dataset,
-        "training",
-        key=next(key_iter),
-        samples_per_epoch=config.data.num_samples_in_epoch,
-        batch_size=config.optimization.batch_size,
-        num_epochs=config.optimization.num_epochs,
-    )
+    ns = 5 if config.data.dataset == "sawtooth" else 10
+    lo, hi = -2., 2.
 
-    if config.mode == "eval": num_steps = 0
-
-    actions = [
-        ml_tools.actions.PeriodicCallback(
-            every_steps=10,
-            callback_fn=lambda step, t, **kwargs: writer.write_scalars(step, kwargs["metrics"])
-        ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=None if is_smoketest(config) else num_steps // 4,
-            callback_fn=lambda step, t, **kwargs: [
-                cb(step, t, **kwargs) for cb in task_callbacks
-            ]
-        ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=num_steps//10,
-            callback_fn=lambda step, t, **kwargs: ml_tools.state.save_checkpoint(kwargs["state"], exp_root_dir, step)
-        ),
-        ml_tools.actions.PeriodicCallback(
-            every_steps=num_steps//4,
-            callback_fn=lambda step, t, **kwargs: writer.write_figures(step, callback_plot_prior(kwargs["state"], kwargs["key"]))
-        )
-    ]
-
-    progress_bar = tqdm.tqdm(list(range(1, num_steps + 1)), miniters=1)
-
-    for step, batch, key in zip(progress_bar, train_ds, key_iter):
-        if config.sde.exact_score:
-            metrics = {'loss': 0.0, 'step': step}
+    if Path(f"./plot_model_{config.data.dataset}.npz").exists():
+        print("Loading plot data")
+        npz = np.load(f"./plot_model_{config.data.dataset}.npz")
+        x_dataset = npz["x_dataset"]
+        ys_dataset = npz["ys_dataset"]
+        x_prior = npz["x_prior"]
+        ys_prior = npz["ys_prior"]
+        x_post = npz["x_post"]
+        ys_post = npz["ys_post"]
+        x_context = npz["x_context"]
+        y_context = npz["y_context"]
+        m = npz["m"]
+        v = npz["v"]
+    else:
+        key = jax.random.PRNGKey(config.seed)
+        x_dataset = jnp.linspace(lo, hi, 100)[:, None]
+        f = jax.vmap(lambda k: dataset_dist.sample(k, x_dataset))
+        ys_dataset = f(jax.random.split(key, ns))
+        x_prior = jnp.linspace(lo, hi, 60)[:, None]
+        ys_prior = prior(state.params_ema, x_prior, jax.random.split(key, ns))
+        x_post = jnp.linspace(lo, hi, 55)[:, None]
+        batch = regression1d.get_batch(key, ns, config.data.dataset, "interpolation")
+        x_context = batch.xc[0, :5]
+        y_context = batch.yc[0, :5]
+        ys_post = conditional(state.params_ema, jax.random.split(key, ns), x_context, y_context, None, x_post, None,)
+        factory = regression1d._DATASET_FACTORIES[config.data.dataset] 
+        if isinstance(factory, regression1d.GPFunctionalDistribution):
+            mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
+            true_post = ndp.kernels.posterior_gp(
+                mean0, kernel0, params0, x_context, y_context, obs_noise=0.0
+            )(x_post)
+            m, v = true_post.mean(), true_post.variance() ** .5
         else:
-            state, metrics = update_step(state, batch)
-        metrics["lr"] = learning_rate_schedule(step)
+            m, v = None, None
+        np.savez(
+            f"plot_model_{config.data.dataset}.npz",
+            x_dataset=x_dataset,
+            ys_dataset=ys_dataset,
+            x_prior=x_prior,
+            ys_prior=ys_prior,
+            x_post=x_post,
+            ys_post=ys_post,
+            x_context=x_context,
+            y_context=y_context,
+            m=m,
+            v=v,
+        )
 
-        for action in actions:
-            action(step, t=None, metrics=metrics, state=state, key=key)
 
-        if step % 100 == 0:
-            progress_bar.set_description(f"loss {metrics['loss']:.2f}")
+    from tueplots import figsizes, fontsizes, fonts
 
+    plt.rcParams.update(figsizes.neurips2023(nrows=1, ncols=3))
+    plt.rcParams.update(fontsizes.neurips2023())
+    fig, axes = plt.subplots(nrows=1, ncols=3, sharex=True, sharey=True)
 
-    for task, callback in zip(tasks, task_callbacks):
-        if not is_smoketest(config):
-            task._num_data = config.eval.num_samples_in_epoch
-        callback(num_steps + 1, None, state=state, key=next(key_iter))
+    dataset_dist: regression1d.FuntionalDistribution = regression1d._DATASET_FACTORIES[config.data.dataset]
+    axes[0].plot(x_dataset, ys_dataset[:ns, :, 0].T, color="C0", alpha=.3)
+    axes[1].plot(x_prior, ys_prior[:ns, -1, :, 0].T, "C0", alpha=.3)
+
+    axes[2].plot(x_post, m, "k", lw=1, alpha=.8)
+    axes[2].fill_between(x_post.ravel(), m.ravel() - 1.96 * v.ravel(), m.ravel() + 1.96 * v.ravel(), color="k", alpha=.1)
+    axes[2].plot(x_post, ys_post[:ns, :, 0].T, "C0", alpha=.3)
+    axes[2].plot(x_context, y_context, "C3o", markersize=2)
     
-    
+    a = .25 if config.data.dataset == "sawtooth" else 1.
+    for ax in axes:
+        ax.set_xlim(lo, hi)
+        ax.set_ylim(-3*a, 3*a)
 
+    plt.savefig("plot_model.png")
+
+    
 if __name__ == "__main__":
     app.run(main)

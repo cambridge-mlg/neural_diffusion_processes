@@ -64,7 +64,7 @@ SCORE_PARAM = [
 ]
 
 if __name__ == "__main__":
-    NAME = "commands_regression1d.txt"
+    NAME = "commands_regression1d_may14_2.txt"
 
     if os.path.exists(NAME):
         print("File to store script already exists", NAME)
@@ -72,19 +72,24 @@ if __name__ == "__main__":
 
     commands = []
 
-    commands.extend(
-        CommandsBuilder()
-        .add("config.data.dataset", ["se", "matern", "weaklyperiodic", "mixture"])
-        .add("config.network.translation_invariant", [True, False])
-        .build()
-    )
-    commands.extend(
-        CommandsBuilder()
-        .add("config.data.dataset", ["sawtooth"])
-        .add("config.experiment_dir", ["logs/May14_102412_sawtooth_20290/"])
-        .add("config.network.translation_invariant", [True, False])
-        .build()
-    )
+    for ti in [True, False]:
+        commands.extend(
+            CommandsBuilder()
+            .add("config.network.translation_invariant", [ti])
+            .add("config.data.dataset", ["se", "matern", "weaklyperiodic", "mixture"])
+            .add("config.network.num_bidim_attention_layers", [5])
+            .add("config.network.hidden_dim", [64])
+            .build()
+        )
+        commands.extend(
+            CommandsBuilder()
+            .add("config.network.translation_invariant", [ti])
+            .add("config.data.dataset", ["sawtooth"])
+            .add("config.experiment_dir", ["logs/May14_102412_sawtooth_20290/"])
+            .add("config.network.num_bidim_attention_layers", [2])
+            .add("config.network.hidden_dim", [128])
+            .build()
+        )
 
     with open(NAME, "w") as file:
         file.write("\n".join(commands))
