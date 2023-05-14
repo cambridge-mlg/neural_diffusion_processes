@@ -78,7 +78,7 @@ except:
     from config import Config, toy_config
 
 
-EXPERIMENT = "regression1d-May14"
+EXPERIMENT = "regression1d-May14-2"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
