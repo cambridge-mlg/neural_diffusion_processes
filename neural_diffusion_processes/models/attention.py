@@ -438,8 +438,6 @@ class BiDimensionalAttentionModel(hk.Module):
         Computes the additive noise that was added to `y_0` to obtain `y_t`
         based on `x_t` and `y_t` and `t`
         """
-        # print(self.data_mean, self.data_std)
-        # y = y - self.data_mean
         y = y / self.variance**.5
 
         if self.translation_invariant:

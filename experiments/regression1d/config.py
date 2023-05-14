@@ -51,14 +51,14 @@ class OptimizationConfig:
 class NetworkConfig:
     num_bidim_attention_layers: int = 2
     hidden_dim: int = 128
-    num_heads: int = 16
+    num_heads: int = 8
     translation_invariant: bool = True
 
 
 @dataclasses.dataclass
 class EvalConfig:
     batch_size: int = 32
-    num_samples_in_epoch: int = int(2**9)
+    num_samples_in_epoch: int = int(2**12)
 
 
 @dataclasses.dataclass

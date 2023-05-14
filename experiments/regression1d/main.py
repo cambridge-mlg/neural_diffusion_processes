@@ -78,7 +78,7 @@ except:
     from config import Config, toy_config
 
 
-EXPERIMENT = "regression1d-May13-sawtooth-2"
+EXPERIMENT = "regression1d-May14-sawtooth"
 
 
 _DATETIME = datetime.datetime.now().strftime("%b%d_%H%M%S")
@@ -368,8 +368,16 @@ def main(_):
         "mean_function": {},
         "kernel": limiting_kernel.init_params(None),
     }
-    DATA_VARIANCE = 0.07965
-    hyps["kernel"]["variance"] = DATA_VARIANCE
+
+    dataset_dist: regression1d.FuntionalDistribution = regression1d._DATASET_FACTORIES[config.data.dataset]
+    print("dataset", dataset_dist.__class__.__name__)
+    if not dataset_dist.is_data_naturally_normalized and not dataset_dist.normalize:
+        data_variance = regression1d._DATASET_FACTORIES[config.data.dataset].variance
+    else:
+        data_variance = 1.0
+
+    print("data_variance", data_variance)
+    hyps["kernel"]["variance"] = data_variance
 
     if short_lengthscale and "lengthscale" in hyps["kernel"]:
         hyps["kernel"]["lengthscale"] = config.sde.limiting_kernel_lengthscale * hyps["kernel"]["lengthscale"]
@@ -379,8 +387,8 @@ def main(_):
             [limiting_kernel, jaxkern.stationary.White(active_dims=[0])]
         )
         v = config.sde.limiting_kernel_noise_variance
-        hyps["kernel"]["variance"] = 1. - v
-        hyps["kernel"] = [hyps["kernel"], {"variance": config.sde.limiting_kernel_noise_variance}]
+        hyps["kernel"]["variance"] = (1. - v) * data_variance
+        hyps["kernel"] = [hyps["kernel"], {"variance": v * data_variance}]
 
     sde = ndp.sde.SDE(
         limiting_kernel,
@@ -427,7 +435,7 @@ def main(_):
             hidden_dim=config.network.hidden_dim,
             num_heads=config.network.num_heads,
             translation_invariant=config.network.translation_invariant,
-            variance=DATA_VARIANCE,
+            variance=data_variance,
         )
         return model(x, y, t, mask)
 
@@ -501,7 +509,7 @@ def main(_):
 
     state = init(batch0, jax.random.PRNGKey(config.seed))
     
-    if config.mode == "eval" and (experiment_dir_if_exists / "checkpoints").exists():
+    if (experiment_dir_if_exists / "checkpoints").exists():
         index = find_latest_checkpoint_step_index(str(experiment_dir_if_exists))
         state = load_checkpoint(state, str(experiment_dir_if_exists), step_index=index)
         print("Successfully loaded checkpoint @ step {}".format(state.step))
@@ -537,7 +545,7 @@ def main(_):
     if is_smoketest(config):
         tasks = ["interpolation"]
     else:
-        tasks = ["interpolation"] #, "generalization"]  # extrapolation
+        tasks = ["interpolation", "generalization"]  # extrapolation
 
     tasks = [
         Task(

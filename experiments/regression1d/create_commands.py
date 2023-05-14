@@ -64,7 +64,7 @@ SCORE_PARAM = [
 ]
 
 if __name__ == "__main__":
-    NAME = "commands_sawtooth.txt"
+    NAME = "commands_regression1d.txt"
 
     if os.path.exists(NAME):
         print("File to store script already exists", NAME)
@@ -74,10 +74,15 @@ if __name__ == "__main__":
 
     commands.extend(
         CommandsBuilder()
+        .add("config.data.dataset", ["se", "matern", "weaklyperiodic", "mixture"])
+        .add("config.network.translation_invariant", [True, False])
+        .build()
+    )
+    commands.extend(
+        CommandsBuilder()
         .add("config.data.dataset", ["sawtooth"])
-        .add("config.network.num_bidim_attention_layers", [2, 4, 6])
-        .add("config.network.hidden_dim", [64, 128, 256, 512])
-        .add("config.network.num_heads", [4, 8, 16, 32])
+        .add("config.experiment_dir", ["logs/May14_102412_sawtooth_20290/"])
+        .add("config.network.translation_invariant", [True, False])
         .build()
     )
 

@@ -83,8 +83,8 @@ _DATASET_CONFIGS = {
         eval_num_context=UniformDiscrete(1, 10),
     ),
     "sawtooth": DatasetConfig(
-        train_num_target=UniformDiscrete(1, 60),
-        eval_num_target=UniformDiscrete(50, 50),
+        train_num_target=UniformDiscrete(1, 110),
+        eval_num_target=UniformDiscrete(100, 100),
         eval_num_context=UniformDiscrete(1, 10),
     ),
     "mixture": DatasetConfig(
@@ -118,8 +118,14 @@ _TASK_CONFIGS = {
 }
 
 
+@dataclass
 class FuntionalDistribution(abc.ABC):
-    
+    # All GP datasets are naturally normalized so do not need additional normalization.
+    # Sawtooth is not normalized so we need to normalize it in the Mixture but not when used
+    # in isolation.
+    is_data_naturally_normalized: bool = True
+    normalize: bool = False
+
     @abc.abstractmethod
     def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
         raise NotImplementedError()
@@ -269,7 +275,7 @@ class Sawtooth(FuntionalDistribution):
     A = 1.
     K_max = 20
     mean = 0.5
-    variance = 1.
+    variance = 0.07965
 
     """ See appendix H: https://arxiv.org/pdf/2007.01332.pdf"""
     def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
@@ -281,13 +287,16 @@ class Sawtooth(FuntionalDistribution):
         k = jax.random.randint(kkey, (), minval=10, maxval=self.K_max + 1)
         mask = jnp.where(ks < k, jnp.ones_like(ks), jnp.zeros_like(ks))
         # we substract the mean A/2
-        o = self.A/2 + self.A/jnp.pi * jnp.sum(vals * mask, axis=1, keepdims=True)
-        return (o - self.mean) / jnp.sqrt(self.variance)
+        fs = self.A/2 + self.A/jnp.pi * jnp.sum(vals * mask, axis=1, keepdims=True)
+        fs = fs - self.mean
+        if self.normalize:
+            fs = fs / jnp.sqrt(self.variance)
+        return fs
 
 
 @register_dataset_factory("sawtooth")
 def _sawtooth_dataset_factory():
-    return Sawtooth()
+    return Sawtooth(is_data_naturally_normalized=False, normalize=False)
 
 
 class Mixture(FuntionalDistribution):
@@ -315,12 +324,13 @@ class Mixture(FuntionalDistribution):
 
 @register_dataset_factory("mixture")
 def _mixture_dataset_factory():
+    sawtooth = Sawtooth(is_data_naturally_normalized=False, normalize=True)
     return Mixture(
         generators=[
             _DATASET_FACTORIES["se"],
             _DATASET_FACTORIES["matern"],
             _DATASET_FACTORIES["weaklyperiodic"],
-            _DATASET_FACTORIES["sawtooth"],
+            sawtooth,
         ]
     )
 
