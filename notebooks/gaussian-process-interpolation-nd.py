@@ -8,7 +8,7 @@ import math
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import seaborn as sns
-import matplotlib
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 
 import jax
@@ -44,7 +44,7 @@ from jax.config import config
 
 config.update("jax_enable_x64", True)
 
-norm = matplotlib.colors.Normalize()
+norm = mpl.colors.Normalize()
 cm = sns.cubehelix_palette(start=0.5, rot=-0.75, as_cmap=True, reverse=True)
 
 from jaxtyping import Array
@@ -55,7 +55,8 @@ key, subkey = jax.random.split(key)
 output_dim = 2
 # beta_schedule = ndp.sde.LinearBetaSchedule(t0=1e-5, beta0=1e-4, beta1=15.0)
 beta_schedule = ndp.sde.LinearBetaSchedule(t0=1e-5, beta0=1e-4, beta1=10.0)
-x = radial_grid_2d(10, 30)
+# x = radial_grid_2d(10, 30)
+x = radial_grid_2d(8, 20)
 
 # k0 = ndp.kernels.RBFVec(output_dim)
 # k0 = ndp.kernels.RBFCurlFree()
@@ -141,33 +142,50 @@ def get_timesteps(t0, t1, num_ts):
     ts = t0 + (t1 - t0) * (ts - ts[0]) / (ts[-1] - ts[0])
     return ts
 
+font = {'family': 'serif',
+        'serif': ['Times New Roman'],
+        # 'weight' : 'bold',
+        'size': 8.
+        }
+mpl.rc('font', **font)
+mpl.rc('text', usetex='true')
+mpl.rc('text.latex', preamble=r'\usepackage{amsmath}\usepackage{amsfonts}')
+pw = 5.50107
+lw = pw / 2
+dir_path = "../doc/equiv_sp/figs/"
 
-def plot(ys, ts=None):
+plot_vf2 = partial(plot_vector_field, scale=30, width=0.01)
+
+def plot(x, ys, ts=None, N=1):
     plot_num_timesteps = ys.shape[1]
     fig, axes = plt.subplots(
+        N,
         plot_num_timesteps,
-        2,
         sharex=True,
         sharey=True,
-        figsize=(8 * 2, 8 * plot_num_timesteps),
+        # figsize=(pw, pw / 2 * plot_num_timesteps),
+        figsize=(pw, pw),
     )
-    # axes = axes if isinstance(type(axes[0]), np.ndarray) else axes[None, :]
-    if plot_num_timesteps == 1:
-        axes = axes[None, :]
-    fig.subplots_adjust(wspace=0, hspace=0.0)
+    axes = axes if isinstance(type(axes[0]), np.ndarray) else axes[None, :]
+    # if plot_num_timesteps == 1:
+        # axes = axes[None, :]
+    # fig.subplots_adjust(wspace=0, hspace=0.0)
 
     for j in range(plot_num_timesteps):
-        for i in range(2):
+        for i in range(N):
+            print(j, i)
+            axes.T[j, i].set_yticks([])
+            axes.T[j, i].set_xticks([])
             if x.shape[-1] == 1:
                 for o in range(output_dim):
-                    axes[j, i].plot(x, ys[i, j, :, o], "-", ms=2)
+                    axes.T[j, i].plot(x, ys[i, j, :, o], "-", ms=2)
             elif x.shape[-1] == 2:
-                plot_vf(x, ys[i, j], axes[j, i])
-            if ts is not None:
-                axes[j, 0].set_ylabel(f"t = {ts[j]:.2f}")
-    plt.tight_layout()
-    plt.show()
-
+                plot_vf2(x, ys[i, j], axes.T[j, i])
+            # if ts is not None:
+                # axes.T[j, 0].set_ylabel(f"t = {ts[j]:.2f}", fontsize=8)
+    fig.tight_layout(h_pad=0.2, w_pad=0.2)
+    fig.show()
+    return fig
 
 # %%
 # Forward process
@@ -189,28 +207,57 @@ y0s = sample_prior_gp(
 )
 print(y0s.shape)
 subkeys = jax.random.split(key, num=num_samples)
-ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1, num_ts=5)
+# ts = get_timesteps(sde.beta_schedule.t0, sde.beta_schedule.t1, num_ts=4)
+ts = jnp.array([sde.beta_schedule.t0, 0.1, 0.5, sde.beta_schedule.t1])
 
-solve = jax.jit(
-    lambda y, key: ndp.sde.sde_solve(
-        sde,
-        network,
-        x,
-        y=y,
-        key=key,
-        ts=ts,
-        prob_flow=True,
-        atol=None,
-        rtol=None,
-        num_steps=100,
-        forward=True,
-    )
-)
-ys = jax.vmap(solve)(y0s, subkeys)
+theta = np.deg2rad(90)
+R = jnp.array([[jnp.cos(theta), -jnp.sin(theta)], [jnp.sin(theta), jnp.cos(theta)]])
+I = jnp.eye(2)
+
+def steer(rot):
+    solve = jax.jit(
+        lambda y, key: ndp.sde.sde_solve(
+            sde,
+            network,
+            x @ rot.T,
+            y=y @ rot,
+            key=key,
+            ts=ts,
+            prob_flow=True,
+            atol=None,
+            rtol=None,
+            num_steps=100,
+            forward=True,
+        ))
+    return jax.vmap(solve)(y0s, subkeys)
+# )
+#     return jax.vmap(
+#         lambda key: conditional_sample(
+#             x_known @ rot.T, y_known @ rot.T, x_test, key=key
+#         )
+#     )(jax.random.split(key, num_samples))
+
+ys, ys_steered = steer(I), steer(R)
+
 # solve = lambda y, key: ndp.sde.sde_solve(sde, network, x, y=y, key=key, ts=ts, prob_flow=False, atol=None, rtol=None, num_steps=100, forward=True)
 # ys = solve(y0s[0], subkeys[0])
+plot(x, ys, ts)
+plot(x @ R, ys_steered, ts)
+#%%#
 
-plot(ys, ts)
+fig, axes = plt.subplots(2, len(ts), figsize=(pw, pw/1.7))
+for k, (y, rot) in enumerate(zip([ys, ys_steered], [I, R])):
+    # posterior = gp_posterior(mean_function, kernel, x_context @ rot.T, y_context @ rot.T, x)
+    for j in range(y.shape[1]):
+        # y = jnp.mean(y, axis=0)[j]
+        # y = ys[0, j]
+        # plot_vf2(x @ rot, y @ rot, axes[k,j])
+        plot_vf2(x @ rot, y[0][j], axes[k,j])
+        axes[k, j].set_yticks([])
+        axes[k, j].set_xticks([])
+fig.tight_layout(h_pad=0, w_pad=0., rect=(0,0.0,0.99,0.99))
+fig.savefig(os.path.join(dir_path, '2d/steerable_noising.pdf'))
+print()
 
 # %%
 # Backward
@@ -225,7 +272,7 @@ reverse_solve = lambda key, y: ndp.sde.sde_solve(
     key=key,
     y=y,
     ts=ts,
-    prob_flow=True,
+    prob_flow=False,
     # solver=dfx.Heun(), rtol=1e-3, atol=1e-3, num_steps=100)
     solver=dfx.Euler(),
     rtol=None,
@@ -377,7 +424,9 @@ print("norm diff", jnp.linalg.norm(model_logp - true_logp) / num_samples)
 key = jax.random.PRNGKey(1)
 
 num_context = 25
-x = radial_grid_2d(10, 30)
+# x = radial_grid_2d(10, 30)
+x = radial_grid_2d(8, 20)
+
 num_points = x.shape[-2]
 indices = jnp.arange(num_points)
 # num_context = jax.random.randint(key1, (), minval=min_context, maxval=max_context)
@@ -432,7 +481,7 @@ y_test = unflatten(
 # %%
 num_steps = 50
 # num_inner_steps = 50
-num_inner_steps = 50
+num_inner_steps = 10
 print(f"num_steps={num_steps} and num_inner_steps={num_inner_steps}")
 import time
 
@@ -504,22 +553,42 @@ print(f"theta = {theta*360/2/jnp.pi:.2f} degrees")
 R = jnp.array([[jnp.cos(theta), -jnp.sin(theta)], [jnp.sin(theta), jnp.cos(theta)]])
 I = jnp.eye(2)
 
-fig, axes = plt.subplots(1, 2, figsize=(10, 5), tight_layout=True)
-for k, rot in enumerate([I, R]):
-    # posterior = gp_posterior(mean_function, kernel, x_context @ rot.T, y_context @ rot.T, x)
-    ys = jax.vmap(
+def steer(rot):
+    return jax.vmap(
         lambda key: conditional_sample(
             x_known @ rot.T, y_known @ rot.T, x_test, key=key
         )
     )(jax.random.split(key, num_samples))
+ys, ys_steered = steer(I), steer(R)
+
+#%%
+plot_vf2 = partial(plot_vector_field, scale=30, width=0.01)
+# fig, axes = plt.subplots(1, 2, figsize=(lw, lw/1.95))
+fig, axes = plt.subplots(1, 2, figsize=(lw, lw/1.7))
+for k, (y, rot) in enumerate(zip([ys, ys_steered], [I, R])):
+    # posterior = gp_posterior(mean_function, kernel, x_context @ rot.T, y_context @ rot.T, x)
     y = jnp.mean(ys, axis=0)
     # plot_vf(x_test, y, axes[k])
-    # plot_vf(x_known @ rot.T, y_known @ rot.T, axes[k],  color="r")
-    plot_vf(x_test @ rot, y @ rot, axes[k])
-    plot_vf(x_known, y_known, axes[k], color="r")
-    covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(ys)
-    plot_cov(x, covariances, ax=axes[k])
-plt.savefig("conditional_ndp_rot.png", dpi=300, facecolor="white", edgecolor="none")
+    plot_vf2(x_known @ rot, y_known @ rot, axes[k], color="C3", zorder=2)
+    # plot_vf2(x_test @ rot, y @ rot, axes[k])
+    plot_vf2(x_test @ rot, y @ rot, axes[k])
+    # covariances = jax.vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1])(ys)
+    # plot_cov(x, covariances, ax=axes[k])
+    axes[k].set_yticks([])
+    axes[k].set_xticks([])
+
+# axes[0].set_title(r"$f(x)$")
+# axes[1].set_title(r"$\rho(h)f(g^{{-1}}x)$")
+# axes[0].set_title(r'$\mathbb{E}[f(x^*)|x^c,y^c]$')
+# axes[1].set_title(r'$\mathbb{E}[f(x^*)|\rho(g) x^c,\rho(g) y^c]$')
+# axes[0].set_title(r'$f(x^*)|\{{x^c,y^c\}}$')
+# axes[1].set_title(r'$f(x^*)|\{{g x^c,\rho(g) y^c\}}$')
+axes[0].set_title(r'$f(x^*)|\mathcal{{C}}$')
+axes[1].set_title(r'$f(x^*)|g \cdot \mathcal{{C}}$')
+
+# fig.tight_layout(w_pad=0., h_pad=0.)
+fig.tight_layout(pad=0, w_pad=0.1, rect=(0,0.01,0.98,0.87))
+plt.savefig(os.path.join(dir_path, "2d/conditional_ndp_rot.pdf"))
 
 # %%
 # Conditional likelihood evaluation of model
