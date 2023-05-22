@@ -68,7 +68,7 @@ def run(cfg):
 
     os.makedirs(ckpt_path, exist_ok=True)
     if "wandb" in cfg.logger:
-        if cfg.mode == "eval":
+        if cfg.mode in ["eval", "plot", "metric"]:
             with open(wandb_cfg_path, "r") as file:
                 cfg_yaml = yaml.safe_load(file)
             cfg.logger.wandb.id = cfg_yaml["wandb_id"]
@@ -235,7 +235,7 @@ def run(cfg):
         return new_state, metrics
 
     state = init(batch0, jax.random.PRNGKey(cfg.seed))
-    if cfg.mode == "eval":  # if resume or evaluate
+    if cfg.mode in ["eval", "plot", "metric"]:  # if resume or evaluate
         state = load_checkpoint(state, ckpt_path, cfg.optim.n_steps)
 
     nb_params = sum(x.size for x in jax.tree_util.tree_leaves(state.params))

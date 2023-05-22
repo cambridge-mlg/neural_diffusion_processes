@@ -42,14 +42,15 @@ def plot_scalar_field(
 
 
 def plot_vector_field(
-    X, Y, ax=None, color=None, scale=15, width=None, label=None, zorder=1
+    X, Y, ax=None, color=None, scale=15, width=None, label=None, zorder=1, cmap=None
 ):
     if ax == None:
         fig, ax = plt.subplots(1, 1)
     ax.set_aspect('equal')
+    cmap = cmap if cmap is not None else cm
 
     Y_norm = jnp.linalg.norm(Y, axis=-1)
-    color = cm(norm(Y_norm)) if color is None else color
+    color = cmap(norm(Y_norm)) if color is None else color
     ax.quiver(
         X[:, 0],
         X[:, 1],
