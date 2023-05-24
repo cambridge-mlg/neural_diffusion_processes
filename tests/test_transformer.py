@@ -21,15 +21,14 @@ from neural_diffusion_processes.utils.tests import (
     _check_permutation_invariance,
     _check_permutation_equivariance,
     _check_e2_equivariance,
-    _check_e3_equivariance,
 )
 import neural_diffusion_processes as ndp
 
 with initialize(config_path="../experiments/steerable_gp/config", version_base="1.3.2"):
     overrides = [
         "data=gpinf",
-        "data.num_samples_train=50",
-        "data.num_samples_test=50",
+        "data.n_samples_train=50",
+        "data.n_samples_test=50",
         "net=e3nn",
         "net.attention=false",
         "net.n_layers=2",
@@ -52,7 +51,7 @@ with initialize(config_path="../experiments/steerable_gp/config", version_base="
         # data = call(
         #     cfg.data,
         #     key=next_rng,
-        #     num_samples=cfg.data.num_samples_train,
+        #     num_samples=cfg.data.n_samples_train,
         #     dataset="train",
         # )
         # rng, next_rng = jax.random.split(rng)
@@ -91,21 +90,21 @@ with initialize(config_path="../experiments/steerable_gp/config", version_base="
         # params = init(rng, x, y, t)
         # return jax.jit(lambda x_, y_, t_: apply(params, x_, y_, t_))
 
-    # def test_denoise_model_permutation_equivariance(rng, inputs, denoise_model):
-    #     x, y, t = inputs
-    #     _check_permutation_equivariance(
-    #         rng, lambda x_, y_: denoise_model(x_, y_, t), 1, 1, x, y
-    #     )
+    def test_denoise_model_permutation_equivariance(rng, inputs, denoise_model):
+        x, y, t = inputs
+        _check_permutation_equivariance(
+            rng, lambda x_, y_: denoise_model(x_, y_, t), 1, 1, x, y
+        )
 
-    # def test_denoise_model_isnan(rng, inputs, denoise_model):
-    #     x, y, t = inputs
-    #     out = denoise_model(x, y, t)
-    #     assert not jnp.isnan(out).any()
+    def test_denoise_model_isnan(rng, inputs, denoise_model):
+        x, y, t = inputs
+        out = denoise_model(x, y, t)
+        assert not jnp.isnan(out).any()
 
-    # def test_denoise_model_non_zero(rng, inputs, denoise_model):
-    #     x, y, t = inputs
-    #     out = denoise_model(x, y, t)
-    #     assert jnp.abs(out.mean()) > 1e-4
+    def test_denoise_model_non_zero(rng, inputs, denoise_model):
+        x, y, t = inputs
+        out = denoise_model(x, y, t)
+        assert jnp.abs(out.mean()) > 1e-4
 
     def test_denoise_model_e2_equivariance(rng, inputs, denoise_model):
         _check_e2_equivariance(rng, denoise_model, *inputs)
