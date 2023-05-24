@@ -66,11 +66,11 @@ python experiments/regression1d/main.py kernel=se kernel.params.lengthscale=0.1
 ### Regression over Gaussian process vector field
 With non-equivariant score network
 ```
-python experiments/steerable_gp/main.py net=e3nn
+python experiments/steerable_gp/main.py net=mattn
 ```
 With E(2)-equivariant score network
 ```
-python experiments/steerable_gp/main.py net=mattn
+python experiments/steerable_gp/main.py net=e3nn
 ```
 
 ### Global tropical cyclone trajectory prediction
