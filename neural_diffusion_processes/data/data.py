@@ -25,6 +25,10 @@ class DataBatch(Pytree):
         return self.xs.shape[0]
 
     @property
+    def num_points(self) -> int:
+        return self.xs.shape[1]
+
+    @property
     def num_targets(self) -> int:
         if self.mask is None:
             return self.xs.shape[1]

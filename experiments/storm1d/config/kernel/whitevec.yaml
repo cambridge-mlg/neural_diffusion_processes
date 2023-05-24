@@ -1,5 +1,0 @@
-cls:
-  _target_: neural_diffusion_processes.kernels.WhiteVec
-  output_dim: 1
-#params:
-#  variance: 1.0

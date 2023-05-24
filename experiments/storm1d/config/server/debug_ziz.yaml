@@ -1,6 +1,0 @@
-# @package _global_
-
-
-defaults:
-  - base_ziz
-  - override /hydra/launcher: submitit_local

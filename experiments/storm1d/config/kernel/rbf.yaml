@@ -1,5 +1,0 @@
-cls:
-  _target_: jaxkern.stationary.RBF
-#params:
-#  lengthscale: 1.0
-#  variance: 1.0
