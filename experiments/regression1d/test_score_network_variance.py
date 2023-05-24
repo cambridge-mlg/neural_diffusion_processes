@@ -1,15 +1,17 @@
-from jaxtyping import Array
 import functools
-import jax.numpy as jnp
-import jax
-import gpjax
-import jaxkern
-    
-import neural_diffusion_processes as ndp
-from neural_diffusion_processes.ml_tools.state import TrainingState, load_checkpoint, find_latest_checkpoint_step_index
-from neural_diffusion_processes.data import regression1d
 
+import gpjax
+import jax
+import jax.numpy as jnp
+import jaxkern
 from config import Config, toy_config
+from jaxtyping import Array
+
+import neural_diffusion_processes as ndp
+import neural_diffusion_processes.sde_with_mask as ndp_sde
+from neural_diffusion_processes.data import regression1d
+from neural_diffusion_processes.ml_tools.state import (
+    TrainingState, find_latest_checkpoint_step_index, load_checkpoint)
 
 ############# Config
 SEED = 1
@@ -43,12 +45,12 @@ factory = regression1d._DATASET_FACTORIES[DATASET]
 assert isinstance(factory, regression1d.GPFunctionalDistribution)
 mean0, kernel0, params0 = factory.mean, factory.kernel, factory.params
 
-sde = ndp.sde.SDE(
+sde = ndp_sde.SDE(
     kernel0,
     gpjax.mean_functions.Zero(),
     params0,
     beta,
-    score_parameterization=ndp.sde.ScoreParameterization.get(
+    score_parameterization=ndp_sde.ScoreParameterization.get(
         "y0"
     ),
     std_trick=False,
@@ -78,12 +80,13 @@ print(d)
 xx = jnp.linspace(-1, 1, 100)[:, None]
 
 import matplotlib.pyplot as plt
+
 # fig, axes = plt.subplots(1, 2, figsize=(10, 5))
 # fig, ax = plt.subplots()
 # samples_prior = jax.vmap(lambda k: sde.sample_prior(k, xx))(jax.random.split(key, 20))
 # print(samples_prior.shape)
 
-# sample = jax.vmap(lambda k: ndp.sde.sde_solve(
+# sample = jax.vmap(lambda k: ndp_sde.sde_solve(
 #     sde,
 #     network,
 #     xx,
@@ -100,7 +103,7 @@ import matplotlib.pyplot as plt
 @jax.vmap
 @jax.jit
 def delta_logp(x, y, mask, key):
-    return ndp.sde.log_prob(sde, network, x, y, mask, key=key, rtol=None)
+    return ndp_sde.log_prob(sde, network, x, y, mask, key=key, rtol=None)
 
 def log_prob(x, y, mask, key):
     dlp, yT = delta_logp(x, y, mask, key)

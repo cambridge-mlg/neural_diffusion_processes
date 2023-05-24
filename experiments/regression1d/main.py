@@ -37,40 +37,40 @@ Default setting. Approximate the score by a neural network.
 For the GP datasets (squared exponential, matern and weakly periodic) we
 use use the true score. In this case no training is required.
 """
-from typing import Tuple, Mapping, Iterator, List, Optional, Callable
-from jaxtyping import Float, Array
-
 import os
+from typing import Callable, Iterator, List, Mapping, Optional, Tuple
+
+from jaxtyping import Array, Float
+
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-import yaml
-import numpy as np
+import datetime
 import functools
-import tqdm
 import pathlib
-import haiku as hk
-import jaxkern
+from dataclasses import asdict
+from pathlib import Path
+
 import gpjax
+import haiku as hk
 import jax
 import jax.numpy as jnp
+import jaxkern
 import jmp
-import pandas as pd
-import optax
-import time
-import datetime
 import matplotlib.pyplot as plt
+import numpy as np
+import optax
+import tqdm
+import yaml
 from absl import app
-from pathlib import Path
-from dataclasses import asdict
-
-from ml_collections import config_dict, config_flags
 from jax.config import config as jax_config
+from ml_collections import config_dict, config_flags
 
 import neural_diffusion_processes as ndp
-from neural_diffusion_processes.ml_tools.state import TrainingState, load_checkpoint, find_latest_checkpoint_step_index
-from neural_diffusion_processes.ml_tools import config_utils
+import neural_diffusion_processes.sde_with_mask as ndp_sde
 from neural_diffusion_processes import ml_tools
 from neural_diffusion_processes.data import regression1d
-
+from neural_diffusion_processes.ml_tools import config_utils
+from neural_diffusion_processes.ml_tools.state import (
+    TrainingState, find_latest_checkpoint_step_index, load_checkpoint)
 
 try:
     from .config import Config, toy_config
@@ -137,7 +137,7 @@ def get_log_prob(sde, network):
     @jax.jit
     def delta_logp(params, x, y, mask, key):
         net = functools.partial(network, params)
-        return ndp.sde.log_prob(sde, net, x, y, mask, key=key, rtol=None)
+        return ndp_sde.log_prob(sde, net, x, y, mask, key=key, rtol=None)
 
     def log_prob(params, x, y, mask, key):
         dlp, yT = delta_logp(params, x, y, mask, key)
@@ -390,12 +390,12 @@ def main(_):
         hyps["kernel"]["variance"] = (1. - v) * data_variance
         hyps["kernel"] = [hyps["kernel"], {"variance": v * data_variance}]
 
-    sde = ndp.sde.SDE(
+    sde = ndp_sde.SDE(
         limiting_kernel,
         gpjax.mean_functions.Zero(),
         hyps,
         beta,
-        score_parameterization=ndp.sde.ScoreParameterization.get(
+        score_parameterization=ndp_sde.ScoreParameterization.get(
             config.sde.score_parametrization
         ),
         # Below parameterisations are all set to False if we use the true score.
@@ -447,7 +447,7 @@ def main(_):
 
     def loss_fn(params, batch: ndp.data.DataBatch, key):
         net_params = functools.partial(net, params)
-        return ndp.sde.loss(sde, net_params, batch, key)
+        return ndp_sde.loss(sde, net_params, batch, key)
 
     num_steps_per_epoch = config.data.num_samples_in_epoch // config.optimization.batch_size
     num_steps = num_steps_per_epoch * config.optimization.num_epochs
@@ -524,7 +524,7 @@ def main(_):
         net_params = (
             true_score_network if config.sde.exact_score else functools.partial(net, params)
         )
-        return ndp.sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key, mask_context=maskc, mask_test=mask)
+        return ndp_sde.conditional_sample2(sde, net_params, xc, yc, xs, key=key, mask_context=maskc, mask_test=mask)
 
     logp = get_log_prob(
         sde,
@@ -570,7 +570,7 @@ def main(_):
         net_params = (
             true_score_network if config.sde.exact_score else functools.partial(net, params)
         )
-        return ndp.sde.sde_solve(sde, net_params, x_target, key=key)
+        return ndp_sde.sde_solve(sde, net_params, x_target, key=key)
     
     def callback_plot_prior(state: TrainingState, key):
         params = state.params_ema

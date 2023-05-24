@@ -1,16 +1,16 @@
-from typing import Mapping
 from dataclasses import dataclass
+from typing import Mapping
 
 import diffrax as dfx
+import gpjax
 import jax
 import jax.numpy as jnp
-import gpjax
 import jaxkern
 
 import neural_diffusion_processes as ndp
-from neural_diffusion_processes.data import regression1d
-
+import neural_diffusion_processes.sde_with_mask as ndp_sde
 from neural_diffusion_processes import config
+from neural_diffusion_processes.data import regression1d
 
 DATASET = "weaklyperiodic"  # squared exponential
 
@@ -60,7 +60,7 @@ kernelT = jaxkern.SumKernel(
 paramsT["kernel"] = [paramsT["kernel"], {"variance": 0.05}]
 p_ref = GP(meanT, kernelT, paramsT)
 
-sde = ndp.sde.SDE(
+sde = ndp_sde.SDE(
     kernelT,
     meanT,
     paramsT,
@@ -83,7 +83,7 @@ true_score_network = sde.get_exact_score(mean0, kernel0, params0)
 @jax.vmap
 @jax.jit
 def delta_logp(x, y, mask, key):
-    return ndp.sde.log_prob(sde, true_score_network, x, y, mask, key=key)
+    return ndp_sde.log_prob(sde, true_score_network, x, y, mask, key=key)
 
 def log_prob(x, y, mask, key):
     dlp, yT = delta_logp(x, y, mask, key)

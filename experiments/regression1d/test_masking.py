@@ -1,13 +1,13 @@
-import pytest
+import gpjax
+import haiku as hk
 import jax
 import jax.numpy as jnp
-import numpy as np
-import haiku as hk
-
-import gpjax
 import jaxkern
+import numpy as np
+import pytest
 
 import neural_diffusion_processes as ndp
+import neural_diffusion_processes.sde_with_mask as ndp_sde
 from neural_diffusion_processes.data import regression1d
 
 DATASET = "se"
@@ -27,7 +27,7 @@ hyps = {
     "mean_function": {},
     "kernel": limiting_kernel.init_params(None),
 }
-sde = ndp.sde.SDE(
+sde = ndp_sde.SDE(
     limiting_kernel,
     gpjax.mean_functions.Zero(),
     hyps,
@@ -66,7 +66,7 @@ context_mask = jnp.concatenate([
 # x_corrupted = jnp.where(mask1[:,None] == 1., -666., x)
 
 
-y_preds = jax.vmap(lambda key: ndp.sde.conditional_sample2(
+y_preds = jax.vmap(lambda key: ndp_sde.conditional_sample2(
     sde, net, x_context, y_context, x,
     mask_context=context_mask,
     mask_test=test_mask,
@@ -77,6 +77,7 @@ y_preds = jax.vmap(lambda key: ndp.sde.conditional_sample2(
 ))(jax.random.split(key, 30))
 
 import matplotlib.pyplot as plt
+
 plt.plot(x[~test_mask.astype(jnp.bool_)], y_preds[:, ~test_mask.astype(jnp.bool_), 0].T, "C0", alpha=.3)
 plt.plot(x_context[~context_mask.astype(jnp.bool_)], y_context[~context_mask.astype(jnp.bool_)], "kx")
 plt.plot(x_context[context_mask.astype(jnp.bool_)], y_context[context_mask.astype(jnp.bool_)], "ko", mfc='none')
