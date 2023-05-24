@@ -1,47 +1,27 @@
 import dataclasses
-
 from functools import partial
-import jax
-import jax.numpy as jnp
-import numpy as np
-
-from check_shapes import check_shapes
-from einops import rearrange
 
 import gpjax
-from gpjax.mean_functions import AbstractMeanFunction
-from gpjax.gaussian_distribution import GaussianDistribution
-from jaxkern.base import AbstractKernel
+import jax
+import jax.numpy as jnp
 import jaxkern
-from jaxkern.computations import (
-    AbstractKernelComputation,
-    DenseKernelComputation,
-    ConstantDiagonalKernelComputation,
-)
-from jaxlinop import (
-    LinearOperator,
-    DenseLinearOperator,
-    ConstantDiagonalLinearOperator,
-    DiagonalLinearOperator,
-    identity,
-)
+import numpy as np
+from check_shapes import check_shapes
+from einops import rearrange
+from gpjax.gaussian_distribution import GaussianDistribution
+from gpjax.mean_functions import AbstractMeanFunction
+from jaxkern.base import AbstractKernel
+from jaxkern.computations import (AbstractKernelComputation,
+                                  ConstantDiagonalKernelComputation,
+                                  DenseKernelComputation)
+from jaxlinop import (ConstantDiagonalLinearOperator, DenseLinearOperator,
+                      DiagonalLinearOperator, LinearOperator, identity)
 from jaxlinop.dense_linear_operator import _check_matrix
 
-from .utils.types import (
-    Array,
-    Optional,
-    Union,
-    Tuple,
-    Int,
-    Dict,
-    List,
-    Mapping,
-    Callable,
-    Float,
-    Type,
-)
-from .utils.misc import flatten, unflatten, check_shape, jax_unstack
 from .config import get_config
+from .utils.misc import check_shape, flatten, jax_unstack, unflatten
+from .utils.types import (Array, Callable, Dict, Float, Int, List, Mapping,
+                          Optional, Tuple, Type, Union)
 
 
 class BlockDiagonalLinearOperator(DenseLinearOperator):
@@ -613,27 +593,29 @@ def get_kernel(
     kernel_type: str, active_dims=Optional[List[int]]
 ) -> jaxkern.base.AbstractKernel:
     if kernel_type.lower() == "matern12":
-        return jaxkern.stationary.Matern12(active_dims=active_dims)
+        k = jaxkern.stationary.Matern12(active_dims=active_dims)
     elif kernel_type.lower() == "matern32":
-        return jaxkern.stationary.Matern32(active_dims=active_dims)
+        k = jaxkern.stationary.Matern32(active_dims=active_dims)
     elif kernel_type.lower() == "matern52":
-        return jaxkern.stationary.Matern52(active_dims=active_dims)
+        k =  jaxkern.stationary.Matern52(active_dims=active_dims)
+    elif kernel_type.lower() == "periodic":
+        k = jaxkern.stationary.Periodic(active_dims=active_dims)
     elif kernel_type.lower() == "white":
-        return jaxkern.stationary.White(active_dims=active_dims)
-    elif "white" in kernel_type.lower() and any(
-        [se in kernel_type.lower() for se in _SQUARED_EXPONENTIAL_NAMES]
-    ):
-        return SumKernel(
-            [
-                jaxkern.stationary.White(active_dims=active_dims),
-                jaxkern.stationary.RBF(active_dims=active_dims),
-            ]
-        )
+        k = jaxkern.stationary.White(active_dims=active_dims)
+    elif "white" in kernel_type.lower() \
+        and any([se in kernel_type.lower() for se in _SQUARED_EXPONENTIAL_NAMES]):
+        k = SumKernel([
+            jaxkern.stationary.White(active_dims=active_dims),
+            jaxkern.stationary.RBF(active_dims=active_dims),
+        ])
     elif kernel_type.lower() in _SQUARED_EXPONENTIAL_NAMES:
-        return jaxkern.stationary.RBF(active_dims=active_dims)
+        print("Using RBF kernel as limiting kernel")
+        k = jaxkern.stationary.RBF(active_dims=active_dims)
     else:
         raise NotImplementedError("Unknown kernel: %s" % kernel_type)
 
+    return k
+    
 
 def get_mean_fn(mean_fn_type: str) -> gpjax.mean_functions.AbstractMeanFunction:
     if mean_fn_type.lower() == "zero":

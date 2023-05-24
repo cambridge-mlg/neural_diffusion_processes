@@ -1,49 +1,76 @@
 import dataclasses
 
-# from ml_collections import config_dict
-
 
 @dataclasses.dataclass
 class DataConfig:
     seed: int = 0
-    dataset: str = "se"
+    dataset: str = "sawtooth"
     num_samples_in_epoch: int = int(2**14)
 
 
 @dataclasses.dataclass
 class SdeConfig:
     limiting_kernel: str = "white"
+    limiting_kernel_noise_variance: float = 0.05
+    limiting_kernel_lengthscale: float = 0.1
     t0: float = 5e-4
+    score_parametrization: str = "preconditioned_k"
+    std_trick: bool = True
+    residual_trick: bool = False
+    loss: str = "l2"
+    exact_score: bool = False
+    beta1: float = 10.0
+
+    def __post_init__(self):
+        assert self.score_parametrization.lower() in [
+            "preconditioned_s", "preconditioned_k", "none", "y0",
+        ], "Unknown score parametrization {}.".format(self.score_parametrization)
+
+        assert self.loss in ["l1", "l2"], "Unknown loss {}.".format(self.loss)
+
+        if "short" not in self.limiting_kernel:
+            self.limiting_kernel_lengthscale = None
 
 
 @dataclasses.dataclass
 class OptimizationConfig:
-    batch_size: int = 16
-    num_epochs: int = 50
+    batch_size: int = 256
+    num_epochs: int = 300
+    num_warmup_epochs: int = 10
+    num_decay_epochs: int = 200
+    init_lr: float = 1e-4
+    peak_lr: float = 1e-3
+    end_lr: float = 1e-5
     ema_rate: float = 0.999
+
+    def __post_init__(self):
+        assert self.num_epochs > self.num_warmup_epochs
 
 
 @dataclasses.dataclass
 class NetworkConfig:
-    num_bidim_attention_layers: int = 5
-    hidden_dim: int = 64
+    num_bidim_attention_layers: int = 2
+    hidden_dim: int = 128
     num_heads: int = 8
+    translation_invariant: bool = True
 
 
 @dataclasses.dataclass
 class EvalConfig:
-    batch_size: int = 16
-    num_samples_in_epoch: int = 128
+    batch_size: int = 32
+    num_samples_in_epoch: int = int(2**12)
 
 
 @dataclasses.dataclass
 class Config:
     seed: int = 42
+    mode: str = "train"
     eval: EvalConfig = EvalConfig()
     data: DataConfig = DataConfig()
     sde: SdeConfig = SdeConfig()
     optimization: OptimizationConfig = OptimizationConfig()
     network: NetworkConfig = NetworkConfig()
+    experiment_dir: str = ""
 
 
 

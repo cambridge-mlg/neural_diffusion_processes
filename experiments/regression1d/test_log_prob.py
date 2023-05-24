@@ -1,17 +1,25 @@
-# %%
-from typing import Mapping
 from dataclasses import dataclass
+from typing import Mapping
 
 import diffrax as dfx
+import gpjax
 import jax
 import jax.numpy as jnp
-import gpjax
 import jaxkern
 
 import neural_diffusion_processes as ndp
+import neural_diffusion_processes.sde_with_mask as ndp_sde
+from neural_diffusion_processes import config
 from neural_diffusion_processes.data import regression1d
 
-from neural_diffusion_processes import config
+DATASET = "weaklyperiodic"  # squared exponential
+
+
+def get_dataset(key):
+    task = "interpolation"
+    total_num_samples = int(2**14)
+    batch_size = 32
+    return regression1d.get_dataset(DATASET, task, key=key, batch_size=batch_size, samples_per_epoch=total_num_samples, num_epochs=1)
 
 
 @dataclass
@@ -33,18 +41,19 @@ class GP:
             return post(x).log_prob(jnp.reshape(y, (-1,)))
 
 
-DATASET = "se"  # squared exponential
 
 key = jax.random.PRNGKey(0)
+import jaxkern
 
 ############ Limiting process
 beta = ndp.sde.LinearBetaSchedule(t0=5e-4)
 meanT = gpjax.mean_functions.Zero()
-kernelT = ndp.kernels.get_kernel("white", active_dims=[0])
+# kernelT = ndp.kernels.get_kernel("white", active_dims=[0])
 # kernelT = ndp.kernels.get_kernel("RBF", active_dims=[0])
 # kernelT = ndp.kernels.SumKernel(
 # [kernelT, ndp.kernels.get_kernel("white", active_dims=[0])]
 # )
+kernelT = ndp.kernels.get_kernel("matern52", active_dims=[0], noisy=False)
 paramsT = {
     "mean_function": {},
     "kernel": kernelT.init_params(None),
@@ -53,9 +62,13 @@ paramsT = {
 }
 # paramsT["kernel"]["variance"] = 1.0
 # paramsT["kernel"][-1]["variance"] = 0.05
+kernelT = jaxkern.SumKernel(
+    [kernelT, jaxkern.stationary.White(active_dims=[0])]
+)
+paramsT["kernel"] = [paramsT["kernel"], {"variance": 0.05}]
 p_ref = GP(meanT, kernelT, paramsT)
 
-sde = ndp.sde.SDE(
+sde = ndp_sde.SDE(
     kernelT,
     meanT,
     paramsT,
@@ -64,6 +77,7 @@ sde = ndp.sde.SDE(
     is_score_preconditioned=True,
     std_trick=False,
     residual_trick=False,
+    exact_score=True
 )
 
 
@@ -74,63 +88,115 @@ print(params0)
 p_data = GP(mean0, kernel0, params0)
 true_score_network = sde.get_exact_score(mean0, kernel0, params0)
 
-key, bkey = jax.random.split(key)
+
+# def log_prob(x, y, key):
+#     return ndp.sde.log_prob(
+#         sde, true_score_network, x, y, key=key, rtol=1e-8, atol=1e-8
+#     )[0][0]
 
 
-def log_prob(x, y, key):
-    return ndp.sde.log_prob(
-        sde, true_score_network, x, y, key=key, rtol=1e-8, atol=1e-8
-    )[0][0]
+# def log_prob_cond(x, y, xc, yc, key):
+#     return ndp.sde.log_prob(
+#         sde,
+#         true_score_network,
+#         x,
+#         y,
+#         x_known=xc,
+#         y_known=yc,
+#         key=key,
+#         rtol=1e-8,
+#         atol=1e-8,
+#     )[0][0]
+#     # return ndp.sde.log_prob(sde, true_score_network, x, y, x_known=xc, y_known=yc, key=key, rtol=1e-6, atol=1e-6, hutchinson_type="Gaussian")[0][0]
+
+@jax.vmap
+@jax.jit
+def delta_logp(x, y, mask, key):
+    return ndp_sde.log_prob(sde, true_score_network, x, y, mask, key=key)
+
+def log_prob(x, y, mask, key):
+    dlp, yT = delta_logp(x, y, mask, key)
+    logp_prior = jax.vmap(sde.log_prob_prior)(
+        x[:, ~mask[0].astype(jnp.bool_)], yT[:, ~mask[0].astype(jnp.bool_)]
+    )
+    return logp_prior + dlp
 
 
-def log_prob_cond(x, y, xc, yc, key):
-    return ndp.sde.log_prob(
-        sde,
-        true_score_network,
-        x,
-        y,
-        x_known=xc,
-        y_known=yc,
-        key=key,
-        rtol=1e-8,
-        atol=1e-8,
-    )[0][0]
-    # return ndp.sde.log_prob(sde, true_score_network, x, y, x_known=xc, y_known=yc, key=key, rtol=1e-6, atol=1e-6, hutchinson_type="Gaussian")[0][0]
+key, dkey = jax.random.split(key)
+ds = get_dataset(dkey)
+batch = next(ds)
+
+
+def m2i(mask):
+    """mask to indices"""
+    return ~mask.astype(jnp.bool_)
 
 
 values = []
 
+logliks = []
 
-# for ji in [1e-6, 1e-8, 1e-12]:
-for ji in [1e-8]:
-    config.set_config(config.Config(jitter=ji))
-    batch = regression1d.get_batch(bkey, 4, DATASET, "training")
-    x = jnp.concatenate([batch.xc, batch.xs], axis=1)[0]
-    y = jnp.concatenate([batch.yc, batch.ys], axis=1)[0]
+# for ji in [1e-8]:
+#     config.set_config(config.Config(jitter=ji))
+#     batch = regression1d.get_batch(bkey, 4, DATASET, "training")
+#     x = jnp.concatenate([batch.xc, batch.xs], axis=1)[0]
+#     y = jnp.concatenate([batch.yc, batch.ys], axis=1)[0]
+
+ji = 1e-6
+config.set_config(config.Config(jitter=ji))
+
+from tqdm.contrib import tenumerate
+
+for i, batch in tenumerate(ds):
+    # if i >= 124: break
+    x = jnp.concatenate([batch.xc, batch.xs], axis=1)
+    y = jnp.concatenate([batch.yc, batch.ys], axis=1)
+    mask = jnp.concatenate([batch.mask_context, batch.mask], axis=1)
+    # mask = jnp.zeros_like(mask)
+    mask_context = batch.mask_context
 
     key, jkey, ckey = jax.random.split(key, num=3)
-    logp_joint = log_prob(x, y, jkey)
-    logp_context = log_prob(batch.xc[0], batch.yc[0], ckey)
+    logp_joint = log_prob(x, y, mask, jax.random.split(jkey, len(x)))
+    logp_context = log_prob(batch.xc, batch.yc, mask_context, jax.random.split(ckey, len(x)))
     logp_ndp_cond = logp_joint - logp_context
-    logp_ndp_cond2 = log_prob_cond(x, y, batch.xc[0] + 1e-8, batch.yc[0], jkey)
+    # logp_ndp_cond2 = log_prob_cond(x, y, batch.xc[0] + 1e-8, batch.yc[0], jkey)
 
-    logp_gp_prior = p_data.log_prob(x, y)
-    D = (batch.xc[0], batch.yc[0])
-    logp_gp_cond = p_data.log_prob(batch.xs[0], batch.ys[0], data=D)
+    # logp_gp_joint = p_data.log_prob(x[m2i(mask)], y[m2i(mask)])
+    # D = (
+    #     batch.xc[:, m2i(mask_context)],
+    #     batch.yc[:, m2i(mask_context)]
+    # )
+    # logp_gp_cond = p_data.log_prob(
+    #     batch.xs[:, m2i(batch.mask[0])],
+    #     batch.ys[m2i(batch.mask[0])],
+    #     # batch.xs[0],
+    #     # batch.ys[0],
+    #     data=D
+    # )
+    # print(logp_joint.shape)
+    logliks.append(logp_ndp_cond / 50.)
 
-    values.append(
-        {
-            "jitter": ji,
-            "logp_ndp_prior": logp_joint,
-            "logp_gp_prior": logp_gp_prior,
-            "logp_ndp_cond (diff)": logp_ndp_cond,
-            "logp_ndp_cond (direct)": logp_ndp_cond2,
-            "logp_gp_cond": logp_gp_cond,
-        }
-    )
-    print(values[-1])
+    values.append({
+        "jitter": ji,
+        "logp_ndp_prior": jnp.mean(logp_joint),
+        # "logp_gp_prior": logp_gp_joint,
+        "logp_ndp_cond": jnp.mean(logp_ndp_cond),
+        # "logp_gp_cond": logp_gp_cond,
+        "num_target": m2i(batch.mask[0]).sum(),
+        "num_context": m2i(batch.mask_context[0]).sum()
+    })
+    # print(values[-1])
 
 import pandas as pd
 
 df = pd.DataFrame(values)
 print(df)
+
+vals = jnp.concatenate(logliks)
+err = lambda v: 1.96 * jnp.std(v) / jnp.sqrt(len(v))
+
+print(jnp.mean(vals))
+print(jnp.var(vals))
+print(err(vals))
+
+

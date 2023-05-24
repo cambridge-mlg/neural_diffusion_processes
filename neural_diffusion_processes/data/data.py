@@ -1,13 +1,14 @@
 from __future__ import annotations
-from typing import Tuple, Iterator, Optional, Mapping, Union, Sequence
+
 import dataclasses
+from typing import Iterator, Mapping, Optional, Sequence, Tuple, Union
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from simple_pytree import Pytree
-from check_shapes import check_shapes, check_shape
+from check_shapes import check_shape, check_shapes
 from jaxtyping import Array
+from simple_pytree import Pytree
 
 
 @dataclasses.dataclass
@@ -16,13 +17,29 @@ class DataBatch(Pytree):
     ys: Array
     xc: Array | None = None
     yc: Array | None = None
-
-    def __len__(self) -> int:
-        return len(self.xs)
+    mask: Array | None = None
+    mask_context: Array | None = None
 
     @property
-    def num_points(self) -> int:
-        return self.xs.shape[1]
+    def batch_size(self) -> int:
+        return self.xs.shape[0]
+
+    @property
+    def num_targets(self) -> int:
+        if self.mask is None:
+            return self.xs.shape[1]
+
+        return self.xs.shape[1] - jnp.count_nonzero(self.mask[0])
+
+    @property
+    def num_context(self) -> int:
+        if self.xc is None:
+            return 0
+
+        if self.mask_context is None:
+            return self.xc.shape[1]
+
+        return self.xc.shape[1] - jnp.count_nonzero(self.mask_context[0])
 
     # @check_shapes()
     # def __post_init__(self) -> None:
@@ -45,6 +62,7 @@ def dataloader(
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
+    n_points = n_points is isinstance(n_points, Sequence) else [n_points]
     n_points = jnp.array(list(n_points))
     dataset_size = len(x)
     indices_batch = jnp.arange(dataset_size)
