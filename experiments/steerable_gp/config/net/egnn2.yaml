@@ -12,3 +12,4 @@ k: 50
 attention: true
 normalize: true
 tanh: false
+x_update: 'None'

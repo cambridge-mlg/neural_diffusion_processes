@@ -62,7 +62,11 @@ def dataloader(
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
+<<<<<<< HEAD
     n_points = n_points is isinstance(n_points, Sequence) else [n_points]
+=======
+    n_points = n_points if isinstance(n_points, Sequence) else [n_points]
+>>>>>>> 8402e17 (wip cleaning)
     n_points = jnp.array(list(n_points))
     dataset_size = len(x)
     indices_batch = jnp.arange(dataset_size)
@@ -83,8 +87,8 @@ def dataloader(
                 (key,) = jr.split(key, 1)
                 n_point = jr.permutation(key, n_points)[0]
                 n_point = n_point if n_point > 0 else x.shape[1]
-                if n_points > 0:
-                    points_perm = points_perm[:n_points]
+                if n_point > 0:
+                    points_perm = points_perm[:n_point]
                 yield DataBatch(
                     xs=jnp.take(x[batch_perm], axis=1, indices=points_perm),
                     ys=jnp.take(y[batch_perm], axis=1, indices=points_perm),
@@ -107,8 +111,8 @@ def dataloader(
             (key,) = jr.split(key, 1)
             n_point = jr.permutation(key, n_points)[0]
             n_point = n_point if n_point > 0 else x.shape[1]
-            if n_points > 0:
-                points_perm = points_perm[:n_points]
+            if n_point > 0:
+                points_perm = points_perm[:n_point]
 
             yield DataBatch(
                 xs=jnp.take(x[batch_perm], axis=1, indices=points_perm),

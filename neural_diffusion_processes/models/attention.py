@@ -310,14 +310,12 @@ class MultiOutputBiAttentionModel(hk.Module):
         n_layers: int,  # Number of bi-dimensional attention blocks
         hidden_dim: int,
         num_heads: int,
-        sparse: bool,
         **kwargs,
     ):
         super().__init__()
         self.num_layers = n_layers
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
-        self.sparse = sparse
 
     def __post_init__(self):
         print(">>>>>>>>>> AttentionModel")
@@ -368,9 +366,7 @@ class MultiOutputBiAttentionModel(hk.Module):
 
         skip = None
         for _ in range(self.num_layers):
-            layer = BiDimensionalAttentionBlock(
-                self.hidden_dim, self.num_heads, self.sparse
-            )
+            layer = BiDimensionalAttentionBlock(self.hidden_dim, self.num_heads)
             x, skip_connection = layer(x, t_embedding)
             skip = skip_connection if skip is None else skip_connection + skip
 

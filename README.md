@@ -1,8 +1,13 @@
-# How to install
+# Geometric neural diffusion processes
+
+This repository contains the code for the paper 'Geometric neural diffusion processes'.
+This paper theoretically and practically extends denoising diffusion models to function spaces.
+
+## How to install
 
 Clone repo
 ```
-git clone -b neural-diffusion-processes https://github.com/oxcsml/score-sde.git
+git clone -b neural-diffusion-processes URL
 ```
 
 Create virtual environment, either with `virtualenv`
@@ -32,3 +37,26 @@ Additionally install the experiment specific dependencies
 ```
 pip install -r experiments/*/requirements.txt
 ```
+
+## Code structure
+
+
+## Reproducing experiments
+
+### 1D regression over stationary scalar fields
+```
+python experiments/
+```
+
+### Regression over Gaussian process vector field
+With non-equivariant score network
+```
+python experiments/steerable_gp/main.py net=e3nn
+```
+With E(2)-equivariant score network
+```
+python experiments/steerable_gp/main.py net=mattn
+```
+
+### Global tropical cyclone trajectory predictio
+

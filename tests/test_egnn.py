@@ -4,21 +4,17 @@ import pytest
 
 import jax
 
-# jax.config.update("jax_enable_x64", True)1
 from jax import vmap
 import jax.random as jr
 import jax.numpy as jnp
 import haiku as hk
 import numpy as np
-import e3nn_jax as e3nn
 from einops import rearrange
 
 from hydra import initialize, compose
 from hydra.utils import instantiate, call
 
 from neural_diffusion_processes.models.egnn2 import (
-    # EGNN,
-    # EFGNN,
     EGCL,
     EGNNScore,
     get_edges_batch,
@@ -26,10 +22,8 @@ from neural_diffusion_processes.models.egnn2 import (
     get_activation,
 )
 from neural_diffusion_processes.utils.tests import (
-    _check_permutation_invariance,
     _check_permutation_equivariance,
     _check_e2_equivariance,
-    _check_e3_equivariance,
 )
 import neural_diffusion_processes as ndp
 
@@ -39,7 +33,6 @@ with initialize(config_path="../experiments/steerable_gp/config", version_base="
         "data=gpinf",
         "data.n_train=50",
         "data.n_test=50",
-        # "net=egnn",
         "net=egnn2",
         "net.n_layers=2",
         "net.hidden_dim=16",
@@ -59,26 +52,26 @@ with initialize(config_path="../experiments/steerable_gp/config", version_base="
     @pytest.fixture(name="inputs")
     def _inputs_fixuture(rng):
         rng, next_rng = jax.random.split(rng)
-        data = call(
-            cfg.data,
-            key=next_rng,
-            num_samples=cfg.data.n_train,
-            dataset="train",
-        )
-        rng, next_rng = jax.random.split(rng)
-        dataloader = ndp.data.dataloader(
-            data,
-            batch_size=cfg.optim.batch_size,
-            key=next_rng,
-            n_points=cfg.data.n_points,
-        )
-        batch0 = next(dataloader)
-        x, y = batch0.xs, batch0.ys
+        # data = call(
+        #     cfg.data,
+        #     key=next_rng,
+        #     num_samples=cfg.data.n_train,
+        #     dataset="train",
+        # )
+        # rng, next_rng = jax.random.split(rng)
+        # dataloader = ndp.data.dataloader(
+        #     data,
+        #     batch_size=cfg.optim.batch_size,
+        #     key=next_rng,
+        #     n_points=cfg.data.n_points,
+        # )
+        # batch0 = next(dataloader)
+        # x, y = batch0.xs, batch0.ys
 
-        # x = jax.random.normal(next_rng, (cfg.optim.batch_size, cfg.data.n_points, 2))
-        # rng, next_rng = jax.random.split(rng)
-        # y = jax.random.normal(next_rng, (cfg.optim.batch_size, cfg.data.n_points, 2))
-        # rng, next_rng = jax.random.split(rng)
+        x = jax.random.normal(next_rng, (cfg.optim.batch_size, cfg.data.n_points, 2))
+        rng, next_rng = jax.random.split(rng)
+        y = jax.random.normal(next_rng, (cfg.optim.batch_size, cfg.data.n_points, 2))
+        rng, next_rng = jax.random.split(rng)
 
         t = jax.random.uniform(next_rng, (y.shape[0],), minval=0, maxval=1)
         print("x, y", x.shape, y.shape)
@@ -131,6 +124,7 @@ with initialize(config_path="../experiments/steerable_gp/config", version_base="
                 cross_multiplicty_node_feat=False,
                 cross_multiplicity_shifts=False,
                 norm_wrt_centre_feat=False,
+                x_update="None",
             )
             h = hk.Linear(layer.n_invariant_feat_hidden)(y)
             return jax.vmap(
@@ -171,11 +165,5 @@ with initialize(config_path="../experiments/steerable_gp/config", version_base="
     # def test_egnn_layer_e2_equivariance(rng, inputs, egnn_layer):
     #     _check_e2_equivariance(rng, egnn_layer, *inputs)
 
-    # def test_egnn_layer_e3_equivariance(rng, inputs, egnn_layer):
-    #     _check_e3_equivariance(rng, egnn_layer, *inputs)
-
     def test_denoise_model_e2_equivariance(rng, inputs, denoise_model):
         _check_e2_equivariance(rng, denoise_model, *inputs)
-
-    # def test_denoise_model_e3_equivariance(rng, inputs, denoise_model):
-    #     _check_e3_equivariance(rng, denoise_model, *inputs)
