@@ -62,11 +62,7 @@ def dataloader(
 ) -> Iterator[DataBatch]:
     """Yields minibatches of size `batch_size` from the data."""
     x, y = data
-<<<<<<< HEAD
-    n_points = n_points is isinstance(n_points, Sequence) else [n_points]
-=======
     n_points = n_points if isinstance(n_points, Sequence) else [n_points]
->>>>>>> 8402e17 (wip cleaning)
     n_points = jnp.array(list(n_points))
     dataset_size = len(x)
     indices_batch = jnp.arange(dataset_size)
