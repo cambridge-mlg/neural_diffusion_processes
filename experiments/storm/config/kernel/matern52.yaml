@@ -1,0 +1,5 @@
+cls:
+  _target_: jaxkern.stationary.Matern52
+#params:
+#  lengthscale: 1.0
+#  variance: 1.0

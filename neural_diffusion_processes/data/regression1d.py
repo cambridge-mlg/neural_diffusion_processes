@@ -226,6 +226,19 @@ class Sawtooth(FuntionalDistribution):
 def _sawtooth_dataset_factory():
     return Sawtooth()
 
+from neural_diffusion_processes.data import storm_data
+class Storm1D(FuntionalDistribution):
+    def __init__(self) -> None:
+        self.x, self.y = storm_data(
+            "/data/ziz/not-backed-up/mhutchin/score-sde-sp/data",
+            max_len=50,
+            max_data_points=1,
+            limit_and_normalise=True,
+        )
+    
+    def sample(self, key, x: Float[Array, "N 1"]) -> Float[Array, "N 1"]:
+        
+
 
 def get_batch(key, batch_size: int, name: str, task: str):
     if name not in _DATASET:

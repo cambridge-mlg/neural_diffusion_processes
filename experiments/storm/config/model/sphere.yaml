@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - override /sde: sphere
+  - override /solver: spherical_euler
+  - override /transform: 3d
+
+optim:
+  batch_size: 1024
+
+beta_schedule:
+  beta1: 5.0

@@ -407,11 +407,12 @@ def sde_solve(
     num_steps: int = 100,
     y=None,
     solver: AbstractSolver = dfx.Heun(),
-    rtol: float = 1e-3,
-    atol: float = 1e-4,
+    rtol: float = 1e-4,
+    atol: float = 1e-5,
     forward: bool = False,
     ts=None,
     tf=None,
+    max_steps=4096,
 ):
     if rtol is None or atol is None:
         stepsize_controller = ConstantStepSize()
@@ -450,7 +451,12 @@ def sde_solve(
 
         terms = dfx.MultiTerm(dfx.ODETerm(drift_sde), LinOpControlTerm(diffusion, bm))
 
-    saveat = dfx.SaveAt(t1=True) if ts is None else dfx.SaveAt(ts=ts)
+    if ts is None:
+        saveat = dfx.SaveAt(t1=True) 
+    elif ts == []:
+        saveat = dfx.SaveAt(steps=True)
+    else:
+        saveat = dfx.SaveAt(ts=ts)
     out = dfx.diffeqsolve(
         terms,
         solver=solver,
@@ -462,6 +468,7 @@ def sde_solve(
         # adjoint=dfx.NoAdjoint(),
         stepsize_controller=stepsize_controller,
         saveat=saveat,
+        max_steps=max(max_steps, num_steps),
     )
     ys = out.ys
     return unflatten(ys, y_dim)
@@ -567,7 +574,7 @@ def sde_solve(
     "x_test: [num_target, x_dim]",
     "return: [num_target, y_dim]",
 )
-def conditional_sample2(
+def conditional_sample_independant_context_noise(
     sde: SDE,
     network: ScoreNetwork,
     x_context,
@@ -579,11 +586,14 @@ def conditional_sample2(
     num_inner_steps: int = 5,
     prob_flow: bool = True,
     langevin_kernel=True,
-    psi: float = 1.0,
+    psi_per_inner: float = 5.0,
     lambda0: float = 1.0,
     tau: float = None,
+    solver=dfx.Euler(),
+    resample_inner_context: bool = True,
 ):
     # TODO: Langevin dynamics option
+    psi = psi_per_inner / num_inner_steps
 
     num_context = len(x_context)
     num_target = len(x_test)
@@ -597,18 +607,17 @@ def conditional_sample2(
     dt = ts[0] - ts[1]
     tau = tau if tau is not None else t1
 
-    solver = dfx.Euler()
-
     diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
     if not prob_flow:
-        # reverse SDE:
-        reverse_drift_sde = lambda t, yt, arg: flatten(
+        # reverse SDE - negative drift as we need a +ve dt in the solver step for diffrax
+        reverse_drift_sde = lambda t, yt, arg: - lambda0 * flatten(
             sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network)
         )
 
         shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
         key, subkey = jax.random.split(key)
-        bm = dfx.VirtualBrownianTree(t0=t1, t1=t0, tol=dt, shape=shape, key=key)
+        # bm = dfx.VirtualBrownianTree(t0=t1, t1=t0, tol=dt, shape=shape, key=key)
+        bm = dfx.UnsafeBrownianPath(shape=shape, key=key)
         terms_reverse = dfx.MultiTerm(
             dfx.ODETerm(reverse_drift_sde), LinOpControlTerm(diffusion, bm)
         )
@@ -633,18 +642,17 @@ def conditional_sample2(
                 score = sde.limiting_gram(x).solve(score)
             else:
                 score = score
-        return 0.5 * sde.beta_schedule(t) * score
+        return 0.5 * psi * lambda0 * sde.beta_schedule(t) * score
 
     def diffusion_langevin(t, yt, x) -> LinearOperator:
         if langevin_kernel:
-            return diffusion(t, yt, x)
+            return jnp.sqrt(psi) * diffusion(t, yt, x)
         else:
-            return jnp.sqrt(sde.beta_schedule(t)) * identity(yt.shape[-1])
+            return jnp.sqrt(psi * sde.beta_schedule(t)) * identity(yt.shape[-1])
 
     key, subkey = jax.random.split(key)
     shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
-    bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
-    # bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
+    bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
     langevin_terms = dfx.MultiTerm(
         dfx.ODETerm(reverse_drift_langevin), LinOpControlTerm(diffusion_langevin, bm)
     )
@@ -657,71 +665,46 @@ def conditional_sample2(
 
     def inner_loop(key, ys, t):
         # reverse step
-        yt, yt_context = ys
-        yt_context = sample_marginal(
-            key, t, x_context, y_context
-        )  # NOTE: should resample?
+        yt, yt_context, i = ys
+        if resample_inner_context:
+            yt_context = sample_marginal(
+                key, t, x_context, y_context
+            )  # NOTE: should resample?
         yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
 
-        # yt_m_dt, *_ = solver.step(
-        #     langevin_terms,
-        #     t - dt,
-        #     t,
-        #     # t + dt,
-        #     yt_augmented,
-        #     x_augmented,
-        #     None,
-        #     made_jump=False,
-        # )
-
-        yt_m_dt = yt_augmented
-        yt_m_dt += (
-            lambda0
-            * psi
-            * dt
-            * reverse_drift_langevin(t - dt, yt_augmented, x_augmented)
-        )
-        noise = (
-            jnp.sqrt(psi)
-            * jnp.sqrt(dt)
-            * jax.random.normal(key, shape=yt_augmented.shape)
-        )
-        yt_m_dt += diffusion_langevin(t - dt, yt_augmented, x_augmented) @ noise
-        # yt_m_dt += langevin_terms.contr(t, t+dt)[0] * langevin_terms.vf(t, yt_augmented, x_augmented)[0]
-        # yt_m_dt += langevin_terms.vf(t, yt_augmented, x_augmented)[1] @ noise
-
-        yt = yt_m_dt[num_context * y_dim :]
-        # strip context from augmented state
-        return (yt, yt_context), yt_m_dt
-
-    def outer_loop(key, yt, t):
-        # jax.debug.print("time {t}", t=t)
-
-        # yt_context = sde.sample_marginal(key, t, x_context, y_context)
-        yt_context = sample_marginal(key, t, x_context, y_context)
-        # yt_context = y_context #NOTE: doesn't need to be noised?
-        yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
-
+        time_delta = t * (i * jnp.finfo(jnp.float32).eps)
         yt_m_dt, *_ = solver.step(
-            terms_reverse,
-            t,
-            t - dt,
+            langevin_terms,
+            t - dt + time_delta,
+            t + time_delta,
+            # t + dt,
             yt_augmented,
             x_augmented,
             None,
             made_jump=False,
         )
+
         yt = yt_m_dt[num_context * y_dim :]
-        # yt_m_dt = yt_augmented
-        # yt_m_dt += -dt * reverse_drift_diffeq(t, yt_augmented, x_augmented)
-        # # yt_m_dt += terms_reverse.contr(t, t-dt) * terms_reverse.vf(t, yt_augmented, x_augmented)
-        # noise = jax.random.normal(key, shape=yt_augmented.shape)
-        # yt_m_dt += jnp.sqrt(dt) * sde.diffusion(t, yt_augmented, x_augmented) @ noise
+        return (yt, yt_context, i + 1), yt_m_dt
+
+    def outer_loop(key, yt, t):
+        yt_context = sample_marginal(key, t, x_context, y_context)
+        yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
+
+        yt_m_dt, *_ = solver.step(
+            terms_reverse,
+            t-dt,
+            t,
+            yt_augmented,
+            x_augmented,
+            None,
+            made_jump=False,
+        )
 
         def corrector(key, yt, yt_context, t):
             _, yt_m_dt = jax.lax.scan(
                 lambda ys, key: inner_loop(key, ys, t),
-                (yt, yt_context),
+                (yt, yt_context, -num_inner_steps // 2),
                 jax.random.split(key, num_inner_steps),
             )
             yt = yt_m_dt[-1][num_context * y_dim :]
@@ -732,7 +715,7 @@ def conditional_sample2(
             corrector,
             lambda key, yt, yt_context, t: yt,
             key,
-            yt,
+            yt_m_dt[num_context * y_dim :],
             yt_context,
             t,
         )
@@ -745,6 +728,382 @@ def conditional_sample2(
     y0, _ = jax.lax.scan(lambda yt, x: outer_loop(x[1], yt, x[0]), yT, xs)
     return unflatten(y0, y_dim)
 
+
+@check_shapes(
+    "x_context: [num_context, x_dim]",
+    "y_context: [num_context, y_dim]",
+    "x_test: [num_target, x_dim]",
+    "return: [num_target, y_dim]",
+)
+def conditional_sample_path_context_noise(
+    sde: SDE,
+    network: ScoreNetwork,
+    x_context,
+    y_context,
+    x_test,
+    *,
+    key,
+    num_steps: int = 100,
+    num_inner_steps: int = 5,
+    prob_flow: bool = True,
+    langevin_kernel=True,
+    psi_per_inner: float = 5.0,
+    lambda0: float = 1.0,
+    tau: float = None,
+    solver=dfx.Euler(),
+):
+    # TODO: Langevin dynamics option
+    psi = psi_per_inner / num_inner_steps
+
+    num_context = len(x_context)
+    num_target = len(x_test)
+    y_dim = y_context.shape[-1]
+    shape_augmented_state = [(num_context + num_target) * y_dim]
+    x_augmented = jnp.concatenate([x_context, x_test], axis=0)
+
+    t0 = sde.beta_schedule.t0
+    t1 = sde.beta_schedule.t1
+    ts = jnp.linspace(t1, t0, num_steps, endpoint=True)
+    dt = ts[0] - ts[1]
+    tau = tau if tau is not None else t1
+
+    diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
+    if not prob_flow:
+        # reverse SDE:
+        reverse_drift_sde = lambda t, yt, arg: - lambda0 * flatten(
+            sde.reverse_drift_sde(key, t, unflatten(yt, y_dim), arg, network)
+        )
+
+        shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
+        key, subkey = jax.random.split(key)
+        # bm = dfx.VirtualBrownianTree(t0=t1, t1=t0, tol=dt, shape=shape, key=key)
+        bm = dfx.UnsafeBrownianPath(shape=shape, key=key)
+        terms_reverse = dfx.MultiTerm(
+            dfx.ODETerm(reverse_drift_sde), LinOpControlTerm(diffusion, bm)
+        )
+    else:
+        # reverse ODE:
+        reverse_drift_ode = lambda t, yt, arg: flatten(
+            sde.reverse_drift_ode(key, t, unflatten(yt, y_dim), arg, network)
+        )
+        terms_reverse = dfx.ODETerm(reverse_drift_ode)
+
+    # langevin dynamics:
+    def reverse_drift_langevin(t, yt, x) -> Array:
+        yt = unflatten(yt, y_dim)
+        score = flatten(sde.score(key, t, yt, x, network))
+        if langevin_kernel:
+            if sde.is_score_preconditioned:
+                score = score
+            else:
+                score = sde.limiting_gram(x) @ score
+        else:
+            if sde.is_score_preconditioned:
+                score = sde.limiting_gram(x).solve(score)
+            else:
+                score = score
+        return 0.5 * psi * lambda0 * sde.beta_schedule(t) * score
+
+    def diffusion_langevin(t, yt, x) -> LinearOperator:
+        if langevin_kernel:
+            return jnp.sqrt(psi) * diffusion(t, yt, x)
+        else:
+            return jnp.sqrt(psi * sde.beta_schedule(t)) * identity(yt.shape[-1])
+
+    key, subkey = jax.random.split(key)
+    shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
+    bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
+    langevin_terms = dfx.MultiTerm(
+        dfx.ODETerm(reverse_drift_langevin), LinOpControlTerm(diffusion_langevin, bm)
+    )
+
+    def inner_loop(ys, t):
+        # reverse step
+        yt, yt_context, i = ys
+        yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
+
+        time_delta = t * (i * jnp.finfo(jnp.float32).eps)
+        yt_m_dt, *_ = solver.step(
+            langevin_terms,
+            t - dt + time_delta,
+            t + time_delta,
+            # t + dt,
+            yt_augmented,
+            x_augmented,
+            None,
+            made_jump=False,
+        )
+
+        yt = yt_m_dt[num_context * y_dim :]
+        return (yt, yt_context, i + 1), yt_m_dt
+
+    def outer_loop(yt, t, yt_context):
+        yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
+
+        yt_m_dt, *_ = solver.step(
+            terms_reverse,
+            t - dt,
+            t,
+            yt_augmented,
+            x_augmented,
+            None,
+            made_jump=False,
+        )
+
+        def corrector(yt, yt_context, t):
+            _, yt_m_dt = jax.lax.scan(
+                lambda ys, _: inner_loop(ys, t),
+                (yt, yt_context, -num_inner_steps // 2), None,
+                length=num_inner_steps,
+            )
+            yt = yt_m_dt[-1][num_context * y_dim :]
+            return yt
+
+        yt = jax.lax.cond(
+            tau > t,
+            corrector,
+            lambda yt, yt_context, t: yt,
+            yt_m_dt[num_context * y_dim :],
+            yt_context,
+            t,
+        )
+        return yt, yt
+    
+    key, subkey = jax.random.split(key)
+    context_trajectory = flatten(sde_solve(
+        sde,
+        x_context,
+        None,
+        y=y_context,
+        key=subkey,
+        num_steps=num_steps,
+        solver=solver,
+        rtol=None,
+        atol=None,
+        forward=True,
+        ts=[]
+    )[:num_steps])
+
+    key, subkey = jax.random.split(key)
+    yT = flatten(sde.sample_prior(subkey, x_test))
+
+    xs = (ts[:-1], jnp.flip(context_trajectory, axis=0)[:-1])
+    y0, _ = jax.lax.scan(lambda yt, x: outer_loop(yt, x[0], x[1]), yT, xs)
+    return unflatten(y0, y_dim)
+
+def conditional_sample_hybrid_langevin(
+    sde: SDE,
+    network: ScoreNetwork,
+    x_context,
+    y_context,
+    x_test,
+    *,
+    key,
+    num_steps: int = 100,
+    langevin_kernel=True,
+    psi: float = 1.0,
+    lambda0: float = 1.0,
+    solver=dfx.Euler(),
+    # resample_inner_context: bool = True,
+):
+    num_context = len(x_context)
+    num_target = len(x_test)
+    y_dim = y_context.shape[-1]
+    shape_augmented_state = [(num_context + num_target) * y_dim]
+    x_augmented = jnp.concatenate([x_context, x_test], axis=0)
+
+    t0 = sde.beta_schedule.t0
+    t1 = sde.beta_schedule.t1
+    ts = jnp.linspace(t1, t0, num_steps, endpoint=True)
+    dt = ts[0] - ts[1]
+    
+    def lambdat(t):
+        alphat = jnp.exp(-sde.beta_schedule.B(t))
+        return lambda0 / (alphat + (1-alphat)*lambda0)
+
+    # langevin dynamics:
+    diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
+    def reverse_drift_hybrid_langevin(t, yt, x) -> Array:
+        yt = unflatten(yt, y_dim)
+        score = flatten(sde.score(key, t, yt, x, network))
+        if langevin_kernel:
+            if sde.is_score_preconditioned:
+                score = score
+            else:
+                score = sde.limiting_gram(x) @ score
+        else:
+            if sde.is_score_preconditioned:
+                score = sde.limiting_gram(x).solve(score)
+            else:
+                score = score
+        return (lambdat(t) + 0.5 * lambda0 * psi) * sde.beta_schedule(t) * score
+
+    def diffusion_langevin(t, yt, x) -> LinearOperator:
+        if langevin_kernel:
+            return jnp.sqrt(1+psi) * diffusion(t, yt, x)
+        else:
+            return jnp.sqrt((1 + psi) * sde.beta_schedule(t)) * identity(yt.shape[-1])
+
+    key, subkey = jax.random.split(key)
+    shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
+    # bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
+    bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
+    hybrid_terms = dfx.MultiTerm(
+        dfx.ODETerm(reverse_drift_hybrid_langevin), LinOpControlTerm(diffusion_langevin, bm)
+    )
+
+    key, subkey = jax.random.split(key)
+    context_trajectory = flatten(sde_solve(
+        sde,
+        x_context,
+        None,
+        y=y_context,
+        key=subkey,
+        num_steps=num_steps,
+        solver=solver,
+        rtol=None,
+        atol=None,
+        forward=True,
+        ts=[]
+    )[:num_steps])
+
+    def loop(yt, t, yct):
+        yt_augmented = jnp.concatenate([yct, yt], axis=0)
+        yt_m_dt, *_ = solver.step(
+            hybrid_terms,
+            t,
+            t + dt,
+            yt_augmented,
+            x_augmented,
+            None,
+            made_jump=False,
+        )
+        yt = yt_m_dt[num_context * y_dim :]
+        return yt, yt
+    
+    key, subkey = jax.random.split(key)
+    yT = flatten(sde.sample_prior(subkey, x_test))
+
+    xs = (ts[:-1], jnp.flip(context_trajectory, axis=0)[:-1])
+    y0, yts = jax.lax.scan(
+        lambda yt, xs: loop(yt, xs[0], xs[1]), yT, xs
+    )
+    return unflatten(y0, y_dim)
+
+
+## Langevin correct samples
+
+
+def langevin_correct(
+    sde: SDE,
+    network: ScoreNetwork,
+    t,
+    x_context,
+    y_context,
+    x_test,
+    y_test,
+    key,
+    num_steps: int = 100,
+    num_inner_steps: int = 5,
+    prob_flow: bool = True,
+    langevin_kernel=True,
+    psi_per_inner: float = 5.0,
+    lambda0: float = 1.0,
+    tau: float = None,
+    solver=dfx.Euler(),
+):
+    psi = psi_per_inner / num_inner_steps
+
+    num_context = len(x_context)
+    num_target = len(x_test)
+    y_dim = y_context.shape[-1]
+    shape_augmented_state = [(num_context + num_target) * y_dim]
+    x_augmented = jnp.concatenate([x_context, x_test], axis=0)
+
+    t0 = sde.beta_schedule.t0
+    t1 = sde.beta_schedule.t1
+    ts = jnp.linspace(t1, t0, num_steps, endpoint=True)
+    dt = ts[0] - ts[1]
+    tau = tau if tau is not None else t1
+
+    # langevin dynamics:
+    diffusion = lambda t, yt, arg: sde.diffusion(t, unflatten(yt, y_dim), arg)
+    def reverse_drift_langevin(t, yt, x) -> Array:
+        yt = unflatten(yt, y_dim)
+        score = flatten(sde.score(key, t, yt, x, network))
+        if langevin_kernel:
+            if sde.is_score_preconditioned:
+                score = score
+            else:
+                score = sde.limiting_gram(x) @ score
+        else:
+            if sde.is_score_preconditioned:
+                score = sde.limiting_gram(x).solve(score)
+            else:
+                score = score
+        return 0.5 * lambda0 * psi * sde.beta_schedule(t) * score
+
+    def diffusion_langevin(t, yt, x) -> LinearOperator:
+        if langevin_kernel:
+            return diffusion(t, yt, x)
+        else:
+            return jnp.sqrt(psi * sde.beta_schedule(t)) * identity(yt.shape[-1])
+
+    key, subkey = jax.random.split(key)
+    shape = jax.ShapeDtypeStruct(shape_augmented_state, y_context.dtype)
+    # bm = dfx.VirtualBrownianTree(t0=t0, t1=t1, tol=dt, shape=shape, key=subkey)
+    bm = dfx.UnsafeBrownianPath(shape=shape, key=subkey)
+    langevin_terms = dfx.MultiTerm(
+        dfx.ODETerm(reverse_drift_langevin), LinOpControlTerm(diffusion_langevin, bm)
+    )
+
+    def sample_marginal(key, t, x_context, y_context):
+        if len(y_context) == 0:
+            return y_context
+        else:
+            return flatten(sde.sample_marginal(key, t, x_context, y_context))
+
+    def inner_loop(key, ys, t):
+        # reverse step
+        yt, yt_context, i = ys
+        yt_context = sample_marginal(
+            key, t, x_context, y_context
+        )  # NOTE: should resample?
+        yt_augmented = jnp.concatenate([yt_context, yt], axis=0)
+
+        time_delta = t * (i * jnp.finfo(jnp.float32).eps)
+        yt_m_dt, *_ = solver.step(
+            langevin_terms,
+            t + time_delta,
+            t + dt + time_delta,
+            # t + dt,
+            yt_augmented,
+            x_augmented,
+            None,
+            made_jump=False,
+        )
+
+        yt = yt_m_dt[num_context * y_dim :]
+        # strip context from augmented state
+        return (yt, yt_context, i + 1), yt_m_dt
+
+    def corrector(key, yt, yt_context, t):
+        _, yt_m_dt = jax.lax.scan(
+            lambda ys, key: inner_loop(key, ys, t),
+            (yt, yt_context, -num_inner_steps // 2),
+            jax.random.split(key, num_inner_steps),
+        )
+        yt = yt_m_dt[-1][num_context * y_dim :]
+        return yt
+
+    y0 = corrector(key, flatten(y_test), flatten(y_context), t)
+
+    # key, subkey = jax.random.split(key)
+    # yT = flatten(sde.sample_prior(subkey, x_test))
+
+    # xs = (ts[:-1], jax.random.split(key, len(ts) - 1))
+    # y0, _ = jax.lax.scan(lambda yt, x: outer_loop(x[1], yt, x[0]), yT, xs)
+    return unflatten(y0, y_dim)
 
 ############################
 ## Likelihood evaluation  ##
@@ -845,7 +1204,8 @@ def div_noise(
         epsilon = jax.random.normal(rng, shape)
     elif hutchinson_type == "Rademacher":
         epsilon = (
-            jax.random.randint(rng, shape, minval=0, maxval=2).astype(float) * 2 - 1
+            jax.random.randint(rng, shape, minval=0, maxval=2).astype(jnp.float32) * 2
+            - 1
         )
     elif hutchinson_type == "None":
         epsilon = None

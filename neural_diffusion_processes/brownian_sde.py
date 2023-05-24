@@ -159,39 +159,6 @@ class ProjectionOperator(DenseLinearOperator):
 #         return self.root @ self.root.T
 
 
-class SphericalGRW(dfx.Euler):
-    """Euler's method.
-
-    1st order explicit Runge--Kutta method. Does not support adaptive step sizing.
-
-    When used to solve SDEs, converges to the Itô solution.
-    """
-
-    def retraction(self, v, x):
-        def projection(point):
-            return point / jnp.linalg.norm(point, axis=-1, keepdims=True)
-
-        return flatten(projection(unflatten(x + v, 3)))
-
-    def step(
-        self,
-        terms: AbstractTerm,
-        t0: Scalar,
-        t1: Scalar,
-        y0: PyTree,
-        args: PyTree,
-        solver_state: _SolverState,
-        made_jump: Bool,
-    ) -> Tuple[PyTree, _ErrorEstimate, DenseInfo, _SolverState, RESULTS]:
-        del solver_state, made_jump
-        control = terms.contr(t0, t1)
-        # y1 = (y0**ω + terms.vf_prod(t0, y0, args, control) ** ω).ω
-        # y1 = self.retraction(terms.vf_prod(t0, y0, args, control) ** ω, y0**ω).ω
-        y1 = self.retraction(terms.vf_prod(t0, y0, args, control), y0)
-        dense_info = dict(y0=y0, y1=y1)
-        return y1, None, dense_info, None, RESULTS.successful
-
-
 @dataclasses.dataclass
 class SphericalMetric:
     dim: int = 2  # NOTE: actual dim not the dim of the ambient space
@@ -252,8 +219,60 @@ class SphericalMetric:
 
         return tangent_vec
 
+    @check_shapes("point_a: [N, y_dim]", "point_b: [N, y_dim]")
+    def dist(self, point_a, point_b):
+        norm_a = jnp.linalg.norm(point_a, axis=-1)
+        norm_b = jnp.linalg.norm(point_b, axis=-1)
+        inner_prod = jnp.einsum("...i,...i->...", point_a, point_b)
+
+        cos_angle = inner_prod / (norm_a * norm_b)
+        cos_angle = jnp.clip(cos_angle, -1, 1)
+
+        dist = jnp.arccos(cos_angle)
+
+        return dist
+
 
 metric = SphericalMetric(2)
+
+
+class SphericalGRW(dfx.Euler):
+    """Euler's method.
+
+    1st order explicit Runge--Kutta method. Does not support adaptive step sizing.
+
+    When used to solve SDEs, converges to the Itô solution.
+    """
+
+    metric = SphericalMetric(2)
+
+    def retraction(self, v, x):
+        def projection(point):
+            return point / jnp.linalg.norm(point, axis=-1, keepdims=True)
+
+        return flatten(projection(unflatten(x + v, 3)))
+
+    def step(
+        self,
+        terms: AbstractTerm,
+        t0: Scalar,
+        t1: Scalar,
+        y0: PyTree,
+        args: PyTree,
+        solver_state: _SolverState,
+        made_jump: Bool,
+    ) -> Tuple[PyTree, _ErrorEstimate, DenseInfo, _SolverState, RESULTS]:
+        del solver_state, made_jump
+        control = terms.contr(t0, t1)
+        # y1 = (y0**ω + terms.vf_prod(t0, y0, args, control) ** ω).ω
+        # y1 = self.retraction(terms.vf_prod(t0, y0, args, control) ** ω, y0**ω).ω
+        # y1 = self.retraction(terms.vf_prod(t0, y0, args, control), y0)
+        point = unflatten(y0, 3)
+        tv = unflatten(terms.vf_prod(t0, y0, args, control), 3)
+        y1 = self.metric.exp(tv, point)
+        y1 = flatten(y1)
+        dense_info = dict(y0=y0, y1=y1)
+        return y1, None, dense_info, None, RESULTS.successful
 
 
 def gegenbauer_polynomials(alpha: float, l_max: int, x):
@@ -337,6 +356,11 @@ def grad_marginal_log_prob(x0, x, t, thresh, n_max):
 class SphericalBrownian(SDE):
     dim: int = 2  # NOTE: actual dim not the dim of the ambient space
     loss_type: str = "ism"
+
+    # @check_shapes("t: []", "yt: [N, y_dim]", "x: [N, x_dim]", "return: [N, y_dim]")
+    # def score(self, key, t: Array, yt: Array, x: Array, network: ScoreNetwork) -> Array:
+    #     score = super().score(key, t, yt, x, network)
+    #     return unflatten(self.projection(yt) @ flatten(score), d=yt.shape[-1])
 
     @check_shapes("x: [N, x_dim]", "return: [N, y_dim]")
     def sample_prior(self, key, x):

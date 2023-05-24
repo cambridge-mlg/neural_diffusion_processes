@@ -1,0 +1,4 @@
+cls:
+  _target_: jaxkern.stationary.White
+#params:
+#  variance: 1.0

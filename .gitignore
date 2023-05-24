@@ -133,8 +133,11 @@ results/
 images/
 data/abdb/
 data/sabdab/
+data/storm/
 scripts/**/*.png
 scripts/**/*.csv
 scripts/**/*.obj
+data/era5/
+*.grib
 
 .vscode

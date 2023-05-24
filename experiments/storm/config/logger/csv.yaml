@@ -1,0 +1,6 @@
+csv:
+  _target_: neural_diffusion_processes.utils.loggers_pl.CSVLogger
+  save_dir: ${paths.logs_dir}
+  name: ""
+  # version: ""
+  flush_logs_every_n_steps: 1000
