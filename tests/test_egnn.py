@@ -37,8 +37,8 @@ import neural_diffusion_processes as ndp
 with initialize(config_path="../experiments/steerable_gp/config", version_base="1.3.2"):
     overrides = [
         "data=gpinf",
-        "data.n_samples_train=50",
-        "data.n_samples_test=50",
+        "data.n_train=50",
+        "data.n_test=50",
         # "net=egnn",
         "net=egnn2",
         "net.n_layers=2",
@@ -62,7 +62,7 @@ with initialize(config_path="../experiments/steerable_gp/config", version_base="
         data = call(
             cfg.data,
             key=next_rng,
-            num_samples=cfg.data.n_samples_train,
+            num_samples=cfg.data.n_train,
             dataset="train",
         )
         rng, next_rng = jax.random.split(rng)
