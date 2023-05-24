@@ -8,8 +8,6 @@ from functools import partial
 import tqdm
 import yaml
 
-# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-
 import haiku as hk
 import jax
 from jax import jit, vmap
@@ -24,7 +22,6 @@ import matplotlib.pyplot as plt
 from omegaconf import OmegaConf
 import hydra
 from hydra.utils import instantiate, call
-from jax.config import config as jax_config
 
 import neural_diffusion_processes as ndp
 from neural_diffusion_processes import ml_tools
@@ -35,7 +32,6 @@ from neural_diffusion_processes.ml_tools.state import (
 )
 from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
 from neural_diffusion_processes.utils.vis import (
-    plot_scalar_field,
     plot_vector_field,
     plot_covariances,
 )
@@ -142,10 +138,7 @@ def run(cfg):
         "kernel": kernel_params,
         "mean_function": limiting_mean_fn.init_params(key),
     }
-    # limiting_params["kernel"].update(OmegaConf.to_container(cfg.kernel.params, resolve=True)) # NOTE: breaks RFF?
     log.info(f"limiting GP: {type(limiting_kernel)} params={limiting_params['kernel']}")
-    # sde = ndp.sde.SDE(limiting_kernel, limiting_mean_fn, limiting_params, beta_schedule)
-    # sde = instantiate(cfg.sde, limiting_params=limiting_params, beta_schedule=cfg.beta_schedule)
     sde = instantiate(
         cfg.sde,
         limiting_kernel=limiting_kernel,
@@ -230,7 +223,6 @@ def run(cfg):
             key=new_key,
             step=state.step + 1,
         )
-        # metrics = {"loss": loss_value, "step": state.step, "grad_norm": grad_norm}
         metrics = {"loss": loss_value, "step": state.step}
         return new_state, metrics
 
@@ -241,8 +233,6 @@ def run(cfg):
     nb_params = sum(x.size for x in jax.tree_util.tree_leaves(state.params))
     log.info(f"Number of parameters: {nb_params}")
     logger.log_hyperparams({"nb_params": nb_params})
-
-    # exp_root_dir = get_experiment_dir(config)
 
     # ########## Plotting
     @partial(jit, static_argnums=(5))
@@ -285,8 +275,6 @@ def run(cfg):
             langevin_kernel=False,
         )
 
-    # TODO: data as a class with such methods?
-    # @jit
     def cond_data(xc, yc, xs):
         cfg.data._target_ = "neural_diffusion_processes.data.get_vec_gp_cond"
         posterior_log_prob = call(cfg.data)
@@ -295,7 +283,6 @@ def run(cfg):
     def plots(state: TrainingState, key, t) -> Mapping[str, plt.Figure]:
         print("plots", t)
         dict_plots = {}
-        # TODO: refactor properly plot depending on dataset and move in utils/vis.py
         n_samples = 20
         keys = jax.random.split(key, 6)
         plot_vf = partial(
@@ -353,10 +340,6 @@ def run(cfg):
         def plot_cond_data(xs, xc, yc, rot, ax, title=""):
             posterior_gp = cond_data(xc @ rot.T, yc @ rot.T, xs @ rot.T)
             Ktt = posterior_gp.covariance()
-            # print("jnp.linalg.det(Ktt)", jnp.linalg.det(Ktt))
-            # y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(n_samples))
-            # y_cond = rearrange(y_cond, "k (n d) -> k n d", d=y_dim)
-            # plot_vf_and_cov(xs, y_cond, axes[:, 3], rf"$p_{{model}}$")
             y_cond = posterior_gp.sample(seed=keys[3], sample_shape=(1))
             y_cond = rearrange(y_cond, "k (n d) -> k n d", d=y_dim)
             y_cond = y_cond @ rot
@@ -367,7 +350,6 @@ def run(cfg):
             covariances = ktt[jnp.diag_indices(ktt.shape[0])]
             plot_cov(xs, covariances @ rot, ax=ax[1])
 
-            # plot_vf(batch.xs[idx], batch.ys[idx], ax=axes[0][3])
             plot_vf(xc, yc, color="red", ax=ax[0])
             plot_vf(xc, yc, color="red", ax=ax[1])
             ax[0].set_title(title)
@@ -400,7 +382,6 @@ def run(cfg):
 
         if t == 0:  # NOTE: Only plot fwd at the beggining
             ts = jnp.array([0.1, 0.2, 0.5, 0.8, sde.beta_schedule.t1])
-            # ts = jnp.array([0.8, sde.beta_schedule.t1])
             nb_cols = len(ts) + 2
             fig_forward, axes = plt.subplots(
                 2, nb_cols, figsize=(8 * nb_cols, 8 * 2), sharex=True, sharey=True
@@ -461,25 +442,6 @@ def run(cfg):
         metrics = defaultdict(list)
         eval_log_prob = jit(vmap(partial(log_prob, params=state.params_ema)))
 
-        # if step == cfg.optim.n_steps:
-        #     log.info("Evaluate ground truth")
-        #     # TODO: evaluate diagonal cov GP
-        #     for i, batch in enumerate(data_test):
-        #         log.info(f"${step=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}")
-        #         n_test = batch.ys.shape[-2]
-        #         true_cond_logp = jax.vmap(
-        #             lambda xc, yc, x, y: true_posterior(xc, yc, x).log_prob(flatten(y))
-        #         )(batch.xc, batch.yc, batch.xs, batch.ys)
-        #         metrics["true_cond_logp"].append(jnp.mean(true_cond_logp / n_test))
-
-        #         x = jnp.concatenate([batch.xs, batch.xc], axis=1)
-        #         y = jnp.concatenate([batch.ys, batch.yc], axis=1)
-        #         true_logp = jax.vmap(lambda x, y: true_prior(x).log_prob(flatten(y)))(
-        #             x, y
-        #         )
-        #         n = y.shape[-2]
-        #         metrics["true_logp"].append(jnp.mean(true_logp / n))
-
         log.info("Evaluate model")
         for n in range(cfg.eval.n_test):
             for i, batch in enumerate(data_test):
@@ -496,15 +458,6 @@ def run(cfg):
                     if cfg.eval.like.n_steps > 0:
                         # predictive log-likelihood
                         n_test = batch.ys.shape[-2]
-
-                        # cond_logp2, nfe = eval_log_prob(
-                        #     subkeys, batch.xs, batch.ys, xc=batch.xc, yc=batch.yc
-                        # )
-                        # metrics["cond_logp2"].append(jnp.mean(cond_logp2 / n_test))
-                        # metrics["cond_nfe"].append(jnp.mean(nfe))
-                        # print("cond_logp2", cond_logp2.shape)
-                        # print("true_cond_logp", true_cond_logp.shape)
-                        # print("cond logp", metrics["cond_logp2"][-1])
 
                         logp_context, _ = eval_log_prob(subkeys, batch.xc, batch.yc)
                         x = jnp.concatenate([batch.xs, batch.xc], axis=1)
@@ -523,30 +476,6 @@ def run(cfg):
                             metrics["prior_logp"][-1],
                             metrics["prior_nfe"][-1],
                         )
-
-                    # # predictive mean and covariance mse
-                    # # TODO: depends on dataset if dist is avail or not
-                    # if cfg.eval.cond.n_steps > 0:
-                    #     # true_mean = batch.ys
-                    #     true_mean = vmap(lambda x: unflatten(true_prior(x).mean(), y_dim))(batch.xs)
-                    #     def f(x):
-                    #         ktt = true_prior(x).covariance()
-                    #         ktt = rearrange(ktt, '(n1 p1) (n2 p2) -> n1 n2 p1 p2', p1=y_dim, p2=y_dim)
-                    #         return ktt[jnp.diag_indices(ktt.shape[0])]
-                    #     true_cov = vmap(f)(batch.xs)
-
-                    #     ys = jit(vmap(lambda key: vmap(lambda xs, xc, yc: cond_sample(key, xs, xc, yc, state.params_ema))(batch.xs, batch.xc, batch.yc)))(jnp.stack(keys)).squeeze()
-                    #     f_pred = jnp.mean(ys, axis=0)
-                    #     mse_mean_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
-                    #     metrics["cond_mse"].append(mse_mean_pred)
-                    #     f_pred = jnp.median(ys, axis=0)
-                    #     mse_med_pred = jnp.sum((true_mean - f_pred) ** 2, -1).mean(1).mean(0)
-                    #     metrics["cond_mse_median"].append(mse_med_pred)
-
-                    #     f_pred = vmap(vmap(partial(jax.numpy.cov, rowvar=False), in_axes=[1]), in_axes=[2])(ys).transpose(1,0,2,3)
-                    #     mse_cov_pred = jnp.sum((true_cov - f_pred).reshape(*true_cov.shape[:-2], -1) ** 2, -1)
-                    #     mse_cov_pred = mse_cov_pred.mean(1).mean(0)
-                    #     metrics["mse_cov_pred"].append(mse_cov_pred)
 
         # NOTE: currently assuming same batch size, should use sum and / len(data_test) instead?
         v = {k: jnp.mean(jnp.stack(v)) for k, v in metrics.items()}
@@ -567,34 +496,26 @@ def run(cfg):
         ),
         ml_tools.actions.PeriodicCallback(
             every_steps=cfg.optim.n_steps // 5,
-            # every_steps=cfg.optim.n_steps // 40,
-            # every_steps=cfg.optim.n_steps // 10,
             callback_fn=lambda step, t, **kwargs: logger.log_metrics(
                 eval(kwargs["state"], kwargs["key"], step), step
             ),
         ),
         ml_tools.actions.PeriodicCallback(
             every_steps=cfg.optim.n_steps // 5,
-            # every_steps=cfg.optim.n_steps // 40,
-            # every_steps=cfg.optim.n_steps // 1,
             callback_fn=lambda step, t, **kwargs: logger.log_plot(
                 "process", plots(kwargs["state"], kwargs["key"], step), step
             ),
         ),
     ]
 
-    # net(state.params, 0.5 * jnp.ones(()), radial_grid_2d(20, 30), )
-    # out = plot_reverse(key, radial_grid_2d(20, 30), state.params)
 
     if cfg.mode == "train":
-        # logger.log_plot("process", plots(state, key, 0), 0)
         # logger.log_metrics(eval(state, key, 0), 0)
         # logger.log_metrics(eval(state, key, 1), 1)
         # logger.log_plot("process", plots(state, key, 1), 1)
         # logger.save()
 
         miniters = 50
-        # miniters = 1
         progress_bar = tqdm.tqdm(
             list(range(1, cfg.optim.n_steps + 1)),
             mininterval=5.0,
@@ -615,7 +536,6 @@ def run(cfg):
                 )
     elif cfg.mode == "eval":
         for action in actions[2:]:
-            # action = actions[2]
             action._cb_fn(cfg.optim.n_steps + 1, t=None, state=state, key=key)
             logger.save()
     elif cfg.mode == "plot":
@@ -626,10 +546,8 @@ def run(cfg):
 
 @hydra.main(config_path="config", config_name="main", version_base="1.3.2")
 def main(cfg):
-    # os.environ["GEOMSTATS_BACKEND"] = "jax"
     # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
     os.environ["WANDB_START_METHOD"] = "thread"
-    # from run import run
 
     return run(cfg)
 
