@@ -86,7 +86,7 @@ if __name__ == "__main__":
     from ml_collections import config_dict
     c = config_dict.ConfigDict(initial_dictionary=dataclasses.asdict(toy_config))
 
-    from neural_diffusion_processes.ml_tools import config_utils
+    from neural_diffusion_processes.utils.ml_tools import config_utils
 
     config = config_utils.to_dataclass(Config, c)
     print(config_utils.get_id(config))

@@ -7,16 +7,17 @@ This paper theoretically and practically extends denoising diffusion models to f
 
 Clone repo
 ```
-git clone -b neural-diffusion-processes URL
+git clone git@github.com:cambridge-mlg/neural_diffusion_processes.git
 ```
 
-Create virtual environment, either with `virtualenv`
+Create virtual environment and install `jax`, either with `virtualenv`
 ```
 virtualenv -p python3.9 venv
 source venv/bin/activate
+pip install jax[cuda11_local]==0.4.10 --find-links https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 ```
 
-or with `conda` (convenient to install jax)
+or with `conda`
 ```
 conda create -n venv python=3.9
 source activate venv
@@ -56,11 +57,11 @@ Then, `/experiments` has three folders, one for each subsection of the experimen
 ### 1D regression over stationary scalar fields
 With white noise as limiting process
 ```
-python experiments/regression1d/main.py
+python experiments/regression1d/main.py --config.sde.limiting_kernel=white
 ```
 With squared-exponential kernel
 ```
-python experiments/regression1d/main.py kernel=se kernel.params.lengthscale=0.1
+python experiments/regression1d/main.py --config.sde.limiting_kernel=se
 ```
 
 ### Regression over Gaussian process vector field

@@ -10,7 +10,7 @@ from jaxtyping import Array
 import neural_diffusion_processes as ndp
 import neural_diffusion_processes.sde_with_mask as ndp_sde
 from neural_diffusion_processes.data import regression1d
-from neural_diffusion_processes.ml_tools.state import (
+from neural_diffusion_processes.utils.ml_tools.state import (
     TrainingState, find_latest_checkpoint_step_index, load_checkpoint)
 
 ############# Config

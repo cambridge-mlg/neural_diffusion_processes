@@ -1,47 +1,45 @@
+import logging
 import math
-from typing import Tuple, Mapping, Iterator, List
 import os
 import socket
-import logging
 from collections import defaultdict
 from functools import partial
-import tqdm
-import yaml
-
-# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+from typing import Iterator, List, Mapping, Tuple
 
 import haiku as hk
-import jax
-from jax import jit, vmap
-import jax.numpy as jnp
-import optax
-import jmp
-import numpy as np
-from einops import rearrange
-
-import matplotlib.pyplot as plt
-
-from omegaconf import OmegaConf
 import hydra
-from hydra.utils import instantiate, call
+import jax
+import jax.numpy as jnp
+import jmp
+import matplotlib.pyplot as plt
+import numpy as np
+import optax
+import tqdm
+import yaml
+from einops import rearrange
+from hydra.utils import call, instantiate
+from jax import jit, vmap
 from jax.config import config as jax_config
+from omegaconf import OmegaConf
 
 import neural_diffusion_processes as ndp
 from neural_diffusion_processes import ml_tools
-from neural_diffusion_processes.ml_tools.state import (
-    TrainingState,
-    load_checkpoint,
-    save_checkpoint,
-)
-from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
-from neural_diffusion_processes.utils.vis import (
-    plot_scalar_field,
-    plot_vector_field,
-    plot_covariances,
-)
-from neural_diffusion_processes.utils import flatten, unflatten
-from neural_diffusion_processes.data import radial_grid_2d, DataBatch
+from neural_diffusion_processes.data import DataBatch, radial_grid_2d
 from neural_diffusion_processes.kernels import SumKernel, WhiteVec
+from neural_diffusion_processes.utils import flatten, unflatten
+from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
+from neural_diffusion_processes.utils.ml_tools.state import (TrainingState,
+                                                             load_checkpoint,
+                                                             save_checkpoint)
+from neural_diffusion_processes.utils.vis import (plot_covariances,
+                                                  plot_scalar_field,
+                                                  plot_vector_field)
+
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+
+
+
+
 
 
 def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:

@@ -16,7 +16,7 @@ import diffrax as dfx
 import numpy as np
 
 import neural_diffusion_processes as ndp
-from neural_diffusion_processes.config import get_config
+from neural_diffusion_processes.utils.config import get_config
 
 JITTER = get_config().jitter
 

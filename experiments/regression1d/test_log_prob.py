@@ -9,7 +9,7 @@ import jaxkern
 
 import neural_diffusion_processes as ndp
 import neural_diffusion_processes.sde_with_mask as ndp_sde
-from neural_diffusion_processes import config
+from neural_diffusion_processes.utils import config
 from neural_diffusion_processes.data import regression1d
 
 DATASET = "weaklyperiodic"  # squared exponential

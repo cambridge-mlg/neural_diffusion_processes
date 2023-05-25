@@ -48,7 +48,7 @@ from jax.config import config as jax_config
 
 import neural_diffusion_processes as ndp
 from neural_diffusion_processes import ml_tools
-from neural_diffusion_processes.ml_tools.state import (
+from neural_diffusion_processes.utils.ml_tools.state import (
     TrainingState,
     load_checkpoint,
     save_checkpoint,

@@ -49,7 +49,7 @@ from jax.config import config as jax_config
 
 import neural_diffusion_processes as ndp
 from neural_diffusion_processes import ml_tools
-from neural_diffusion_processes.ml_tools.state import (
+from neural_diffusion_processes.utils.ml_tools.state import (
     TrainingState,
     load_checkpoint,
     save_checkpoint,
@@ -1238,7 +1238,7 @@ from neural_diffusion_processes.kernels import (
     SumKernel,
 )
 from neural_diffusion_processes.utils.misc import flatten, unflatten
-from neural_diffusion_processes.config import get_config
+from neural_diffusion_processes.utils.config import get_config
 from neural_diffusion_processes.sde import LinOpControlTerm, sde_solve
 
 

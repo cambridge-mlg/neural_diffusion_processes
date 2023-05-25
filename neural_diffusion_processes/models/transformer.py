@@ -1,43 +1,52 @@
-import math
-import itertools
-from functools import partial
-from typing import List, Callable, Tuple
 import dataclasses
-
-import haiku as hk
-import numpy as np
-import jax
-import jax.numpy as jnp
+from functools import partial
+from typing import Callable, List, Tuple
 
 import e3nn_jax as e3nn
-
-# from e3nn_jax.experimental.transformer import Transformer, _index_max
+import haiku as hk
+import jax
+import jax.numpy as jnp
+import numpy as np
 from e3nn_jax.experimental.transformer import _index_max
 
-from .misc import timestep_embedding, get_activation, scatter
 from neural_diffusion_processes.utils import dotdict
+
+from .misc import (get_activation, get_edges_batch, get_edges_knn, scatter,
+                   timestep_embedding)
+
+
+def get_edge_attr(edge_length, max_radius, n_basis, radial_basis):
+    edge_attr = (
+        e3nn.soft_one_hot_linspace(
+            edge_length,
+            start=0.0,
+            end=max_radius,
+            number=n_basis,
+            basis=radial_basis,
+            cutoff=False,
+        )
+        * n_basis**0.5
+        * 0.95
+    )
+    edge_weight_cutoff = 1.4 * e3nn.sus(10 * (1 - edge_length / max_radius))
+    # edge_weight_cutoff = e3nn.sus(3.0 * (2.0 - edge_length))
+    edge_attr *= edge_weight_cutoff[:, None]
+    return edge_attr, edge_weight_cutoff
 
 
 class Constant(hk.initializers.Initializer):
     """Initializes with a constant."""
 
-    # def __init__(self, std=None, **kwargs):
     def __init__(self, constant=0.0, **kwargs):
         """Constructs a Constant initializer.
 
         Args:
         constant: Constant to initialize with.
         """
-        # self.constant = 0.0
         self.constant = constant
 
     def __call__(self, shape, dtype) -> jnp.ndarray:
         return jnp.broadcast_to(jnp.asarray(self.constant), shape).astype(dtype)
-
-
-# def get_constant_init(constant):
-
-#     return Constant
 
 
 @dataclasses.dataclass
@@ -281,53 +290,6 @@ class TensorProductConvLayer(hk.Module):
         return out
 
 
-def stat(text, z):
-    print(
-        f"{text} ({z.shape}) = {jax.tree_util.tree_map(lambda x: jnp.sqrt(jnp.mean(x.astype(float)**2)), z)}"
-    )
-
-
-def fill_diagonal(a, val):
-    assert a.ndim >= 2
-    i, j = jnp.diag_indices(min(a.shape[-2:]))
-    return a.at[..., i, j].set(val)
-
-
-@partial(jax.jit, static_argnums=1)
-def nearest_neighbors_jax(X, k):
-    pdist = jnp.sum((X[:, None, :] - X[None, :, :]) ** 2, axis=-1)
-    pdist = fill_diagonal(pdist, jnp.inf * jnp.ones((X.shape[0])))
-    return jax.lax.top_k(-pdist, k)[1]
-    # return jnp.argsort(distance_matrix, axis=-1)[:, :k]
-
-
-@partial(jax.jit, static_argnums=1)
-def get_edges_knn(x, k):
-    senders = nearest_neighbors_jax(x, k=k).reshape(-1)
-    receivers = jnp.arange(0, x.shape[-2], 1)
-    receivers = jnp.repeat(receivers, k, 0).reshape(-1)
-    return senders, receivers
-
-
-def get_edge_attr(edge_length, max_radius, n_basis, radial_basis):
-    edge_attr = (
-        e3nn.soft_one_hot_linspace(
-            edge_length,
-            start=0.0,
-            end=max_radius,
-            number=n_basis,
-            basis=radial_basis,
-            cutoff=False,
-        )
-        * n_basis**0.5
-        * 0.95
-    )
-    edge_weight_cutoff = 1.4 * e3nn.sus(10 * (1 - edge_length / max_radius))
-    # edge_weight_cutoff = e3nn.sus(3.0 * (2.0 - edge_length))
-    edge_attr *= edge_weight_cutoff[:, None]
-    return edge_attr, edge_weight_cutoff
-
-
 class TransformerModule(hk.Module):
     """from https://github1s.com/e3nn/e3nn-jax/blob/0.8.0/examples/qm9_transformer.py#L106-L107"""
 
@@ -381,7 +343,6 @@ class TransformerModule(hk.Module):
         self.act = act
         self.act_fn = get_activation(config.act_fn)
         self.kw = dict(
-            # list_neurons=[config.radial_n_neurons * config.radial_n_layers],
             list_neurons=[config.radial_n_neurons] * config.radial_n_layers,
             act=self.act_fn,
             num_heads=config.num_heads,
@@ -439,22 +400,15 @@ class TransformerModule(hk.Module):
             config.radial_basis,
         )
 
-        # edge_attr = jnp.concatenate(
-        #     [edge_attr, node_attr[senders], node_attr[receivers]], axis=-1
-        # )
         edge_t_emb = t_emb[senders]
         edge_attr = jnp.concatenate([edge_attr, edge_t_emb.array], axis=-1)
         self.edge_embedding = hk.Sequential([hk.Linear(64), self.act_fn, hk.Linear(64)])
         edge_attr = self.edge_embedding(edge_attr)
 
-        # irreps = e3nn.Irreps(f'{config.mul0}x0e')
-        # irreps = e3nn.Irreps(f'{config.mul1}x1e')
         irreps = self.irreps_features
-        # print("t", type(t), t.shape)
 
         ns = node_attr.irreps.count("0e") + node_attr.irreps.count("0o")
 
-        # for _ in range(config.n_layers - 1):
         for _ in range(config.n_layers):
             node_attr = e3nn.concatenate([node_attr, t_emb])
             node_attr = jax.vmap(e3nn.haiku.Linear(irreps))(node_attr)
@@ -473,28 +427,9 @@ class TransformerModule(hk.Module):
                 edge_weight_cutoff,
                 _edge_attr,
                 node_attr,
-                # edge_sh=edge_sh,
             )
             node_attr = self.act(node_attr)
 
-        # _edge_attr = jnp.concatenate(
-        #     [
-        #         edge_attr,
-        #         node_attr.array[senders, :ns],
-        #         node_attr.array[receivers, :ns],
-        #     ],
-        #     axis=-1,
-        # )
-        # _edge_attr = e3nn.concatenate([_edge_attr, edge_sh])
-        # # node_attr = self.layer(config.irreps_out, **self.kw)(
-        # node_attr = self.layer(irreps, **self.kw)(
-        #     senders,
-        #     receivers,
-        #     edge_weight_cutoff,
-        #     _edge_attr,
-        #     node_attr,
-        #     # edge_sh=edge_sh,
-        # )
         node_attr = e3nn.haiku.Linear(config.irreps_out)(node_attr)
         out = node_attr.array
         if self.config.residual:

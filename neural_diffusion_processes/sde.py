@@ -1,40 +1,33 @@
 from __future__ import annotations
-from abc import abstractmethod
-import operator
-import math
 
 import copy
-from functools import partial
 import dataclasses
+import math
+import operator
+from abc import abstractmethod
+from functools import partial
 
+import diffrax as dfx
+import gpjax
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
-import diffrax as dfx
-from diffrax import AbstractStepSizeController, PIDController, ConstantStepSize
-from diffrax import AbstractSolver, Dopri5, Tsit5
 import jaxkern
-import gpjax
-from jaxlinop import LinearOperator, identity
-
 # import equinox as eqx
 import numpy as np
-
-from jaxtyping import Array, Float, PyTree
 from check_shapes import check_shapes
+from diffrax import (AbstractSolver, AbstractStepSizeController,
+                     ConstantStepSize, Dopri5, PIDController, Tsit5)
 from einops import rearrange
+from jaxlinop import LinearOperator, identity
+from jaxtyping import Array, Float, PyTree
 
-from .utils.types import Tuple, Callable, Mapping, Sequence, Optional
 from .data import DataBatch
-from .kernels import (
-    prior_gp,
-    sample_prior_gp,
-    log_prob_prior_gp,
-    promote_compute_engines,
-    SumKernel,
-)
+from .kernels import (SumKernel, log_prob_prior_gp, prior_gp,
+                      promote_compute_engines, sample_prior_gp)
+from .utils.config import get_config
 from .utils.misc import flatten, unflatten
-from .config import get_config
+from .utils.types import Callable, Mapping, Optional, Sequence, Tuple
 
 
 class AbstractMeanFunction(gpjax.mean_functions.AbstractMeanFunction):
@@ -145,14 +138,8 @@ class SDE:
         cov_coef = jnp.exp(-self.beta_schedule.B(t))
         k0t = self.limiting_kernel
         k0t_params = copy.deepcopy(self.limiting_params["kernel"])
-        # k0t_params = scale_kernel_variance(k0t_params, 1.0 - cov_coef)
-        if isinstance(k0t_params, list):
-            for k in k0t_params:
-                k["variance"] = k["variance"] * (1.0 - cov_coef)
-                params = {"mean_function": {}, "kernel": [*k0t_params]}
-        else:
-            k0t_params["variance"] = k0t_params["variance"] * (1.0 - cov_coef)
-            params = {"mean_function": {}, "kernel": k0t_params}
+        k0t_params = scale_kernel_variance(k0t_params, 1.0 - cov_coef)
+        params = {"mean_function": {}, "kernel": k0t_params}
         return μ0t, k0t, params
 
     def pt(
@@ -222,10 +209,6 @@ class SDE:
             std = jnp.sqrt(1.0 - jnp.exp(-self.beta_schedule.B(t)))
             score = score / (std + 1e-3)
         if self.residual_trick:
-            # NOTE: s.t. bwd SDE = fwd SDE
-            # NOTE: wrong sign?
-            # fwd_drift = self.drift(t, yt, x)
-            # residual = 2 * fwd_drift / self.beta_schedule(t)
             residual = -yt
             score += residual
         return score

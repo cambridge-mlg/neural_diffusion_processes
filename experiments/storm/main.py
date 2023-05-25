@@ -1,50 +1,45 @@
+import logging
 import math
-from typing import Tuple, Mapping, Iterator, List
 import os
 import socket
-import logging
 from collections import defaultdict
 from functools import partial
+from typing import Iterator, List, Mapping, Tuple
+
 import tqdm
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+import diffrax as dfx
 import haiku as hk
+import hydra
 import jax
-from jax import jit, vmap
 import jax.numpy as jnp
-import optax
 import jmp
+import matplotlib.pyplot as plt
 import numpy as np
+import optax
 from einops import rearrange
 from equinox import filter_jit
-import diffrax as dfx
-
-import matplotlib.pyplot as plt
-from mpl_toolkits.basemap import Basemap
-
-from omegaconf import OmegaConf
-import hydra
-from hydra.utils import instantiate, call, get_method
+from hydra.utils import call, get_method, instantiate
+from jax import jit, vmap
 from jax.config import config as jax_config
+from mpl_toolkits.basemap import Basemap
+from omegaconf import OmegaConf
 
 import neural_diffusion_processes as ndp
 from neural_diffusion_processes import ml_tools
-from neural_diffusion_processes.ml_tools.state import (
-    TrainingState,
-    load_checkpoint,
-    save_checkpoint,
-)
-from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
-from neural_diffusion_processes.utils.vis import (
-    plot_scalar_field,
-    plot_vector_field,
-    plot_covariances,
-)
-from neural_diffusion_processes.utils import flatten, unflatten
 from neural_diffusion_processes.data import shuffle_data, split_data
-
-from neural_diffusion_processes.data.storm import LONOFFSET, RADDEG, LONSTART, LONSTOP
+from neural_diffusion_processes.data.storm import (LONOFFSET, LONSTART,
+                                                   LONSTOP, RADDEG)
+from neural_diffusion_processes.utils import flatten, unflatten
+from neural_diffusion_processes.utils.loggers_pl import LoggerCollection
+from neural_diffusion_processes.utils.ml_tools.state import (TrainingState,
+                                                             load_checkpoint,
+                                                             save_checkpoint)
+from neural_diffusion_processes.utils.vis import (plot_covariances,
+                                                  plot_scalar_field,
+                                                  plot_vector_field)
 
 
 def _get_key_iter(init_key) -> Iterator["jax.random.PRNGKey"]:

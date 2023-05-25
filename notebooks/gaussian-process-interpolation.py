@@ -38,7 +38,7 @@ from neural_diffusion_processes.utils.vis import (
 )
 from neural_diffusion_processes.kernels import sample_prior_gp, prior_gp, posterior_gp
 from neural_diffusion_processes.sde import log_prob
-from neural_diffusion_processes.config import get_config
+from neural_diffusion_processes.utils.config import get_config
 from neural_diffusion_processes.models.attention import MultiOutputAttentionModel
 
 JITTER = get_config().jitter

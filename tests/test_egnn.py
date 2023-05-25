@@ -14,7 +14,7 @@ from einops import rearrange
 from hydra import initialize, compose
 from hydra.utils import instantiate, call
 
-from neural_diffusion_processes.models.egnn2 import (
+from neural_diffusion_processes.models.egnn import (
     EGCL,
     EGNNScore,
     get_edges_batch,

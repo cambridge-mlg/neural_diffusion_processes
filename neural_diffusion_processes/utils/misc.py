@@ -9,7 +9,7 @@ from check_shapes import check_shapes
 from einops import rearrange
 
 from .types import Array
-from ..config import get_config
+from .config import get_config
 
 from jaxtyping import Float, jaxtyped
 from typeguard import typechecked as typechecker

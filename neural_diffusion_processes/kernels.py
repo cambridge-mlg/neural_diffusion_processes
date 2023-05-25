@@ -5,7 +5,6 @@ import gpjax
 import jax
 import jax.numpy as jnp
 import jaxkern
-import numpy as np
 from check_shapes import check_shapes
 from einops import rearrange
 from gpjax.gaussian_distribution import GaussianDistribution
@@ -18,7 +17,7 @@ from jaxlinop import (ConstantDiagonalLinearOperator, DenseLinearOperator,
                       DiagonalLinearOperator, LinearOperator, identity)
 from jaxlinop.dense_linear_operator import _check_matrix
 
-from .config import get_config
+from .utils.config import get_config
 from .utils.misc import check_shape, flatten, jax_unstack, unflatten
 from .utils.types import (Array, Callable, Dict, Float, Int, List, Mapping,
                           Optional, Tuple, Type, Union)
@@ -361,7 +360,7 @@ class DiagMultiOutputKernel(AbstractKernel):
     def init_params(self, key: jnp.DeviceArray) -> Dict:
         return self.scalar_kernel.init_params(key)
 
-    @check_shape
+    # @check_shape
     def __call__(
         self,
         params: Mapping[str, float],
@@ -417,7 +416,7 @@ class RBFCurlFree(AbstractKernel):
             "variance": jnp.array([1.0]),
         }
 
-    @check_shape
+    # @check_shape
     def __call__(
         self,
         params: Mapping[str, float],
@@ -463,7 +462,7 @@ class RBFDivFree(AbstractKernel):
             "variance": jnp.array([1.0]),
         }
 
-    @check_shape
+    # @check_shape
     def __call__(
         self,
         params: Mapping[str, float],

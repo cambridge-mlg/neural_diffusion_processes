@@ -1,0 +1,36 @@
+data:
+  dataset: sawtooth
+  num_samples_in_epoch: 16384
+  seed: 0
+eval:
+  batch_size: 32
+  num_samples_in_epoch: 4096
+experiment: regression1d-May14-2
+experiment_dir: ''
+mode: train
+network:
+  hidden_dim: 128
+  num_bidim_attention_layers: 2
+  num_heads: 8
+  translation_invariant: true
+optimization:
+  batch_size: 256
+  ema_rate: 0.999
+  end_lr: 1.0e-05
+  init_lr: 0.0001
+  num_decay_epochs: 200
+  num_epochs: 300
+  num_warmup_epochs: 10
+  peak_lr: 0.001
+sde:
+  beta1: 10.0
+  exact_score: false
+  limiting_kernel: se
+  limiting_kernel_lengthscale: null
+  limiting_kernel_noise_variance: 0.05
+  loss: l2
+  residual_trick: false
+  score_parametrization: preconditioned_k
+  std_trick: true
+  t0: 0.0005
+seed: 42

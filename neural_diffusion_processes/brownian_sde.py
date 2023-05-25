@@ -1,36 +1,25 @@
 from __future__ import annotations
-import math
 
 import dataclasses
-
-import jax
-import jax.numpy as jnp
-import jax.tree_util as jtu
-import diffrax as dfx
-from jaxlinop import LinearOperator, identity
-
-from jaxtyping import Array, Float, PyTree
-from check_shapes import check_shapes
-
-from .utils.types import Tuple, Callable, Mapping, Sequence, Optional
-from jaxlinop import LinearOperator, DenseLinearOperator, identity
-from jaxlinop.dense_linear_operator import _check_matrix
-
-
+import math
 from typing import Tuple
 
-import jax.tree_util as jtu
-from equinox.internal import ω
-
+import diffrax as dfx
+import jax
+import jax.numpy as jnp
+from check_shapes import check_shapes
 from diffrax.custom_types import Bool, DenseInfo, PyTree, Scalar
-from diffrax.local_interpolation import LocalLinearInterpolation
 from diffrax.solution import RESULTS
+from diffrax.solver.euler import _ErrorEstimate, _SolverState
 from diffrax.term import AbstractTerm
-from diffrax.solver.euler import _SolverState, _ErrorEstimate
+from jaxlinop import DenseLinearOperator, LinearOperator, identity
+from jaxlinop.dense_linear_operator import _check_matrix
+from jaxtyping import Array, Float, PyTree
 
-from .sde import SDE, div_noise, get_div_fn, sde_solve, ScoreNetwork
+from .sde import SDE, ScoreNetwork, div_noise, get_div_fn, sde_solve
 from .utils import algebra_utils as utils
 from .utils.misc import flatten, unflatten
+from .utils.types import Callable, Mapping, Optional, Sequence, Tuple
 
 
 class ProjectionOperator(DenseLinearOperator):
@@ -78,85 +67,6 @@ class ProjectionOperator(DenseLinearOperator):
         """
 
         return ProjectionOperator(matrix=self.matrix * other)
-
-
-# class SquaredLinearOperator(DenseLinearOperator):
-#     """M = A A^t"""
-
-#     def __init__(self, matrix: Float[Array, "N N"]):
-#         """Initialize the covariance operator.
-
-#         Args:
-#             matrix (Float[Array, "N N"]): Dense matrix.
-#         """
-#         _check_matrix(matrix)
-#         self.root = matrix
-
-#     @property
-#     def matrix(self):
-#         return self.to_dense()
-
-#     @property
-#     def T(self) -> LinearOperator:
-#         return self
-
-#     def to_root(self) -> LinearOperator:
-#         return DenseLinearOperator(self.root)
-
-#     def inverse(self) -> LinearOperator:
-#         return SquaredLinearOperator(jnp.linalg.inv(self.root).T)
-
-#     def solve(self, rhs: Float[Array, "N"]) -> Float[Array, "N"]:
-#         """Solve linear system. Default implementation uses dense Cholesky decomposition.
-
-#         Args:
-#             rhs (Float[Array, "N"]): Right hand side of the linear system.
-
-#         Returns:
-#             Float[Array, "N]: Solution of the linear system.
-#         """
-#         # (AA^t)^-1 v = A^-t (A^-1 v)
-#         return self.root.T.solve(self.root.solve(rhs))
-
-#     def _add_diagonal(self, other: DiagonalLinearOperator) -> LinearOperator:
-#         """Add diagonal to the covariance operator,  useful for computing, Kxx + Iσ².
-
-#         Args:
-#             other (DiagonalLinearOperator): Diagonal covariance operator to add to the covariance operator.
-
-#         Returns:
-#             LinearOperator: Sum of the two covariance operators.
-#         """
-#         raise NotImplementedError("Would loose A A^t structure.")
-
-#     @property
-#     def shape(self) -> Tuple[int, int]:
-#         """Covaraince matrix shape.
-
-#         Returns:
-#             Tuple[int, int]: shape of the covariance operator.
-#         """
-#         return (self.root.shape[0], self.root.shape[0])
-
-#     def __mul__(self, other: float) -> LinearOperator:
-#         """Multiply covariance operator by scalar.
-
-#         Args:
-#             other (LinearOperator): Scalar.
-
-#         Returns:
-#             LinearOperator: Covariance operator multiplied by a scalar.
-#         """
-
-#         return SquaredLinearOperator(np.sqrt(other) * self.root)
-
-#     def to_dense(self) -> Float[Array, "N N"]:
-#         """Construct dense Covaraince matrix from the covariance operator.
-
-#         Returns:
-#             Float[Array, "N N"]: Dense covariance matrix.
-#         """
-#         return self.root @ self.root.T
 
 
 @dataclasses.dataclass

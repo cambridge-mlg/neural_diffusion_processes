@@ -1,11 +1,13 @@
 import functools
 from functools import partial
+from typing import Callable, NamedTuple, Optional, Sequence, Tuple
 
-from check_shapes import check_shape as cs, check_shapes
-
+import chex
 import jax
-import jax.numpy as jnp
 import jax.nn as jnn
+import jax.numpy as jnp
+from check_shapes import check_shape as cs
+from check_shapes import check_shapes
 
 from neural_diffusion_processes.utils import register_category
 
@@ -69,3 +71,70 @@ register_activation(
 register_activation(jnn.swish, name="swish")
 register_activation(jnp.sin, name="sin")
 register_activation(jax.nn.silu, name="silu")
+
+
+
+def fill_diagonal(a, val):
+    assert a.ndim >= 2
+    i, j = jnp.diag_indices(min(a.shape[-2:]))
+    return a.at[..., i, j].set(val)
+
+
+@partial(jax.jit, static_argnums=1)
+def nearest_neighbors_jax(X, k):
+    pdist = jnp.sum((X[:, None, :] - X[None, :, :]) ** 2, axis=-1)
+    pdist = fill_diagonal(pdist, jnp.inf * jnp.ones((X.shape[0])))
+    return jax.lax.top_k(-pdist, k)[1]
+    # return jnp.argsort(distance_matrix, axis=-1)[:, :k]
+
+
+@partial(jax.jit, static_argnums=1)
+def get_edges_knn(x, k):
+    senders = nearest_neighbors_jax(x, k=k).reshape(-1)
+    receivers = jnp.arange(0, x.shape[-2], 1)
+    receivers = jnp.repeat(receivers, k, 0).reshape(-1)
+    return senders, receivers
+
+
+def get_senders_and_receivers_fully_connected(
+    n_nodes: int,
+) -> Tuple[chex.Array, chex.Array]:
+    """Get senders and receivers for fully connected graph of `n_nodes`."""
+    receivers = []
+    senders = []
+    for i in range(n_nodes):
+        for j in range(n_nodes - 1):
+            receivers.append(i)
+            senders.append((i + 1 + j) % n_nodes)
+    return jnp.array(senders, dtype=int), jnp.array(receivers, dtype=int)
+
+
+def get_edges(n_nodes):
+    rows, cols = [], []
+    for i in range(n_nodes):
+        for j in range(n_nodes):
+            if i != j:
+                rows.append(i)
+                cols.append(j)
+
+    edges = [rows, cols]
+    return edges
+
+
+def get_edges_batch(n_nodes, batch_size):
+    edges = get_edges(n_nodes)
+    edge_attr = jnp.ones((len(edges[0]) * batch_size, 1))
+    # edges = [torch.LongTensor(edges[0]), torch.LongTensor(edges[1])]
+    edges = [jnp.array(edges[0]), jnp.array(edges[1])]
+    if batch_size == 1:
+        return edges, edge_attr
+    elif batch_size > 1:
+        rows, cols = [], []
+        for i in range(batch_size):
+            rows.append(edges[0] + n_nodes * i)
+            cols.append(edges[1] + n_nodes * i)
+        edges = [jnp.concatenate(rows), jnp.concatenate(cols)]
+    return edges, edge_attr
+
+
+
