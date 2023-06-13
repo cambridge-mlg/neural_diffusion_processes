@@ -1184,10 +1184,10 @@ def div_noise(
 ) -> jnp.ndarray:
     """Sample noise for the hutchinson estimator."""
     if hutchinson_type == "Gaussian":
-        epsilon = jax.random.normal(rng, shape)
+        epsilon = jax.random.normal(rng, shape, dtype=float)
     elif hutchinson_type == "Rademacher":
         epsilon = (
-            jax.random.randint(rng, shape, minval=0, maxval=2).astype(jnp.float32) * 2
+            jax.random.randint(rng, shape, minval=0, maxval=2).astype(float) * 2
             - 1
         )
     elif hutchinson_type == "None":
