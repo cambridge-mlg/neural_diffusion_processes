@@ -20,5 +20,5 @@ residual: false
 batch_norm: false
 sq_nl: false
 zero_init: true
-attention: true
+attention: false
 irreps_out: 2x0e+1x1e

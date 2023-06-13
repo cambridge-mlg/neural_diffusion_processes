@@ -476,7 +476,7 @@ def run(cfg):
                 if step >= cfg.optim.n_steps or (i < 2 and n == 0):
                     # if True:
                     log.info(
-                        f"${step=}, ${n=}, ${i=}, ${batch.xs.shape=}, ${batch.ys.shape=}"
+                        f"${step=}, ${n=}, ${i=}, ${batch.xs.shape=} ${batch.xs.dtype=}, ${batch.ys.shape=} ${batch.ys.dtype=}"
                     )
                     subkeys = jax.random.split(key, num=batch.ys.shape[0])
 
